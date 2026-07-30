@@ -308,7 +308,7 @@ export default function DailyPlanningPage() {
                 {/* Price shown read-only — never a price input on this screen */}
                 {selectedMeal && (
                   <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                    Price: <span className="font-medium">${selectedMeal.price.toFixed(2)}</span>
+                    Price: <span className="font-medium">R {selectedMeal.price.toFixed(2)}</span>
                     <span className="ml-2 text-xs text-muted-foreground">(from catalog — read only)</span>
                   </div>
                 )}
@@ -371,7 +371,7 @@ export default function DailyPlanningPage() {
                 {/* Extra price shown read-only */}
                 {selectedComponent && (
                   <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                    Extra price: <span className="font-medium">${selectedComponent.extraPrice.toFixed(2)}</span>
+                    Extra price: <span className="font-medium">R {selectedComponent.extraPrice.toFixed(2)}</span>
                     <span className="ml-2 text-xs text-muted-foreground">(from catalog — read only)</span>
                   </div>
                 )}
@@ -456,7 +456,7 @@ export default function DailyPlanningPage() {
                       todayPlan.options.map((o) => (
                         <TableRow key={o.id}>
                           <TableCell className="font-medium">{o.name}</TableCell>
-                          <TableCell>${o.price.toFixed(2)}</TableCell>
+                          <TableCell>R {o.price.toFixed(2)}</TableCell>
                           <TableCell>{o.plannedPortions}</TableCell>
                           <TableCell>
                             <span className={o.portionsRemaining === 0 ? "text-destructive font-medium" : ""}>
@@ -504,7 +504,7 @@ export default function DailyPlanningPage() {
                           <TableCell className="font-medium">
                             {ex.componentName ?? ex.name ?? "—"}
                           </TableCell>
-                          <TableCell>${ex.extraPrice.toFixed(2)}</TableCell>
+                          <TableCell>R {ex.extraPrice.toFixed(2)}</TableCell>
                           <TableCell>{ex.bufferQuantity}</TableCell>
                           <TableCell>
                             <span className={ex.bufferRemaining === 0 ? "text-destructive font-medium" : ""}>

@@ -94,7 +94,7 @@ export default function PosMainPage() {
           {shift && (
             <span className="flex items-center gap-1 text-xs text-slate-500">
               <Clock className="h-3 w-3" />
-              Since {formatTime(shift.openedAt)} · {formatDate(shift.openedAt)} · Float ${shift.openingFloat}
+              Since {formatTime(shift.openedAt)} · {formatDate(shift.openedAt)} · Float R {shift.openingFloat}
             </span>
           )}
         </div>

@@ -313,7 +313,7 @@ export default function CatalogPage() {
                       components.map((c) => (
                         <TableRow key={c.id}>
                           <TableCell className="font-medium">{c.name}</TableCell>
-                          <TableCell>${c.extraPrice.toFixed(2)}</TableCell>
+                          <TableCell>R {c.extraPrice.toFixed(2)}</TableCell>
                           <TableCell>{c.active ? "Yes" : "No"}</TableCell>
                           <TableCell>
                             <Button size="sm" variant="outline" onClick={() => openEditComponent(c)}>
@@ -382,7 +382,7 @@ export default function CatalogPage() {
                             <TableCell className="text-sm text-muted-foreground">
                               {m.description ?? "—"}
                             </TableCell>
-                            <TableCell>${m.price.toFixed(2)}</TableCell>
+                            <TableCell>R {m.price.toFixed(2)}</TableCell>
                             <TableCell className="text-sm">{linkedNames || "—"}</TableCell>
                             <TableCell>{m.active ? "Yes" : "No"}</TableCell>
                             <TableCell>
@@ -419,7 +419,7 @@ export default function CatalogPage() {
                 />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="c-price">Extra portion price ($)</Label>
+                <Label htmlFor="c-price">Extra portion price (R)</Label>
                 <Input
                   id="c-price"
                   type="number"
@@ -471,7 +471,7 @@ export default function CatalogPage() {
                 />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="m-price">Price ($) — agreed with stakeholders</Label>
+                <Label htmlFor="m-price">Price (R) — agreed with stakeholders</Label>
                 <Input
                   id="m-price"
                   type="number"

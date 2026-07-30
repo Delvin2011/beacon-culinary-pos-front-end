@@ -71,7 +71,7 @@ export function TodayStats() {
           <CardTitle className="text-sm font-normal">Total Sales - Today</CardTitle>
         </CardHeader>
         <CardContent className="pb-0">
-          <div className="text-2xl font-bold">$15,231.89</div>
+          <div className="text-2xl font-bold">R 15,231.89</div>
           <p className="text-xs text-muted-foreground">
             +20.1% from yesterday
           </p>
@@ -110,7 +110,7 @@ export function TodayStats() {
           <CardTitle className="text-sm font-normal">Average Sales - Month on Month</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-2xl font-bold">$44,000</div>
+          <div className="text-2xl font-bold">R 44,000</div>
           <p className="text-xs text-muted-foreground">
             -5.1% from last month
           </p>
@@ -168,7 +168,7 @@ export function TodayStats() {
                   r: 6,
                   fill: "var(--color-average)",
                 }}
-                name="Last Week Sales:   $" 
+                name="Last Week Sales:   R " 
               />
               <Line
                 type="monotone"
@@ -179,7 +179,7 @@ export function TodayStats() {
                   r: 8,
                   style: { fill: "var(--color-today)" },
                 }}
-                name="This Week Sales:   $" 
+                name="This Week Sales:   R " 
               />
               <ChartTooltip content={<ChartTooltipContent />} />
             </LineChart>

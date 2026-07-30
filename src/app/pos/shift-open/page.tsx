@@ -6,7 +6,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 
-// Opening float is entered as whole currency units (e.g. 50 = $50.00)
+// Opening float is entered as whole currency units (e.g. 50 = R 50.00)
 const MAX_FLOAT_DIGITS = 6; // up to 999999
 
 function formatFloat(raw: string): string {
@@ -97,7 +97,7 @@ export default function ShiftOpenPage() {
           Opening Float
         </span>
         <div className="flex items-baseline gap-1">
-          <span className="text-4xl font-light text-slate-400">$</span>
+          <span className="text-4xl font-light text-slate-400">R</span>
           <span className="text-7xl font-bold tabular-nums text-white leading-none">
             {displayAmount}
           </span>
@@ -130,7 +130,7 @@ export default function ShiftOpenPage() {
       </button>
 
       <p className="text-xs text-slate-600 text-center max-w-xs">
-        A float of $0 is allowed if no cash is being placed in the drawer.
+        A float of R 0 is allowed if no cash is being placed in the drawer.
       </p>
     </div>
   );
