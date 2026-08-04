@@ -6,6 +6,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { LogOut, Clock } from "lucide-react";
 import { PosOrderBuilder } from "@/components/pos/order-builder";
+import { formatZarCurrency } from "@/lib/utils";
 
 function formatTime(iso: string): string {
   try {
@@ -94,7 +95,7 @@ export default function PosMainPage() {
           {shift && (
             <span className="flex items-center gap-1 text-xs text-slate-500">
               <Clock className="h-3 w-3" />
-              Since {formatTime(shift.openedAt)} · {formatDate(shift.openedAt)} · Float R {shift.openingFloat}
+              Since {formatTime(shift.openedAt)} · {formatDate(shift.openedAt)} · Float {formatZarCurrency(shift.openingFloat)}
             </span>
           )}
         </div>

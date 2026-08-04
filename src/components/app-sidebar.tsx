@@ -29,7 +29,7 @@ const data = {
     {
       name: "Beacon Culinary",
       logo: Fuel,
-      plan: "Optimum Canteen",
+      plan: "Canteen",
     },
   ],
   navMain: [

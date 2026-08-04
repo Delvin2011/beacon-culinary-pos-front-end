@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
+import { formatZarCurrency } from "@/lib/utils";
 
 type MealPeriod = {
   id: number;
@@ -111,7 +112,7 @@ function isWithinPeriod(startTime: string, endTime: string, now: string): boolea
 }
 
 function toMoney(value: number): string {
-  return `R ${value.toFixed(2)}`;
+  return formatZarCurrency(value);
 }
 
 function parseMessage(payload: unknown, fallback: string): string {
