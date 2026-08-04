@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { formatZarCurrency } from "@/lib/utils"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -313,7 +314,7 @@ export default function CatalogPage() {
                       components.map((c) => (
                         <TableRow key={c.id}>
                           <TableCell className="font-medium">{c.name}</TableCell>
-                          <TableCell>R {c.extraPrice.toFixed(2)}</TableCell>
+                          <TableCell>{formatZarCurrency(c.extraPrice)}</TableCell>
                           <TableCell>{c.active ? "Yes" : "No"}</TableCell>
                           <TableCell>
                             <Button size="sm" variant="outline" onClick={() => openEditComponent(c)}>
@@ -382,7 +383,7 @@ export default function CatalogPage() {
                             <TableCell className="text-sm text-muted-foreground">
                               {m.description ?? "—"}
                             </TableCell>
-                            <TableCell>R {m.price.toFixed(2)}</TableCell>
+                            <TableCell>{formatZarCurrency(m.price)}</TableCell>
                             <TableCell className="text-sm">{linkedNames || "—"}</TableCell>
                             <TableCell>{m.active ? "Yes" : "No"}</TableCell>
                             <TableCell>

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useAuth } from "@/hooks/use-auth"
 import { useOrder } from "@/hooks/use-order"
+import { formatZarCurrency } from "@/lib/utils"
 
 interface CustomerOrderProps {
   onCheckout: () => void
@@ -217,7 +218,7 @@ export default function CustomerOrder({ onCheckout }: CustomerOrderProps) {
                                 {variant.variantName}
                               </p>
                               <p className="mt-1 text-2xl font-bold text-foreground">
-                                R {variant.price.toFixed(2)}
+                                {formatZarCurrency(variant.price)}
                               </p>
                             </div>
                           </Button>
@@ -301,7 +302,7 @@ export default function CustomerOrder({ onCheckout }: CustomerOrderProps) {
                       />
                       <span className="text-sm text-muted-foreground">Qty</span>
                       <p className="ml-auto text-sm font-semibold text-foreground">
-                        R {(item.price * item.quantity).toFixed(2)}
+                        {formatZarCurrency(item.price * item.quantity)}
                       </p>
                     </div>
                   </div>
@@ -313,17 +314,17 @@ export default function CustomerOrder({ onCheckout }: CustomerOrderProps) {
               <div className="space-y-2 text-base">
                 <div className="flex justify-between font-medium text-foreground/80">
                   <span>Subtotal</span>
-                  <span>R {subTotal.toFixed(2)}</span>
+                  <span>{formatZarCurrency(subTotal)}</span>
                 </div>
                 <div className="flex justify-between font-medium text-foreground/80">
                   <span>VAT (15%)</span>
-                  <span>R {vat.toFixed(2)}</span>
+                  <span>{formatZarCurrency(vat)}</span>
                 </div>
               </div>
 
               <div className="flex items-end justify-between border-t border-border pt-4">
                 <span className="text-lg font-bold uppercase tracking-[0.2em] text-primary">Total</span>
-                <span className="text-5xl font-black text-foreground">R {totalAmount.toFixed(2)}</span>
+                <span className="text-5xl font-black text-foreground">{formatZarCurrency(totalAmount)}</span>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -368,7 +369,7 @@ export default function CustomerOrder({ onCheckout }: CustomerOrderProps) {
           <div className="space-y-4">
             <div className="rounded-lg bg-muted p-4">
               <p className="text-sm text-muted-foreground">Amount due</p>
-              <p className="text-3xl font-black text-foreground">R {totalAmount.toFixed(2)}</p>
+              <p className="text-3xl font-black text-foreground">{formatZarCurrency(totalAmount)}</p>
             </div>
 
             {cashChange === null ? (
@@ -404,7 +405,7 @@ export default function CustomerOrder({ onCheckout }: CustomerOrderProps) {
               <>
                 <div className="rounded-lg border border-primary/30 bg-primary/10 p-4">
                   <p className="text-sm text-muted-foreground">Change to return</p>
-                  <p className="text-3xl font-black text-primary">R {cashChange.toFixed(2)}</p>
+                  <p className="text-3xl font-black text-primary">{formatZarCurrency(cashChange)}</p>
                 </div>
 
                 {checkoutReference && (
