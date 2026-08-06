@@ -12,14 +12,15 @@ import {
 import { ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 import { formatZarCurrency } from "@/lib/utils"
 
+// Daily revenue for the current week (R)
 const data = [
-  { day: 'Mon', revenue: 45000 },
-  { day: 'Tue', revenue: 30000 },
-  { day: 'Wed', revenue: 35000 },
-  { day: 'Thu', revenue: 42000 },
-  { day: 'Fri', revenue: 50000 },
-  { day: 'Sat', revenue: 40000 },
-  { day: 'Sun', revenue: 55000 },
+  { day: 'Mon', revenue: 3820 },
+  { day: 'Tue', revenue: 4150 },
+  { day: 'Wed', revenue: 3970 },
+  { day: 'Thu', revenue: 4380 },
+  { day: 'Fri', revenue: 5210 },
+  { day: 'Sat', revenue: 2640 },
+  { day: 'Sun', revenue: 1890 },
 ];
 
 const chartConfig = {
@@ -33,24 +34,26 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
+// Week-on-week revenue comparison (R)
 const todayOnAverageData = [
-  { day: 'Mon', lastWeekSales: 45000, thisWeekSales: 40000 },
-  { day: 'Tue', lastWeekSales: 30000, thisWeekSales: 25000 },
-  { day: 'Wed', lastWeekSales: 35000, thisWeekSales: 37000 },
-  { day: 'Thu', lastWeekSales: 42000, thisWeekSales: 41000 },
-  { day: 'Fri', lastWeekSales: 50000, thisWeekSales: 48000 },
-  { day: 'Sat', lastWeekSales: 60000, thisWeekSales: 55000 },
-  { day: 'Sun', lastWeekSales: 55000, thisWeekSales: 52000 },
+  { day: 'Mon', lastWeekSales: 3650, thisWeekSales: 3820 },
+  { day: 'Tue', lastWeekSales: 3900, thisWeekSales: 4150 },
+  { day: 'Wed', lastWeekSales: 4100, thisWeekSales: 3970 },
+  { day: 'Thu', lastWeekSales: 4200, thisWeekSales: 4380 },
+  { day: 'Fri', lastWeekSales: 4950, thisWeekSales: 5210 },
+  { day: 'Sat', lastWeekSales: 2800, thisWeekSales: 2640 },
+  { day: 'Sun', lastWeekSales: 2100, thisWeekSales: 1890 },
 ];
 
+// Monthly canteen revenue (R)
 const monthToMonthData = [
-  { month: 'Jul 24', sales: 45000 },
-  { month: 'Aug 24', sales: 52000 },
-  { month: 'Sep 24', sales: 61000 },
-  { month: 'Oct 24', sales: 58000 },
-  { month: 'Nov 24', sales: 70000 },
-  { month: 'Dec 24', sales: 64000 },
-  { month: 'Jan 25', sales: 44000 },
+  { month: 'Feb 25', sales: 78400 },
+  { month: 'Mar 25', sales: 85200 },
+  { month: 'Apr 25', sales: 79600 },
+  { month: 'May 25', sales: 91300 },
+  { month: 'Jun 25', sales: 88700 },
+  { month: 'Jul 25', sales: 94500 },
+  { month: 'Aug 25', sales: 84200 },
 ];
  
   const todayOnAverageDataChartConfig = {
@@ -72,9 +75,9 @@ export function TodayStats() {
           <CardTitle className="text-sm font-normal">Total Sales - Today</CardTitle>
         </CardHeader>
         <CardContent className="pb-0">
-          <div className="text-2xl font-bold">{formatZarCurrency(15231.89)}</div>
+          <div className="text-2xl font-bold">{formatZarCurrency(5210)}</div>
           <p className="text-xs text-muted-foreground">
-            +20.1% from yesterday
+            +5.3% from yesterday
           </p>
           <ChartContainer config={chartConfig} className="h-[200px] w-full">
           <LineChart
@@ -108,12 +111,12 @@ export function TodayStats() {
       </Card>
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-normal">Average Sales - Month on Month</CardTitle>
+          <CardTitle className="text-sm font-normal">Monthly Revenue Trend</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="text-2xl font-bold">{formatZarCurrency(44000)}</div>
+          <div className="text-2xl font-bold">{formatZarCurrency(87300)}</div>
           <p className="text-xs text-muted-foreground">
-            -5.1% from last month
+            +7.4% from last month
           </p>
           <ChartContainer config={chartConfig} className="mt-2 h-[200px] w-full">
           <BarChart
@@ -142,9 +145,9 @@ export function TodayStats() {
       </Card>
       <Card>
         <CardHeader>
-            <CardTitle>Consecutive Weeks Sales</CardTitle>
+            <CardTitle>Week-on-Week Revenue</CardTitle>
             <CardDescription>
-            Total Sales by day.
+              This week vs last week — daily canteen revenue (R)
             </CardDescription>
         </CardHeader>
         <CardContent className="pb-4">

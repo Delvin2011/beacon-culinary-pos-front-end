@@ -29,7 +29,7 @@ type OrderSummaryDto = {
 };
 
 type KitchenStreamPayload = {
-  eventType: "ORDER_CREATED" | "STATUS_CHANGED";
+  eventType: "ORDER_CREATED" | "STATUS_CHANGED" | "ORDER_UPDATED";
   order: OrderSummaryDto;
 };
 
@@ -115,11 +115,13 @@ export function KitchenQueueBoard() {
   const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [updatingOrderIds, setUpdatingOrderIds] = useState<Record<number, true>>({});
+  const [recentlyUpdatedOrderIds, setRecentlyUpdatedOrderIds] = useState<Record<number, true>>({});
 
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [lastSyncAt, setLastSyncAt] = useState<Date | null>(null);
 
   const streamControllerRef = useRef<AbortController | null>(null);
+  const updateFlashTimeoutsRef = useRef<Record<number, number>>({});
 
   const pruneDoneOrders = useCallback(() => {
     const cutoff = Date.now() - DONE_RETENTION_MS;
@@ -167,6 +169,41 @@ export function KitchenQueueBoard() {
       delete next[order.orderId];
       return next;
     });
+  }, []);
+
+  const updateOrderInPlace = useCallback((order: OrderSummaryDto) => {
+    setOrdersById((prev) => {
+      const existing = prev[order.orderId];
+      if (!existing) return prev;
+
+      return {
+        ...prev,
+        [order.orderId]: {
+          ...existing,
+          order,
+        },
+      };
+    });
+  }, []);
+
+  const flashOrderUpdate = useCallback((orderId: number) => {
+    setRecentlyUpdatedOrderIds((prev) => ({ ...prev, [orderId]: true }));
+
+    const existingTimeout = updateFlashTimeoutsRef.current[orderId];
+    if (existingTimeout) {
+      window.clearTimeout(existingTimeout);
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setRecentlyUpdatedOrderIds((prev) => {
+        const next = { ...prev };
+        delete next[orderId];
+        return next;
+      });
+      delete updateFlashTimeoutsRef.current[orderId];
+    }, 1600);
+
+    updateFlashTimeoutsRef.current[orderId] = timeoutId;
   }, []);
 
   const applySnapshot = useCallback((orders: OrderSummaryDto[]) => {
@@ -268,6 +305,13 @@ export function KitchenQueueBoard() {
               try {
                 const eventPayload = JSON.parse(rawEvent) as KitchenStreamPayload;
                 if (!eventPayload?.order) return;
+
+                if (eventPayload.eventType === "ORDER_UPDATED") {
+                  updateOrderInPlace(eventPayload.order);
+                  flashOrderUpdate(eventPayload.order.orderId);
+                  return;
+                }
+
                 upsertOrder(eventPayload.order, Date.now());
               } catch {
                 // Ignore malformed events and continue streaming.
@@ -292,8 +336,12 @@ export function KitchenQueueBoard() {
     return () => {
       cancelled = true;
       streamControllerRef.current?.abort();
+      for (const timeoutId of Object.values(updateFlashTimeoutsRef.current)) {
+        window.clearTimeout(timeoutId);
+      }
+      updateFlashTimeoutsRef.current = {};
     };
-  }, [authFetch, loadSnapshot, upsertOrder]);
+  }, [authFetch, flashOrderUpdate, loadSnapshot, updateOrderInPlace, upsertOrder]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -430,6 +478,7 @@ export function KitchenQueueBoard() {
           columnClassName={columnShellClass("PENDING")}
           onCardTap={handleAdvanceStatus}
           updatingOrderIds={updatingOrderIds}
+          recentlyUpdatedOrderIds={recentlyUpdatedOrderIds}
           emptyLabel={isSnapshotLoading ? "Loading orders..." : "No pending orders"}
         />
 
@@ -440,6 +489,7 @@ export function KitchenQueueBoard() {
           columnClassName={columnShellClass("IN_PROGRESS")}
           onCardTap={handleAdvanceStatus}
           updatingOrderIds={updatingOrderIds}
+          recentlyUpdatedOrderIds={recentlyUpdatedOrderIds}
           emptyLabel={isSnapshotLoading ? "Loading orders..." : "No active prep orders"}
         />
 
@@ -450,6 +500,7 @@ export function KitchenQueueBoard() {
           columnClassName={columnShellClass("DONE")}
           onCardTap={null}
           updatingOrderIds={updatingOrderIds}
+          recentlyUpdatedOrderIds={recentlyUpdatedOrderIds}
           emptyLabel={isSnapshotLoading ? "Loading orders..." : "No recently completed orders"}
         />
       </div>
@@ -468,6 +519,7 @@ type StatusColumnProps = {
   columnClassName: string;
   onCardTap: ((order: OrderSummaryDto) => void) | null;
   updatingOrderIds: Record<number, true>;
+  recentlyUpdatedOrderIds: Record<number, true>;
   emptyLabel: string;
 };
 
@@ -478,6 +530,7 @@ function StatusColumn({
   columnClassName,
   onCardTap,
   updatingOrderIds,
+  recentlyUpdatedOrderIds,
   emptyLabel,
 }: StatusColumnProps) {
   return (
@@ -501,6 +554,7 @@ function StatusColumn({
               order={order}
               canAdvance={Boolean(onCardTap)}
               isUpdating={Boolean(updatingOrderIds[order.orderId])}
+              isRecentlyUpdated={Boolean(recentlyUpdatedOrderIds[order.orderId])}
               onTap={() => {
                 if (!onCardTap) return;
                 onCardTap(order);
@@ -517,10 +571,11 @@ type OrderCardProps = {
   order: OrderSummaryDto;
   canAdvance: boolean;
   isUpdating: boolean;
+  isRecentlyUpdated: boolean;
   onTap: () => void;
 };
 
-function OrderCard({ order, canAdvance, isUpdating, onTap }: OrderCardProps) {
+function OrderCard({ order, canAdvance, isUpdating, isRecentlyUpdated, onTap }: OrderCardProps) {
   const cardShell = canAdvance
     ? "cursor-pointer hover:border-slate-500 hover:bg-slate-800 active:scale-[0.99]"
     : "cursor-default";
@@ -532,6 +587,7 @@ function OrderCard({ order, canAdvance, isUpdating, onTap }: OrderCardProps) {
       onClick={onTap}
       className={cn(
         "w-full rounded-xl border border-slate-700 bg-slate-900 p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-blue-400/50 disabled:cursor-not-allowed disabled:opacity-80",
+        isRecentlyUpdated && "border-amber-300 bg-amber-200/10 ring-2 ring-amber-300/50",
         cardShell,
       )}
     >
@@ -578,6 +634,12 @@ function OrderCard({ order, canAdvance, isUpdating, onTap }: OrderCardProps) {
       {canAdvance && (
         <p className="mt-3 text-xs font-medium text-slate-400">
           {isUpdating ? "Updating..." : "Tap to advance status"}
+        </p>
+      )}
+
+      {isRecentlyUpdated && (
+        <p className="mt-2 text-xs font-semibold uppercase tracking-wide text-amber-200">
+          Ticket updated
         </p>
       )}
     </button>

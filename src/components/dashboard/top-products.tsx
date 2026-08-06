@@ -18,50 +18,51 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
+// Portions sold per meal option this month (dummy data)
 const chartData = [
-  { browser: "Petrol 93:  ", visitors: 27500, fill: "var(--color-chrome)" },
-  { browser: "Petrol 95:  ", visitors: 20000, fill: "var(--color-safari)" },
-  { browser: "Petrol Leaded:  ", visitors: 28700, fill: "var(--color-firefox)" },
-  { browser: "Diesel 50ppm:  ", visitors: 17300, fill: "var(--color-edge)" },
-  { browser: "Diesel 10ppm:  ", visitors: 19000, fill: "var(--color-other)" },
+  { meal: "Chicken & Rice",      portions: 412, fill: "var(--color-chrome)" },
+  { meal: "Beef Stew & Pap",     portions: 387, fill: "var(--color-safari)" },
+  { meal: "Vegetable Curry",     portions: 298, fill: "var(--color-firefox)" },
+  { meal: "Grilled Fish & Veg",  portions: 241, fill: "var(--color-edge)" },
+  { meal: "Pork Chop & Potatoes",portions: 195, fill: "var(--color-other)" },
 ]
 
 const chartConfig = {
-  visitors: {
-    label: "Visitors",
+  portions: {
+    label: "Portions",
   },
   chrome: {
-    label: "Chrome",
+    label: "Chicken & Rice",
     color: "hsl(var(--chart-1))",
   },
   safari: {
-    label: "Safari",
+    label: "Beef Stew & Pap",
     color: "hsl(var(--chart-2))",
   },
   firefox: {
-    label: "Firefox",
+    label: "Vegetable Curry",
     color: "hsl(var(--chart-3))",
   },
   edge: {
-    label: "Edge",
+    label: "Grilled Fish & Veg",
     color: "hsl(var(--chart-4))",
   },
   other: {
-    label: "Other",
+    label: "Pork Chop & Potatoes",
     color: "hsl(var(--chart-5))",
   },
 } satisfies ChartConfig
 
 export function TopProducts() {
-  const totalVisitors = React.useMemo(() => {
-    return chartData.reduce((acc, curr) => acc + curr.visitors, 0)
+  const totalPortions = React.useMemo(() => {
+    return chartData.reduce((acc, curr) => acc + curr.portions, 0)
   }, [])
 
   return (
     <Card className="flex flex-col">
       <CardHeader className="items-center pb-0">
-        <CardTitle>Top Products</CardTitle>
-        <CardDescription>Month-to-date</CardDescription>
+        <CardTitle>Top Meal Options</CardTitle>
+        <CardDescription>Portions sold — month-to-date</CardDescription>
       </CardHeader>
       <CardContent className="flex-1 pb-0">
         <ChartContainer
@@ -75,8 +76,8 @@ export function TopProducts() {
             />
             <Pie
               data={chartData}
-              dataKey="visitors"
-              nameKey="browser"
+              dataKey="portions"
+              nameKey="meal"
               innerRadius={60}
               strokeWidth={5}
             >
@@ -95,14 +96,14 @@ export function TopProducts() {
                           y={viewBox.cy}
                           className="fill-foreground text-3xl font-bold"
                         >
-                          {totalVisitors.toLocaleString()}
+                          {totalPortions.toLocaleString()}
                         </tspan>
                         <tspan
                           x={viewBox.cx}
                           y={(viewBox.cy || 0) + 24}
                           className="fill-muted-foreground"
                         >
-                          Litres
+                          Portions
                         </tspan>
                       </text>
                     )
@@ -115,10 +116,10 @@ export function TopProducts() {
       </CardContent>
       <CardFooter className="flex-col gap-2 text-sm">
         <div className="flex items-center gap-2 font-medium leading-none">
-          Trending up by 5.2% this month <TrendingUp className="h-4 w-4" />
+          Trending up by 8.4% this month <TrendingUp className="h-4 w-4" />
         </div>
         <div className="leading-none text-muted-foreground">
-          Showing demand for top products in the last month
+          Top 5 meals by portions served this month
         </div>
       </CardFooter>
     </Card>

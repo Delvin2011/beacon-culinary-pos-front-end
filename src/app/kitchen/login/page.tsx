@@ -20,9 +20,9 @@ export default function KitchenLoginPage() {
   const { isAuthenticated, isLoading, user, pinLogin, error, clearError, logout } = useAuth();
 
   const kitchenCashierId = useMemo(() => {
-    const raw = process.env.NEXT_PUBLIC_KITCHEN_CASHIER_ID ?? "5";
+    const raw = process.env.NEXT_PUBLIC_KITCHEN_CASHIER_ID ?? "4";
     const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 5;
+    return Number.isFinite(parsed) ? parsed : 4;
   }, []);
 
   const [pin, setPin] = useState("");

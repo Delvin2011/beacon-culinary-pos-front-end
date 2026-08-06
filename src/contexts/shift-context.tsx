@@ -109,7 +109,7 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
       if (res.status === 409) {
         // Already open — sync state so the UI can redirect correctly
         await fetchCurrentShift();
-        throw new Error("A shift is already open for this cashier.");
+        throw new Error("A shift is currently open on this till. Ask the current cashier to close it first.");
       }
 
       if (!res.ok) {

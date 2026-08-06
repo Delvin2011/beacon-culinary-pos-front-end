@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
+import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
 import { formatZarCurrency } from "@/lib/utils";
 
 type MealPeriod = {
@@ -59,18 +60,47 @@ type DraftLine = {
   invalid?: boolean;
 };
 
+type OrderStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" | "REFUNDED";
+
+type OrderAdjustmentScope = "WHOLE_ORDER" | "EXTRAS_ONLY";
+
+type OrderAdjustmentAction = "VOID" | "REFUND";
+
+type OrderAdjustmentReasonCode =
+  | "WRONG_ORDER"
+  | "CUSTOMER_COMPLAINT"
+  | "KITCHEN_ERROR"
+  | "DUPLICATE_ENTRY"
+  | "OUT_OF_STOCK_ERROR"
+  | "OTHER";
+
+type OrderAdjustmentDto = {
+  id: number;
+  scope: OrderAdjustmentScope;
+  action: OrderAdjustmentAction;
+  reasonCode: OrderAdjustmentReasonCode;
+  note?: string;
+  amount: number;
+  requestedById: number;
+  authorizedById: number;
+  createdAt: string;
+};
+
 type OrderDto = {
   id: number;
   orderNumber: number;
+  status?: OrderStatus;
   orderDate?: string;
   createdAt?: string;
   paymentMethod?: "CASH";
   changeDue: number;
   subtotal: number;
   total: number;
+  originalTotal?: number;
   amountTendered: number;
   printFailed?: boolean;
   lines?: OrderLineDto[];
+  adjustments?: OrderAdjustmentDto[];
 };
 
 type OrderLineDto = {
@@ -90,6 +120,7 @@ type OrderLineExtraDto = {
   priceDelta: number;
   quantity: number;
   lineTotal: number;
+  adjusted?: boolean;
 };
 
 type ApiErrorPayload = {
@@ -102,6 +133,15 @@ type ApiErrorPayload = {
 };
 
 const LOW_STOCK_THRESHOLD = 10;
+
+const ADJUSTMENT_REASON_OPTIONS: Array<{ value: OrderAdjustmentReasonCode; label: string }> = [
+  { value: "WRONG_ORDER", label: "Wrong Order" },
+  { value: "CUSTOMER_COMPLAINT", label: "Customer Complaint" },
+  { value: "KITCHEN_ERROR", label: "Kitchen Error" },
+  { value: "DUPLICATE_ENTRY", label: "Duplicate Entry" },
+  { value: "OUT_OF_STOCK_ERROR", label: "Out of Stock Error" },
+  { value: "OTHER", label: "Other" },
+];
 
 function nowTimeHHMMSS(): string {
   return new Date().toTimeString().slice(0, 8);
@@ -178,6 +218,59 @@ function extractConflictIds(payload: unknown): { optionIds: number[]; extraIds: 
   };
 }
 
+function isTerminalOrderStatus(status?: OrderStatus): boolean {
+  return status === "VOIDED" || status === "REFUNDED";
+}
+
+function hasAnyUnadjustedExtras(order: OrderDto): boolean {
+  return (order.lines ?? []).some((line) =>
+    (line.extras ?? []).some((extra) => extra.adjusted !== true),
+  );
+}
+
+function getTotalMealPortions(order: OrderDto): number {
+  return (order.lines ?? []).reduce((sum, line) => sum + line.quantity, 0);
+}
+
+function getUnadjustedExtraUnits(order: OrderDto): number {
+  return (order.lines ?? []).reduce(
+    (sum, line) =>
+      sum +
+      (line.extras ?? []).reduce(
+        (lineSum, extra) => lineSum + (extra.adjusted ? 0 : extra.quantity),
+        0,
+      ),
+    0,
+  );
+}
+
+function latestAdjustment(order: OrderDto): OrderAdjustmentDto | null {
+  const adjustments = Array.isArray(order.adjustments) ? order.adjustments : [];
+  if (adjustments.length === 0) return null;
+  return adjustments.reduce((latest, current) => {
+    const latestTime = new Date(latest.createdAt).getTime();
+    const currentTime = new Date(current.createdAt).getTime();
+    return currentTime > latestTime ? current : latest;
+  });
+}
+
+function adjustmentActionLabel(action: OrderAdjustmentAction): string {
+  return action === "VOID" ? "Voided" : "Refunded";
+}
+
+function alreadyAdjustedMessage(order: OrderDto): string {
+  if (order.status === "VOIDED") return "This order has already been voided.";
+  if (order.status === "REFUNDED") return "This order has already been refunded.";
+  if (!hasAnyUnadjustedExtras(order)) return "This order has already had its extras removed.";
+  return "This order was already adjusted. The latest state has been loaded.";
+}
+
+function isTokenIssue(status: number, message: string): boolean {
+  if (status === 401) return true;
+  const normalized = message.toLowerCase();
+  return normalized.includes("token") || normalized.includes("expired") || normalized.includes("used");
+}
+
 export function PosOrderBuilder() {
   const { authFetch } = useAuth();
 
@@ -208,6 +301,17 @@ export function PosOrderBuilder() {
   const [todayOrdersLoading, setTodayOrdersLoading] = useState(false);
   const [todayOrdersError, setTodayOrdersError] = useState<string | null>(null);
   const [showTodayOrdersPanel, setShowTodayOrdersPanel] = useState(false);
+  const [adjustmentScope, setAdjustmentScope] = useState<OrderAdjustmentScope | null>(null);
+  const [adjustmentReasonCode, setAdjustmentReasonCode] = useState<OrderAdjustmentReasonCode>("WRONG_ORDER");
+  const [adjustmentNote, setAdjustmentNote] = useState("");
+  const [showAdjustmentForm, setShowAdjustmentForm] = useState(false);
+  const [showManagerPinOverlay, setShowManagerPinOverlay] = useState(false);
+  const [managerPinInput, setManagerPinInput] = useState("");
+  const [adjustmentError, setAdjustmentError] = useState<string | null>(null);
+  const [adjustmentFormError, setAdjustmentFormError] = useState<string | null>(null);
+  const [managerPinError, setManagerPinError] = useState<string | null>(null);
+  const [isApplyingAdjustment, setIsApplyingAdjustment] = useState(false);
+  const [adjustmentSuccess, setAdjustmentSuccess] = useState<string | null>(null);
 
   const selectedPeriod = useMemo(
     () => periods.find((p) => p.id === selectedPeriodId) ?? null,
@@ -429,7 +533,7 @@ export function PosOrderBuilder() {
   };
 
   const loadOrderReceipt = useCallback(
-    async (orderId: number) => {
+    async (orderId: number): Promise<OrderDto | null> => {
       setReceiptLoading(true);
       setReceiptError(null);
       try {
@@ -438,10 +542,14 @@ export function PosOrderBuilder() {
         if (!res.ok || !body) {
           throw new Error(parseMessage(body, "Unable to load receipt."));
         }
-        setReceiptOrder(body as OrderDto);
+        const nextOrder = body as OrderDto;
+        setReceiptOrder(nextOrder);
+        setCompletedOrder(nextOrder);
+        return nextOrder;
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Unable to load receipt.";
         setReceiptError(msg);
+        return null;
       } finally {
         setReceiptLoading(false);
       }
@@ -540,6 +648,176 @@ export function PosOrderBuilder() {
     }
   };
 
+  const beginAdjustment = (scope: OrderAdjustmentScope) => {
+    setAdjustmentScope(scope);
+    setShowAdjustmentForm(true);
+    setShowManagerPinOverlay(false);
+    setManagerPinInput("");
+    setAdjustmentFormError(null);
+    setManagerPinError(null);
+    setAdjustmentError(null);
+    setAdjustmentSuccess(null);
+  };
+
+  const continueToPin = () => {
+    if (!adjustmentScope) return;
+
+    const trimmedNote = adjustmentNote.trim();
+    if (adjustmentReasonCode === "OTHER" && trimmedNote.length === 0) {
+      setAdjustmentFormError("A note is required when reason is Other.");
+      return;
+    }
+
+    setAdjustmentFormError(null);
+    setManagerPinError(null);
+    setShowManagerPinOverlay(true);
+  };
+
+  const submitAdjustment = useCallback(
+    async (order: OrderDto) => {
+      if (!adjustmentScope || managerPinInput.trim().length < 4) {
+        setManagerPinError("Enter the manager PIN to continue.");
+        return;
+      }
+
+      setIsApplyingAdjustment(true);
+      setManagerPinError(null);
+      setAdjustmentError(null);
+
+      try {
+        const authorizeRes = await authFetch("/admin/authorize", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ pin: managerPinInput }),
+        });
+
+        const authorizeBody = (await authorizeRes.json().catch(() => null)) as
+          | { authorizationToken?: string }
+          | ApiErrorPayload
+          | null;
+
+        if (authorizeRes.status === 401) {
+          setManagerPinError("Incorrect manager PIN. Try again.");
+          setManagerPinInput("");
+          return;
+        }
+
+        if (!authorizeRes.ok) {
+          throw new Error(parseMessage(authorizeBody, "Authorization failed."));
+        }
+
+        const authorizationToken =
+          authorizeBody && typeof authorizeBody === "object" && "authorizationToken" in authorizeBody
+            ? (authorizeBody as { authorizationToken?: string }).authorizationToken
+            : undefined;
+
+        if (!authorizationToken) {
+          throw new Error("Authorization token was not returned.");
+        }
+
+        const adjustmentRes = await authFetch(`/orders/${order.id}/adjustments`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            scope: adjustmentScope,
+            reasonCode: adjustmentReasonCode,
+            note: adjustmentNote.trim() || undefined,
+            authorizationToken,
+          }),
+        });
+
+        const adjustmentBody = (await adjustmentRes.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
+
+        if (!adjustmentRes.ok) {
+          const parsedMessage = parseMessage(adjustmentBody, "Unable to apply adjustment.");
+
+          if (adjustmentRes.status === 409) {
+            const refreshed = await loadOrderReceipt(order.id);
+            await loadTodayOrders();
+            setShowManagerPinOverlay(false);
+            setShowAdjustmentForm(false);
+            setAdjustmentError(alreadyAdjustedMessage(refreshed ?? order));
+            return;
+          }
+
+          if (isTokenIssue(adjustmentRes.status, parsedMessage)) {
+            await loadOrderReceipt(order.id);
+            await loadTodayOrders();
+            setShowManagerPinOverlay(false);
+            setShowAdjustmentForm(false);
+            setManagerPinInput("");
+            setAdjustmentError("Authorization expired or was already used. Start again with a fresh manager PIN.");
+            return;
+          }
+
+          if (adjustmentRes.status === 400) {
+            await loadOrderReceipt(order.id);
+            setShowManagerPinOverlay(false);
+            setShowAdjustmentForm(false);
+            setManagerPinInput("");
+            setAdjustmentError(parsedMessage);
+            return;
+          }
+
+          throw new Error(parsedMessage);
+        }
+
+        const updatedOrder = adjustmentBody as OrderDto;
+        const recent = latestAdjustment(updatedOrder);
+
+        setCompletedOrder(updatedOrder);
+        setReceiptOrder(updatedOrder);
+        await loadTodayOrders();
+
+        const amount = recent?.amount ?? Math.max(0, (order.total ?? 0) - (updatedOrder.total ?? 0));
+        const action = recent?.action ?? (updatedOrder.status === "VOIDED" ? "VOID" : "REFUND");
+        const scope = recent?.scope ?? adjustmentScope;
+
+        if (action === "VOID") {
+          if (scope === "WHOLE_ORDER") {
+            const portionsReturned = getTotalMealPortions(order);
+            const extraUnitsReturned = getUnadjustedExtraUnits(order);
+            const extraSuffix = extraUnitsReturned > 0 ? ` and ${extraUnitsReturned} extra units` : "";
+            setAdjustmentSuccess(
+              `${adjustmentActionLabel(action)} ${toMoney(amount)}. ${portionsReturned} portions${extraSuffix} returned to today's stock.`,
+            );
+          } else {
+            const extraUnitsReturned = getUnadjustedExtraUnits(order);
+            const detail =
+              extraUnitsReturned > 0
+                ? `${extraUnitsReturned} extra units returned to today's stock.`
+                : "Extras were removed and today's stock was restored.";
+            setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. ${detail}`);
+          }
+        } else {
+          setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. No stock was restored.`);
+        }
+
+        setShowManagerPinOverlay(false);
+        setShowAdjustmentForm(false);
+        setManagerPinInput("");
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Unable to apply adjustment.";
+        setManagerPinError(msg);
+      } finally {
+        setIsApplyingAdjustment(false);
+      }
+    },
+    [
+      adjustmentNote,
+      adjustmentReasonCode,
+      adjustmentScope,
+      authFetch,
+      loadOrderReceipt,
+      loadTodayOrders,
+      managerPinInput,
+    ],
+  );
+
   const selectedOptionPreviewTotal = useMemo(() => {
     if (!selectedOption) return 0;
     const extrasTotal = periodExtras.reduce((sum, ex) => {
@@ -551,7 +829,11 @@ export function PosOrderBuilder() {
 
   if (completedOrderId !== null && completedOrder) {
     const shownOrder = receiptOrder ?? completedOrder;
+    const terminalOrder = isTerminalOrderStatus(shownOrder.status);
+    const canRemoveExtras = hasAnyUnadjustedExtras(shownOrder);
+    const selectedScopeLabel = adjustmentScope === "WHOLE_ORDER" ? "Cancel Order" : "Remove Extras";
     return (
+      <>
       <main className="grid flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-8">
           <div className="flex items-center gap-2 text-emerald-300">
@@ -566,8 +848,10 @@ export function PosOrderBuilder() {
           <p className="text-6xl font-black text-white">{toMoney(shownOrder.changeDue)}</p>
 
           <div className="mt-8 grid gap-2 text-sm text-emerald-100">
+            {shownOrder.status && <p>Status: {shownOrder.status.replace("_", " ")}</p>}
             <p>Subtotal: {toMoney(shownOrder.subtotal)}</p>
             <p>Total: {toMoney(shownOrder.total)}</p>
+            {typeof shownOrder.originalTotal === "number" && <p>Original Total: {toMoney(shownOrder.originalTotal)}</p>}
             <p>Tendered: {toMoney(shownOrder.amountTendered)}</p>
             {typeof shownOrder.printFailed === "boolean" && (
               <p>Print Failed: {shownOrder.printFailed ? "Yes" : "No"}</p>
@@ -577,6 +861,18 @@ export function PosOrderBuilder() {
           {receiptError && (
             <div className="mt-6 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
               {receiptError}
+            </div>
+          )}
+
+          {adjustmentError && (
+            <div className="mt-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-200">
+              {adjustmentError}
+            </div>
+          )}
+
+          {adjustmentSuccess && (
+            <div className="mt-4 rounded-xl border border-emerald-300/40 bg-emerald-500/15 p-3 text-sm text-emerald-100">
+              {adjustmentSuccess}
             </div>
           )}
 
@@ -647,6 +943,117 @@ export function PosOrderBuilder() {
               </div>
             )}
           </div>
+
+          {!terminalOrder && (
+            <div className="mt-8 rounded-2xl border border-amber-300/30 bg-amber-500/10 p-4">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-100">Order Adjustment</h3>
+              <p className="mt-2 text-sm text-amber-100/90">Manager authorization is required.</p>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => beginAdjustment("WHOLE_ORDER")}
+                  className="rounded-lg border border-rose-300/40 bg-rose-500/20 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/30"
+                >
+                  Cancel Order
+                </button>
+                <button
+                  type="button"
+                  disabled={!canRemoveExtras}
+                  onClick={() => beginAdjustment("EXTRAS_ONLY")}
+                  className="rounded-lg border border-amber-200/40 bg-amber-500/20 px-3 py-2 text-sm font-semibold text-amber-50 hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Remove Extras
+                </button>
+              </div>
+
+              {!canRemoveExtras && (
+                <p className="mt-2 text-xs text-amber-100/80">
+                  Remove Extras is unavailable because this order has no removable extras.
+                </p>
+              )}
+
+              {showAdjustmentForm && (
+                <div className="mt-4 rounded-xl border border-amber-300/30 bg-slate-950/50 p-4">
+                  <p className="text-sm font-semibold text-white">{selectedScopeLabel}</p>
+                  <p className="mt-1 text-xs text-slate-300">Select a reason:</p>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {ADJUSTMENT_REASON_OPTIONS.map((option) => {
+                      const active = option.value === adjustmentReasonCode;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => {
+                            setAdjustmentReasonCode(option.value);
+                            if (option.value !== "OTHER") {
+                              setAdjustmentFormError(null);
+                            }
+                          }}
+                          className={`rounded-xl border px-3 py-3 text-left text-sm font-semibold transition-colors ${
+                            active
+                              ? "border-amber-300 bg-amber-400/25 text-amber-50"
+                              : "border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800"
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-3">
+                    <label htmlFor="adjustment-note" className="text-xs font-medium text-slate-200">
+                      Note {adjustmentReasonCode === "OTHER" ? "(required)" : "(optional)"}
+                    </label>
+                    <textarea
+                      id="adjustment-note"
+                      value={adjustmentNote}
+                      onChange={(event) => {
+                        setAdjustmentNote(event.target.value);
+                        if (adjustmentReasonCode === "OTHER" && event.target.value.trim().length > 0) {
+                          setAdjustmentFormError(null);
+                        }
+                      }}
+                      rows={3}
+                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-300"
+                      placeholder="Add context for audit history"
+                    />
+                  </div>
+
+                  {adjustmentFormError && (
+                    <div className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/15 p-2 text-xs text-rose-200">
+                      {adjustmentFormError}
+                    </div>
+                  )}
+
+                  <div className="mt-3 flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAdjustmentForm(false);
+                        setShowManagerPinOverlay(false);
+                        setManagerPinInput("");
+                        setManagerPinError(null);
+                        setAdjustmentFormError(null);
+                      }}
+                      className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={continueToPin}
+                      className="rounded-lg bg-amber-400 px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300"
+                    >
+                      Request Manager PIN
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <aside className="rounded-3xl border border-slate-800 bg-slate-900 p-5">
@@ -699,6 +1106,24 @@ export function PosOrderBuilder() {
           )}
         </aside>
       </main>
+      <AdminAuthorizationOverlay
+        isOpen={showManagerPinOverlay}
+        title="Manager PIN Required"
+        description={`Enter admin PIN to approve ${selectedScopeLabel.toLowerCase()}.`}
+        pin={managerPinInput}
+        onPinChange={setManagerPinInput}
+        error={managerPinError}
+        submitting={isApplyingAdjustment}
+        submitLabel="Authorize & Apply"
+        canSubmit={managerPinInput.trim().length >= 4}
+        onBack={() => {
+          setShowManagerPinOverlay(false);
+          setManagerPinInput("");
+          setManagerPinError(null);
+        }}
+        onSubmit={() => void submitAdjustment(shownOrder)}
+      />
+      </>
     );
   }
 

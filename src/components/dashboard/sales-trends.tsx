@@ -25,110 +25,85 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+// Daily portions sold by meal period over 3 months (dummy data)
 const chartData = [
-  { date: "2024-11-01", petrol: 222, diesel: 150 },
-  { date: "2024-11-02", petrol: 97, diesel: 180 },
-  { date: "2024-11-03", petrol: 167, diesel: 120 },
-  { date: "2024-11-04", petrol: 242, diesel: 260 },
-  { date: "2024-11-05", petrol: 373, diesel: 290 },
-  { date: "2024-11-06", petrol: 301, diesel: 340 },
-  { date: "2024-11-07", petrol: 245, diesel: 180 },
-  { date: "2024-11-08", petrol: 409, diesel: 320 },
-  { date: "2024-11-09", petrol: 59, diesel: 110 },
-  { date: "2024-11-10", petrol: 261, diesel: 190 },
-  { date: "2024-11-11", petrol: 327, diesel: 350 },
-  { date: "2024-11-12", petrol: 292, diesel: 210 },
-  { date: "2024-11-13", petrol: 342, diesel: 380 },
-  { date: "2024-11-14", petrol: 137, diesel: 220 },
-  { date: "2024-11-15", petrol: 120, diesel: 170 },
-  { date: "2024-11-16", petrol: 138, diesel: 190 },
-  { date: "2024-11-17", petrol: 446, diesel: 360 },
-  { date: "2024-11-18", petrol: 364, diesel: 410 },
-  { date: "2024-11-19", petrol: 243, diesel: 180 },
-  { date: "2024-11-20", petrol: 89, diesel: 150 },
-  { date: "2024-11-21", petrol: 137, diesel: 200 },
-  { date: "2024-11-22", petrol: 224, diesel: 170 },
-  { date: "2024-11-23", petrol: 138, diesel: 230 },
-  { date: "2024-11-24", petrol: 387, diesel: 290 },
-  { date: "2024-11-25", petrol: 215, diesel: 250 },
-  { date: "2024-11-26", petrol: 75, diesel: 130 },
-  { date: "2024-11-27", petrol: 383, diesel: 420 },
-  { date: "2024-11-28", petrol: 122, diesel: 180 },
-  { date: "2024-11-29", petrol: 315, diesel: 240 },
-  { date: "2024-11-30", petrol: 454, diesel: 380 },
-  { date: "2024-12-01", petrol: 165, diesel: 220 },
-  { date: "2024-12-02", petrol: 293, diesel: 310 },
-  { date: "2024-12-03", petrol: 247, diesel: 190 },
-  { date: "2024-12-04", petrol: 385, diesel: 420 },
-  { date: "2024-12-05", petrol: 481, diesel: 390 },
-  { date: "2024-12-06", petrol: 498, diesel: 520 },
-  { date: "2024-12-07", petrol: 388, diesel: 300 },
-  { date: "2024-12-08", petrol: 149, diesel: 210 },
-  { date: "2024-12-09", petrol: 227, diesel: 180 },
-  { date: "2024-12-10", petrol: 293, diesel: 330 },
-  { date: "2024-12-11", petrol: 335, diesel: 270 },
-  { date: "2024-12-12", petrol: 197, diesel: 240 },
-  { date: "2024-12-13", petrol: 197, diesel: 160 },
-  { date: "2024-12-14", petrol: 448, diesel: 490 },
-  { date: "2024-12-15", petrol: 473, diesel: 380 },
-  { date: "2024-12-16", petrol: 338, diesel: 400 },
-  { date: "2024-12-17", petrol: 499, diesel: 420 },
-  { date: "2024-12-18", petrol: 315, diesel: 350 },
-  { date: "2024-12-19", petrol: 235, diesel: 180 },
-  { date: "2024-12-20", petrol: 177, diesel: 230 },
-  { date: "2024-12-21", petrol: 82, diesel: 140 },
-  { date: "2024-12-22", petrol: 81, diesel: 120 },
-  { date: "2024-12-23", petrol: 252, diesel: 290 },
-  { date: "2024-12-24", petrol: 294, diesel: 220 },
-  { date: "2024-12-25", petrol: 201, diesel: 250 },
-  { date: "2024-12-26", petrol: 213, diesel: 170 },
-  { date: "2024-12-27", petrol: 420, diesel: 460 },
-  { date: "2024-12-28", petrol: 233, diesel: 190 },
-  { date: "2024-12-29", petrol: 78, diesel: 130 },
-  { date: "2024-12-30", petrol: 340, diesel: 280 },
-  { date: "2024-12-31", petrol: 178, diesel: 230 },
-  { date: "2025-01-01", petrol: 178, diesel: 200 },
-  { date: "2025-01-02", petrol: 470, diesel: 410 },
-  { date: "2025-01-03", petrol: 103, diesel: 160 },
-  { date: "2025-01-04", petrol: 439, diesel: 380 },
-  { date: "2025-01-05", petrol: 88, diesel: 140 },
-  { date: "2025-01-06", petrol: 294, diesel: 250 },
-  { date: "2025-01-07", petrol: 323, diesel: 370 },
-  { date: "2025-01-08", petrol: 385, diesel: 320 },
-  { date: "2025-01-09", petrol: 438, diesel: 480 },
-  { date: "2025-01-10", petrol: 155, diesel: 200 },
-  { date: "2025-01-11", petrol: 92, diesel: 150 },
-  { date: "2025-01-12", petrol: 492, diesel: 420 },
-  { date: "2025-01-13", petrol: 81, diesel: 130 },
-  { date: "2025-01-14", petrol: 426, diesel: 380 },
-  { date: "2025-01-15", petrol: 307, diesel: 350 },
-  { date: "2025-01-16", petrol: 371, diesel: 310 },
-  { date: "2025-01-17", petrol: 475, diesel: 520 },
-  { date: "2025-01-18", petrol: 107, diesel: 170 },
-  { date: "2025-01-19", petrol: 341, diesel: 290 },
-  { date: "2025-01-20", petrol: 408, diesel: 450 },
-  { date: "2025-01-21", petrol: 169, diesel: 210 },
-  { date: "2025-01-22", petrol: 317, diesel: 270 },
-  { date: "2025-01-23", petrol: 480, diesel: 530 },
-  { date: "2025-01-24", petrol: 132, diesel: 180 },
-  { date: "2025-01-25", petrol: 141, diesel: 190 },
-  { date: "2025-01-26", petrol: 434, diesel: 380 },
-  { date: "2025-01-27", petrol: 448, diesel: 490 },
-  { date: "2025-01-28", petrol: 149, diesel: 200 },
-  { date: "2025-01-29", petrol: 103, diesel: 160 },
-  { date: "2025-01-30", petrol: 446, diesel: 400 },
+  { date: "2025-05-01", breakfast: 48, lunch: 112 },
+  { date: "2025-05-02", breakfast: 52, lunch: 98 },
+  { date: "2025-05-05", breakfast: 61, lunch: 130 },
+  { date: "2025-05-06", breakfast: 55, lunch: 121 },
+  { date: "2025-05-07", breakfast: 49, lunch: 108 },
+  { date: "2025-05-08", breakfast: 63, lunch: 135 },
+  { date: "2025-05-09", breakfast: 44, lunch: 97 },
+  { date: "2025-05-12", breakfast: 70, lunch: 142 },
+  { date: "2025-05-13", breakfast: 58, lunch: 119 },
+  { date: "2025-05-14", breakfast: 53, lunch: 125 },
+  { date: "2025-05-15", breakfast: 67, lunch: 138 },
+  { date: "2025-05-16", breakfast: 41, lunch: 90 },
+  { date: "2025-05-19", breakfast: 72, lunch: 148 },
+  { date: "2025-05-20", breakfast: 60, lunch: 129 },
+  { date: "2025-05-21", breakfast: 55, lunch: 118 },
+  { date: "2025-05-22", breakfast: 68, lunch: 143 },
+  { date: "2025-05-23", breakfast: 50, lunch: 103 },
+  { date: "2025-05-26", breakfast: 74, lunch: 151 },
+  { date: "2025-05-27", breakfast: 62, lunch: 133 },
+  { date: "2025-05-28", breakfast: 57, lunch: 122 },
+  { date: "2025-05-29", breakfast: 69, lunch: 140 },
+  { date: "2025-05-30", breakfast: 45, lunch: 95 },
+  { date: "2025-06-02", breakfast: 76, lunch: 155 },
+  { date: "2025-06-03", breakfast: 64, lunch: 136 },
+  { date: "2025-06-04", breakfast: 59, lunch: 126 },
+  { date: "2025-06-05", breakfast: 71, lunch: 145 },
+  { date: "2025-06-06", breakfast: 47, lunch: 100 },
+  { date: "2025-06-09", breakfast: 78, lunch: 158 },
+  { date: "2025-06-10", breakfast: 66, lunch: 139 },
+  { date: "2025-06-11", breakfast: 61, lunch: 128 },
+  { date: "2025-06-12", breakfast: 73, lunch: 149 },
+  { date: "2025-06-13", breakfast: 49, lunch: 104 },
+  { date: "2025-06-16", breakfast: 80, lunch: 162 },
+  { date: "2025-06-17", breakfast: 68, lunch: 142 },
+  { date: "2025-06-18", breakfast: 63, lunch: 131 },
+  { date: "2025-06-19", breakfast: 75, lunch: 152 },
+  { date: "2025-06-20", breakfast: 51, lunch: 107 },
+  { date: "2025-06-23", breakfast: 82, lunch: 165 },
+  { date: "2025-06-24", breakfast: 70, lunch: 145 },
+  { date: "2025-06-25", breakfast: 65, lunch: 134 },
+  { date: "2025-06-26", breakfast: 77, lunch: 156 },
+  { date: "2025-06-27", breakfast: 53, lunch: 110 },
+  { date: "2025-06-30", breakfast: 84, lunch: 168 },
+  { date: "2025-07-01", breakfast: 72, lunch: 148 },
+  { date: "2025-07-02", breakfast: 67, lunch: 137 },
+  { date: "2025-07-03", breakfast: 79, lunch: 159 },
+  { date: "2025-07-04", breakfast: 55, lunch: 113 },
+  { date: "2025-07-07", breakfast: 86, lunch: 171 },
+  { date: "2025-07-08", breakfast: 74, lunch: 151 },
+  { date: "2025-07-09", breakfast: 69, lunch: 140 },
+  { date: "2025-07-10", breakfast: 81, lunch: 163 },
+  { date: "2025-07-11", breakfast: 57, lunch: 116 },
+  { date: "2025-07-14", breakfast: 88, lunch: 174 },
+  { date: "2025-07-15", breakfast: 76, lunch: 154 },
+  { date: "2025-07-16", breakfast: 71, lunch: 143 },
+  { date: "2025-07-17", breakfast: 83, lunch: 166 },
+  { date: "2025-07-18", breakfast: 59, lunch: 119 },
+  { date: "2025-07-21", breakfast: 90, lunch: 177 },
+  { date: "2025-07-22", breakfast: 78, lunch: 157 },
+  { date: "2025-07-23", breakfast: 73, lunch: 146 },
+  { date: "2025-07-24", breakfast: 85, lunch: 169 },
+  { date: "2025-07-25", breakfast: 61, lunch: 122 },
+  { date: "2025-07-28", breakfast: 92, lunch: 180 },
+  { date: "2025-07-29", breakfast: 80, lunch: 160 },
+  { date: "2025-07-30", breakfast: 75, lunch: 149 },
 ]
 
 const chartConfig = {
-  visitors: {
-    label: "Visitors",
+  portions: {
+    label: "Portions",
   },
-  petrol: {
-    label: "petrol",
+  breakfast: {
+    label: "Breakfast",
     color: "hsl(var(--chart-1))",
   },
-  diesel: {
-    label: "diesel",
+  lunch: {
+    label: "Lunch",
     color: "hsl(var(--chart-2))",
   },
 } satisfies ChartConfig
@@ -138,7 +113,7 @@ export function SalesTrends() {
 
   const filteredData = chartData.filter((item) => {
     const date = new Date(item.date)
-    const referenceDate = new Date("2025-01-30")
+    const referenceDate = new Date("2025-07-30")
     let daysToSubtract = 90
     if (timeRange === "30d") {
       daysToSubtract = 30
@@ -154,9 +129,9 @@ export function SalesTrends() {
     <Card>
       <CardHeader className="flex items-center gap-2 space-y-0 border-b py-5 sm:flex-row">
         <div className="grid flex-1 gap-1 text-center sm:text-left">
-          <CardTitle>Fuel Sold by Type</CardTitle>
+          <CardTitle>Portions Served by Meal Period</CardTitle>
           <CardDescription>
-            Showing total litres by day sold for the last 3 months
+            Breakfast vs Lunch portions served per day
           </CardDescription>
         </div>
         <Select value={timeRange} onValueChange={setTimeRange}>
@@ -186,27 +161,27 @@ export function SalesTrends() {
         >
           <AreaChart data={filteredData}>
             <defs>
-              <linearGradient id="fillpetrol" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id="fillbreakfast" x1="0" y1="0" x2="0" y2="1">
                 <stop
                   offset="5%"
-                  stopColor="var(--color-petrol)"
+                  stopColor="var(--color-breakfast)"
                   stopOpacity={0.8}
                 />
                 <stop
                   offset="95%"
-                  stopColor="var(--color-petrol)"
+                  stopColor="var(--color-breakfast)"
                   stopOpacity={0.1}
                 />
               </linearGradient>
-              <linearGradient id="filldiesel" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id="filllunch" x1="0" y1="0" x2="0" y2="1">
                 <stop
                   offset="5%"
-                  stopColor="var(--color-diesel)"
+                  stopColor="var(--color-lunch)"
                   stopOpacity={0.8}
                 />
                 <stop
                   offset="95%"
-                  stopColor="var(--color-diesel)"
+                  stopColor="var(--color-lunch)"
                   stopOpacity={0.1}
                 />
               </linearGradient>
@@ -241,17 +216,17 @@ export function SalesTrends() {
               }
             />
             <Area
-              dataKey="diesel"
+              dataKey="lunch"
               type="natural"
-              fill="url(#filldiesel)"
-              stroke="var(--color-diesel)"
+              fill="url(#filllunch)"
+              stroke="var(--color-lunch)"
               stackId="a"
             />
             <Area
-              dataKey="petrol"
+              dataKey="breakfast"
               type="natural"
-              fill="url(#fillpetrol)"
-              stroke="var(--color-petrol)"
+              fill="url(#fillbreakfast)"
+              stroke="var(--color-breakfast)"
               stackId="a"
             />
             <ChartLegend content={<ChartLegendContent />} />

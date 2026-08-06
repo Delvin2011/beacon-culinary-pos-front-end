@@ -17,7 +17,6 @@ import {
 import {TodayStats} from '../../components/dashboard/today-stats'
 import {TopProducts} from '../../components/dashboard/top-products'
 import {SalesTrends} from '../../components/dashboard/sales-trends'
-import {TopCustomersHeatMap} from '../../components/dashboard/top-customers-heat-map'
 
 
 export default function Page() {
@@ -32,7 +31,7 @@ export default function Page() {
             <Breadcrumb>
               <BreadcrumbList>
                 <BreadcrumbItem className="hidden md:block">
-                Building Your Application
+                Canteen Insigts
                 </BreadcrumbItem>
                 <BreadcrumbSeparator className="hidden md:block" />
                 <BreadcrumbItem>
@@ -50,9 +49,6 @@ export default function Page() {
             </div>
             <div className="p-4">
               <SalesTrends />
-            </div>
-            <div className="p-4 col-span-1 md:col-span-2">
-              <TopCustomersHeatMap />
             </div>
           </div>
         </div>
