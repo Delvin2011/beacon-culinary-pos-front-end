@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useAuth } from "@/hooks/use-auth"
 import { AppSidebar } from "@/components/app-sidebar"
@@ -11,10 +11,10 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { toast } from "@/hooks/use-toast"
 import { formatZarCurrency } from "@/lib/utils"
-
-// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface MealPeriod {
   id: number
@@ -48,7 +48,6 @@ interface DailyMealOption {
 
 interface DailyComponentStock {
   id: number
-  // Backend may expose component name under either field
   componentName?: string
   name?: string
   extraPrice: number
@@ -61,7 +60,34 @@ interface TodayPlan {
   availableExtras: DailyComponentStock[]
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+interface IngredientRequirementDto {
+  ingredientId: number
+  name: string
+  unit: "KG" | "LITRE" | "EACH"
+  calculatedQuantity: number
+  currentStock: number
+}
+
+interface IngredientRequirementsResponseDto {
+  requirements: IngredientRequirementDto[]
+}
+
+interface IngredientShortfallDto {
+  ingredientId: number
+  name: string
+  unit: "KG" | "LITRE" | "EACH"
+  finalQuantity: number
+  resultingStock: number
+}
+
+interface ConfirmIngredientRequirementsResponseDto {
+  shortfalls: IngredientShortfallDto[]
+}
+
+type RequirementRow = IngredientRequirementDto & {
+  editedQuantity: string
+  isEdited: boolean
+}
 
 function todayISO(): string {
   return new Date().toISOString().split("T")[0]
@@ -80,8 +106,6 @@ function formatPeriodTime(value: string | null): string {
   return value.slice(0, 5)
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
-
 export default function DailyPlanningPage() {
   const router = useRouter()
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth()
@@ -95,26 +119,31 @@ export default function DailyPlanningPage() {
   const [todayPlan, setTodayPlan] = useState<TodayPlan | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
 
-  // Meal option form
   const [selectedMealId, setSelectedMealId] = useState("")
   const [plannedPortions, setPlannedPortions] = useState("")
   const [mealOptionSaving, setMealOptionSaving] = useState(false)
   const [mealOptionError, setMealOptionError] = useState<string | null>(null)
 
-  // Component stock form
   const [selectedComponentId, setSelectedComponentId] = useState("")
   const [bufferQuantity, setBufferQuantity] = useState("")
   const [stockSaving, setStockSaving] = useState(false)
   const [stockError, setStockError] = useState<string | null>(null)
 
-  // ── Role guard ─────────────────────────────────────────────────────────────
+  const [requirementsDialogOpen, setRequirementsDialogOpen] = useState(false)
+  const [requirementsLoading, setRequirementsLoading] = useState(false)
+  const [requirementsError, setRequirementsError] = useState<string | null>(null)
+  const [requirementsRows, setRequirementsRows] = useState<RequirementRow[]>([])
+  const [confirmingRequirements, setConfirmingRequirements] = useState(false)
+  const [confirmRequirementsError, setConfirmRequirementsError] = useState<string | null>(null)
+  const [confirmRequirementsSuccess, setConfirmRequirementsSuccess] = useState<string | null>(null)
+  const [requirementShortfalls, setRequirementShortfalls] = useState<IngredientShortfallDto[]>([])
+
   useEffect(() => {
     if (authLoading) return
     if (!isAuthenticated) { router.replace("/login"); return }
     if (!user?.role?.toUpperCase().includes("ADMIN")) router.replace("/dashboard")
   }, [authLoading, isAuthenticated, user, router])
 
-  // ── Data fetching ──────────────────────────────────────────────────────────
   const fetchPeriods = useCallback(async () => {
     try {
       const res = await authFetch("/meal-periods")
@@ -122,7 +151,9 @@ export default function DailyPlanningPage() {
       const data = (await res.json()) as MealPeriod[]
       setPeriods(data)
       if (data.length > 0) setSelectedPeriod(data[0])
-    } catch { /* no-op */ }
+    } catch {
+      // no-op
+    }
   }, [authFetch])
 
   const fetchCatalogs = useCallback(async () => {
@@ -133,7 +164,9 @@ export default function DailyPlanningPage() {
       ])
       if (mRes.ok) setMealCatalog((await mRes.json()) as MealCatalogEntry[])
       if (cRes.ok) setComponentCatalog((await cRes.json()) as ComponentCatalogEntry[])
-    } catch { /* no-op */ }
+    } catch {
+      // no-op
+    }
   }, [authFetch])
 
   const fetchTodayPlan = useCallback(async (period: MealPeriod) => {
@@ -141,29 +174,57 @@ export default function DailyPlanningPage() {
     try {
       const res = await authFetch(`/menu/today?period=${period.name.toUpperCase()}`)
       if (res.ok) setTodayPlan((await res.json()) as TodayPlan)
-    } catch { /* no-op */ } finally {
+    } catch {
+      // no-op
+    } finally {
       setPlanLoading(false)
+    }
+  }, [authFetch])
+
+  const loadIngredientRequirements = useCallback(async (period: MealPeriod) => {
+    setRequirementsLoading(true)
+    setRequirementsError(null)
+    setConfirmRequirementsError(null)
+    setConfirmRequirementsSuccess(null)
+    setRequirementShortfalls([])
+    try {
+      const res = await authFetch(`/admin/daily-planning/${todayISO()}/ingredient-requirements?period=${period.name.toUpperCase()}`)
+      const body = (await res.json().catch(() => null)) as IngredientRequirementsResponseDto | unknown
+      if (!res.ok || !body) {
+        throw new Error(parseError(body, "Unable to load ingredient requirements."))
+      }
+      const requirements = Array.isArray((body as IngredientRequirementsResponseDto).requirements)
+        ? (body as IngredientRequirementsResponseDto).requirements
+        : []
+      setRequirementsRows(requirements.map((row) => ({ ...row, editedQuantity: String(row.calculatedQuantity), isEdited: false })))
+      setRequirementsDialogOpen(true)
+    } catch (err) {
+      setRequirementsError(err instanceof Error ? err.message : "Unable to load ingredient requirements.")
+      setRequirementsDialogOpen(true)
+      setRequirementsRows([])
+    } finally {
+      setRequirementsLoading(false)
     }
   }, [authFetch])
 
   useEffect(() => {
     if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
-      fetchPeriods()
-      fetchCatalogs()
+      void fetchPeriods()
+      void fetchCatalogs()
     }
   }, [isAuthenticated, user, fetchPeriods, fetchCatalogs])
 
   useEffect(() => {
-    if (selectedPeriod) fetchTodayPlan(selectedPeriod)
+    if (selectedPeriod) void fetchTodayPlan(selectedPeriod)
   }, [selectedPeriod, fetchTodayPlan])
 
-  // ── Derived values ─────────────────────────────────────────────────────────
-  const selectedMeal = mealCatalog.find((m) => String(m.id) === selectedMealId)
-  const selectedComponent = componentCatalog.find((c) => String(c.id) === selectedComponentId)
+  const selectedMeal = mealCatalog.find((meal) => String(meal.id) === selectedMealId)
+  const selectedComponent = componentCatalog.find((component) => String(component.id) === selectedComponentId)
 
-  // ── Form handlers ──────────────────────────────────────────────────────────
-  const handleAddMealOption = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const hasPlannedItems = (todayPlan?.options.length ?? 0) > 0 || (todayPlan?.availableExtras.length ?? 0) > 0
+
+  const handleAddMealOption = async (event: React.FormEvent) => {
+    event.preventDefault()
     if (!selectedPeriod || !selectedMealId || !plannedPortions) return
     setMealOptionSaving(true)
     setMealOptionError(null)
@@ -184,7 +245,8 @@ export default function DailyPlanningPage() {
       }
       setSelectedMealId("")
       setPlannedPortions("")
-      fetchTodayPlan(selectedPeriod)
+      void fetchTodayPlan(selectedPeriod)
+      toast({ title: "Meal option added", description: `${selectedMeal?.name ?? "Meal option"} was added to ${selectedPeriod.name}.` })
     } catch (err) {
       setMealOptionError(err instanceof Error ? err.message : "Failed to add meal option.")
     } finally {
@@ -192,8 +254,8 @@ export default function DailyPlanningPage() {
     }
   }
 
-  const handleAddComponentStock = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleAddComponentStock = async (event: React.FormEvent) => {
+    event.preventDefault()
     if (!selectedPeriod || !selectedComponentId || !bufferQuantity) return
     setStockSaving(true)
     setStockError(null)
@@ -214,7 +276,8 @@ export default function DailyPlanningPage() {
       }
       setSelectedComponentId("")
       setBufferQuantity("")
-      fetchTodayPlan(selectedPeriod)
+      void fetchTodayPlan(selectedPeriod)
+      toast({ title: "Component stock added", description: `${selectedComponent?.name ?? "Component"} stock was added for ${selectedPeriod.name}.` })
     } catch (err) {
       setStockError(err instanceof Error ? err.message : "Failed to add component stock.")
     } finally {
@@ -222,15 +285,80 @@ export default function DailyPlanningPage() {
     }
   }
 
-  // ── Guard ──────────────────────────────────────────────────────────────────
+  const updateRequirementQuantity = (ingredientId: number, value: string) => {
+    setRequirementsRows((prev) => prev.map((row) => {
+      if (row.ingredientId !== ingredientId) return row
+      return {
+        ...row,
+        editedQuantity: value,
+        isEdited: value !== String(row.calculatedQuantity),
+      }
+    }))
+  }
+
+  const confirmIngredientRequirements = async () => {
+    if (!selectedPeriod) return
+    setConfirmingRequirements(true)
+    setConfirmRequirementsError(null)
+    setConfirmRequirementsSuccess(null)
+    try {
+      const adjustments = requirementsRows.map((row) => {
+        const finalQuantity = Number(row.editedQuantity)
+        if (!Number.isFinite(finalQuantity) || finalQuantity < 0) {
+          throw new Error(`Enter a valid quantity for ${row.name}.`)
+        }
+        return {
+          ingredientId: row.ingredientId,
+          finalQuantity,
+        }
+      })
+
+      const res = await authFetch(`/admin/daily-planning/${todayISO()}/confirm-ingredient-requirements`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          period: selectedPeriod.name.toUpperCase(),
+          adjustments,
+        }),
+      })
+      const body = (await res.json().catch(() => null)) as ConfirmIngredientRequirementsResponseDto | unknown
+      if (!res.ok || !body) {
+        throw new Error(parseError(body, "Unable to confirm ingredient requirements."))
+      }
+
+      const response = body as ConfirmIngredientRequirementsResponseDto
+      setRequirementShortfalls(Array.isArray(response.shortfalls) ? response.shortfalls : [])
+      setConfirmRequirementsSuccess(`Ingredient requirements confirmed for ${selectedPeriod.name}.`)
+      await loadIngredientRequirements(selectedPeriod)
+      await fetchTodayPlan(selectedPeriod)
+      toast({ title: "Ingredient requirements confirmed", description: response.shortfalls?.length ? `${response.shortfalls.length} shortfall warning(s) returned.` : `Requirements for ${selectedPeriod.name} were confirmed successfully.` })
+    } catch (err) {
+      setConfirmRequirementsError(err instanceof Error ? err.message : "Unable to confirm ingredient requirements.")
+    } finally {
+      setConfirmingRequirements(false)
+    }
+  }
+
+  const requirementRowsWithState = useMemo(() => {
+    return requirementsRows.map((row) => {
+      const finalQuantity = Number(row.editedQuantity)
+      const isFinalValid = Number.isFinite(finalQuantity) && finalQuantity >= 0
+      const isShort = isFinalValid && finalQuantity > row.currentStock
+      return {
+        ...row,
+        finalQuantity,
+        isFinalValid,
+        isShort,
+      }
+    })
+  }, [requirementsRows])
+
   if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) return null
 
-  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        {/* Header */}
         <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-[[data-collapsible=icon]]/sidebar-wrapper:h-12">
           <div className="flex items-center gap-2 px-4">
             <SidebarTrigger className="-ml-1" />
@@ -248,44 +376,29 @@ export default function DailyPlanningPage() {
         </header>
 
         <div className="flex flex-1 flex-col gap-6 p-4 pt-0">
-
-          {/* ── Period toggle ──────────────────────────────────────────── */}
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium text-muted-foreground">Period:</span>
             <div className="flex gap-1 rounded-lg border p-1">
-              {periods.map((p) => (
+              {periods.map((period) => (
                 <button
-                  key={p.id}
+                  key={period.id}
                   type="button"
-                  onClick={() => setSelectedPeriod(p)}
-                  className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
-                    selectedPeriod?.id === p.id
-                      ? "bg-foreground text-background"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
+                  onClick={() => setSelectedPeriod(period)}
+                  className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${selectedPeriod?.id === period.id ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}
                 >
-                  {p.name}
-                  <span className="ml-1.5 text-xs opacity-60">
-                    {formatPeriodTime(p.startTime)}–{formatPeriodTime(p.endTime)}
-                  </span>
+                  {period.name}
+                  <span className="ml-1.5 text-xs opacity-60">{formatPeriodTime(period.startTime)}–{formatPeriodTime(period.endTime)}</span>
                 </button>
               ))}
-              {periods.length === 0 && (
-                <span className="px-3 py-1.5 text-sm text-muted-foreground animate-pulse">
-                  Loading periods…
-                </span>
-              )}
+              {periods.length === 0 && <span className="px-3 py-1.5 text-sm text-muted-foreground animate-pulse">Loading periods…</span>}
             </div>
           </div>
 
           <div className="grid gap-6 lg:grid-cols-2">
-            {/* ── Add Meal Option ────────────────────────────────────── */}
             <div className="space-y-4 rounded-lg border p-4">
               <div>
                 <h2 className="font-semibold">Add Meal Option</h2>
-                <p className="text-sm text-muted-foreground">
-                  Select a catalog meal and declare portions for today.
-                </p>
+                <p className="text-sm text-muted-foreground">Select a catalog meal and declare portions for today.</p>
               </div>
               <form onSubmit={handleAddMealOption} className="space-y-3">
                 <div className="space-y-1">
@@ -295,18 +408,13 @@ export default function DailyPlanningPage() {
                       <SelectValue placeholder="Select a meal…" />
                     </SelectTrigger>
                     <SelectContent>
-                      {mealCatalog
-                        .filter((m) => m.active)
-                        .map((m) => (
-                          <SelectItem key={m.id} value={String(m.id)}>
-                            {m.name}
-                          </SelectItem>
-                        ))}
+                      {mealCatalog.filter((meal) => meal.active).map((meal) => (
+                        <SelectItem key={meal.id} value={String(meal.id)}>{meal.name}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
 
-                {/* Price shown read-only — never a price input on this screen */}
                 {selectedMeal && (
                   <div className="rounded-md bg-muted px-3 py-2 text-sm">
                     Price: <span className="font-medium">{formatZarCurrency(selectedMeal.price)}</span>
@@ -316,39 +424,20 @@ export default function DailyPlanningPage() {
 
                 <div className="space-y-1">
                   <Label htmlFor="planned-portions">Planned portions</Label>
-                  <Input
-                    id="planned-portions"
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={plannedPortions}
-                    onChange={(e) => setPlannedPortions(e.target.value)}
-                    placeholder="e.g. 50"
-                    required
-                  />
+                  <Input id="planned-portions" type="number" min="1" step="1" value={plannedPortions} onChange={(event) => setPlannedPortions(event.target.value)} placeholder="e.g. 50" required />
                 </div>
 
-                {mealOptionError && (
-                  <p className="text-sm text-destructive">{mealOptionError}</p>
-                )}
-
-                <Button
-                  type="submit"
-                  disabled={mealOptionSaving || !selectedMealId || !plannedPortions}
-                  className="w-full"
-                >
+                {mealOptionError && <p className="text-sm text-destructive">{mealOptionError}</p>}
+                <Button type="submit" disabled={mealOptionSaving || !selectedMealId || !plannedPortions} className="w-full">
                   {mealOptionSaving ? "Adding…" : "Add Meal Option"}
                 </Button>
               </form>
             </div>
 
-            {/* ── Add Component Stock ────────────────────────────────── */}
             <div className="space-y-4 rounded-lg border p-4">
               <div>
                 <h2 className="font-semibold">Add Component Stock</h2>
-                <p className="text-sm text-muted-foreground">
-                  Declare extra-portion availability for today — independent of any specific meal.
-                </p>
+                <p className="text-sm text-muted-foreground">Declare extra-portion availability for today — independent of any specific meal.</p>
               </div>
               <form onSubmit={handleAddComponentStock} className="space-y-3">
                 <div className="space-y-1">
@@ -358,18 +447,13 @@ export default function DailyPlanningPage() {
                       <SelectValue placeholder="Select a component…" />
                     </SelectTrigger>
                     <SelectContent>
-                      {componentCatalog
-                        .filter((c) => c.active)
-                        .map((c) => (
-                          <SelectItem key={c.id} value={String(c.id)}>
-                            {c.name}
-                          </SelectItem>
-                        ))}
+                      {componentCatalog.filter((component) => component.active).map((component) => (
+                        <SelectItem key={component.id} value={String(component.id)}>{component.name}</SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
 
-                {/* Extra price shown read-only */}
                 {selectedComponent && (
                   <div className="rounded-md bg-muted px-3 py-2 text-sm">
                     Extra price: <span className="font-medium">{formatZarCurrency(selectedComponent.extraPrice)}</span>
@@ -379,61 +463,39 @@ export default function DailyPlanningPage() {
 
                 <div className="space-y-1">
                   <Label htmlFor="buffer-qty">Buffer quantity</Label>
-                  <Input
-                    id="buffer-qty"
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={bufferQuantity}
-                    onChange={(e) => setBufferQuantity(e.target.value)}
-                    placeholder="e.g. 40"
-                    required
-                  />
+                  <Input id="buffer-qty" type="number" min="1" step="1" value={bufferQuantity} onChange={(event) => setBufferQuantity(event.target.value)} placeholder="e.g. 40" required />
                 </div>
 
-                {stockError && (
-                  <p className="text-sm text-destructive">{stockError}</p>
-                )}
-
-                <Button
-                  type="submit"
-                  disabled={stockSaving || !selectedComponentId || !bufferQuantity}
-                  className="w-full"
-                >
+                {stockError && <p className="text-sm text-destructive">{stockError}</p>}
+                <Button type="submit" disabled={stockSaving || !selectedComponentId || !bufferQuantity} className="w-full">
                   {stockSaving ? "Adding…" : "Add Component Stock"}
                 </Button>
               </form>
             </div>
           </div>
 
-          {/* ── Today's Plan ───────────────────────────────────────────── */}
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="font-semibold">
-                  Today&apos;s Plan — {selectedPeriod?.name ?? "…"}
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  {todayISO()} · Stock cannot be increased once set — plan carefully.
-                </p>
+                <h2 className="font-semibold">Today&apos;s Plan — {selectedPeriod?.name ?? "…"}</h2>
+                <p className="text-sm text-muted-foreground">{todayISO()} · Review ingredient requirements before service prep.</p>
               </div>
-              {selectedPeriod && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => fetchTodayPlan(selectedPeriod)}
-                  disabled={planLoading}
-                >
-                  {planLoading ? "Refreshing…" : "Refresh"}
-                </Button>
-              )}
+              <div className="flex gap-2">
+                {selectedPeriod && (
+                  <Button size="sm" variant="outline" onClick={() => void fetchTodayPlan(selectedPeriod)} disabled={planLoading}>
+                    {planLoading ? "Refreshing…" : "Refresh"}
+                  </Button>
+                )}
+                {selectedPeriod && (
+                  <Button size="sm" onClick={() => void loadIngredientRequirements(selectedPeriod)} disabled={!hasPlannedItems || requirementsLoading}>
+                    {requirementsLoading ? "Loading…" : "Review Ingredient Requirements"}
+                  </Button>
+                )}
+              </div>
             </div>
 
-            {/* Meal options */}
             <div>
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground uppercase tracking-wide">
-                Meal Options
-              </h3>
+              <h3 className="mb-2 text-sm font-medium text-muted-foreground uppercase tracking-wide">Meal Options</h3>
               {planLoading ? (
                 <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
               ) : (
@@ -449,23 +511,17 @@ export default function DailyPlanningPage() {
                   <TableBody>
                     {!todayPlan?.options.length ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
-                          No meal options planned for this period yet.
-                        </TableCell>
+                        <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">No meal options planned for this period yet.</TableCell>
                       </TableRow>
                     ) : (
-                      todayPlan.options.map((o) => (
-                        <TableRow key={o.id}>
-                          <TableCell className="font-medium">{o.name}</TableCell>
-                          <TableCell>{formatZarCurrency(o.price)}</TableCell>
-                          <TableCell>{o.plannedPortions}</TableCell>
+                      todayPlan.options.map((option) => (
+                        <TableRow key={option.id}>
+                          <TableCell className="font-medium">{option.name}</TableCell>
+                          <TableCell>{formatZarCurrency(option.price)}</TableCell>
+                          <TableCell>{option.plannedPortions}</TableCell>
                           <TableCell>
-                            <span className={o.portionsRemaining === 0 ? "text-destructive font-medium" : ""}>
-                              {o.portionsRemaining}
-                            </span>
-                            {o.portionsRemaining === 0 && (
-                              <span className="ml-2 text-xs text-destructive">sold out</span>
-                            )}
+                            <span className={option.portionsRemaining === 0 ? "text-destructive font-medium" : ""}>{option.portionsRemaining}</span>
+                            {option.portionsRemaining === 0 && <span className="ml-2 text-xs text-destructive">sold out</span>}
                           </TableCell>
                         </TableRow>
                       ))
@@ -475,11 +531,8 @@ export default function DailyPlanningPage() {
               )}
             </div>
 
-            {/* Available extras */}
             <div>
-              <h3 className="mb-2 text-sm font-medium text-muted-foreground uppercase tracking-wide">
-                Available Extras (component stock)
-              </h3>
+              <h3 className="mb-2 text-sm font-medium text-muted-foreground uppercase tracking-wide">Available Extras (component stock)</h3>
               {planLoading ? (
                 <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
               ) : (
@@ -495,25 +548,17 @@ export default function DailyPlanningPage() {
                   <TableBody>
                     {!todayPlan?.availableExtras.length ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">
-                          No component stock declared for this period yet.
-                        </TableCell>
+                        <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">No component stock declared for this period yet.</TableCell>
                       </TableRow>
                     ) : (
-                      todayPlan.availableExtras.map((ex) => (
-                        <TableRow key={ex.id}>
-                          <TableCell className="font-medium">
-                            {ex.componentName ?? ex.name ?? "—"}
-                          </TableCell>
-                          <TableCell>{formatZarCurrency(ex.extraPrice)}</TableCell>
-                          <TableCell>{ex.bufferQuantity}</TableCell>
+                      todayPlan.availableExtras.map((extra) => (
+                        <TableRow key={extra.id}>
+                          <TableCell className="font-medium">{extra.componentName ?? extra.name ?? "—"}</TableCell>
+                          <TableCell>{formatZarCurrency(extra.extraPrice)}</TableCell>
+                          <TableCell>{extra.bufferQuantity}</TableCell>
                           <TableCell>
-                            <span className={ex.bufferRemaining === 0 ? "text-destructive font-medium" : ""}>
-                              {ex.bufferRemaining}
-                            </span>
-                            {ex.bufferRemaining === 0 && (
-                              <span className="ml-2 text-xs text-destructive">sold out</span>
-                            )}
+                            <span className={extra.bufferRemaining === 0 ? "text-destructive font-medium" : ""}>{extra.bufferRemaining}</span>
+                            {extra.bufferRemaining === 0 && <span className="ml-2 text-xs text-destructive">sold out</span>}
                           </TableCell>
                         </TableRow>
                       ))
@@ -524,6 +569,77 @@ export default function DailyPlanningPage() {
             </div>
           </div>
         </div>
+
+        <Dialog open={requirementsDialogOpen} onOpenChange={setRequirementsDialogOpen}>
+          <DialogContent className="max-w-5xl">
+            <DialogHeader>
+              <DialogTitle>Review Ingredient Requirements</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 pt-2">
+              <p className="text-sm text-muted-foreground">Calculated requirements are editable before confirmation. Edited rows are highlighted. Stock shortfalls warn, but do not block confirmation.</p>
+
+              {confirmRequirementsSuccess && (
+                <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{confirmRequirementsSuccess}</div>
+              )}
+
+              {requirementShortfalls.length > 0 && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                  <p className="font-medium">Shortfalls detected after confirmation</p>
+                  <div className="mt-2 space-y-1">
+                    {requirementShortfalls.map((shortfall) => (
+                      <p key={shortfall.ingredientId}>{shortfall.name} is now {Math.abs(shortfall.resultingStock)} {shortfall.unit} short after allocating {shortfall.finalQuantity} {shortfall.unit}. Consider a GRV before service.</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {requirementsError && <p className="text-sm text-destructive">{requirementsError}</p>}
+              {confirmRequirementsError && <p className="text-sm text-destructive">{confirmRequirementsError}</p>}
+
+              {requirementsLoading ? (
+                <p className="text-sm text-muted-foreground animate-pulse">Loading ingredient requirements…</p>
+              ) : requirementRowsWithState.length === 0 ? (
+                <div className="rounded-md border bg-muted/40 px-4 py-6 text-sm text-muted-foreground">No unreviewed ingredient requirements remain for this date and period.</div>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Ingredient</TableHead>
+                      <TableHead>Unit</TableHead>
+                      <TableHead>Calculated</TableHead>
+                      <TableHead>Final Quantity</TableHead>
+                      <TableHead>Current Stock</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {requirementRowsWithState.map((row) => (
+                      <TableRow key={row.ingredientId} className={row.isShort ? "bg-amber-50" : row.isEdited ? "bg-blue-50" : ""}>
+                        <TableCell className="font-medium">{row.name}</TableCell>
+                        <TableCell>{row.unit}</TableCell>
+                        <TableCell>{row.calculatedQuantity}</TableCell>
+                        <TableCell>
+                          <Input type="number" min="0" step="0.0001" value={row.editedQuantity} onChange={(event) => updateRequirementQuantity(row.ingredientId, event.target.value)} className={row.isEdited ? "border-blue-400 bg-blue-50" : ""} />
+                        </TableCell>
+                        <TableCell>
+                          <span className={row.isShort ? "font-medium text-amber-800" : ""}>{row.currentStock}</span>
+                          {row.isShort && <span className="ml-2 text-xs text-amber-700">short</span>}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setRequirementsDialogOpen(false)}>Close</Button>
+                <Button type="button" onClick={() => void confirmIngredientRequirements()} disabled={confirmingRequirements || requirementRowsWithState.length === 0}>
+                  {confirmingRequirements ? "Confirming…" : "Confirm Ingredient Requirements"}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </SidebarInset>
     </SidebarProvider>
   )

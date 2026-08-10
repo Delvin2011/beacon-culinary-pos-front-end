@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useAuth } from "@/hooks/use-auth"
 import { AppSidebar } from "@/components/app-sidebar"
@@ -12,10 +12,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { toast } from "@/hooks/use-toast"
 import { formatZarCurrency } from "@/lib/utils"
-
-// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface ComponentEntry {
   id: number
@@ -30,14 +30,42 @@ interface MealEntry {
   description?: string
   price: number
   active: boolean
-  // Backend may return either field — handle both
   componentIds?: number[]
   components?: { id: number; name: string }[]
 }
 
-type Tab = "components" | "meals"
+interface IngredientEntry {
+  id: number
+  name: string
+  unit: "KG" | "LITRE" | "EACH"
+  active: boolean
+}
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+interface RecipeLineDto {
+  ingredientId: number
+  ingredientName: string
+  unit: "KG" | "LITRE" | "EACH"
+  quantity: number
+}
+
+interface RecipeDto {
+  componentCatalogId: number
+  batchSize: number
+  lines: RecipeLineDto[]
+}
+
+type RecipeSummary =
+  | { status: "none" }
+  | { status: "configured"; batchSize: number; lineCount: number }
+  | { status: "error" }
+
+type RecipeDraftLine = {
+  id: string
+  ingredientId: string
+  quantity: string
+}
+
+type Tab = "components" | "meals"
 
 function extractComponentIds(meal: MealEntry): number[] {
   if (meal.componentIds?.length) return meal.componentIds
@@ -53,51 +81,86 @@ function parseError(body: unknown, fallback: string): string {
   return fallback
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
-
 export default function CatalogPage() {
   const router = useRouter()
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth()
 
   const [activeTab, setActiveTab] = useState<Tab>("components")
 
-  // ── Component catalog state ────────────────────────────────────────────────
   const [components, setComponents] = useState<ComponentEntry[]>([])
   const [componentsLoading, setComponentsLoading] = useState(true)
   const [componentDialogOpen, setComponentDialogOpen] = useState(false)
   const [editingComponent, setEditingComponent] = useState<ComponentEntry | null>(null)
-  const [componentForm, setComponentForm] = useState({ name: "", extraPrice: "" })
+  const [componentForm, setComponentForm] = useState({ name: "", extraPrice: "", active: true })
   const [componentSaving, setComponentSaving] = useState(false)
   const [componentError, setComponentError] = useState<string | null>(null)
 
-  // ── Meal catalog state ─────────────────────────────────────────────────────
+  const [ingredients, setIngredients] = useState<IngredientEntry[]>([])
+  const [recipeSummaryByComponentId, setRecipeSummaryByComponentId] = useState<Record<number, RecipeSummary>>({})
+  const [recipeDialogOpen, setRecipeDialogOpen] = useState(false)
+  const [recipeLoading, setRecipeLoading] = useState(false)
+  const [recipeSaving, setRecipeSaving] = useState(false)
+  const [recipeError, setRecipeError] = useState<string | null>(null)
+  const [recipeComponent, setRecipeComponent] = useState<ComponentEntry | null>(null)
+  const [recipeBatchSize, setRecipeBatchSize] = useState("")
+  const [recipeLines, setRecipeLines] = useState<RecipeDraftLine[]>([])
+
   const [meals, setMeals] = useState<MealEntry[]>([])
   const [mealsLoading, setMealsLoading] = useState(true)
   const [mealDialogOpen, setMealDialogOpen] = useState(false)
   const [editingMeal, setEditingMeal] = useState<MealEntry | null>(null)
-  const [mealForm, setMealForm] = useState({ name: "", description: "", price: "", componentIds: [] as number[] })
+  const [mealForm, setMealForm] = useState({ name: "", description: "", price: "", componentIds: [] as number[], active: true })
   const [mealSaving, setMealSaving] = useState(false)
   const [mealError, setMealError] = useState<string | null>(null)
 
-  // ── Role guard ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (authLoading) return
     if (!isAuthenticated) { router.replace("/login"); return }
     if (!user?.role?.toUpperCase().includes("ADMIN")) router.replace("/dashboard")
   }, [authLoading, isAuthenticated, user, router])
 
-  // ── Data fetching ──────────────────────────────────────────────────────────
+  const fetchIngredients = useCallback(async () => {
+    try {
+      const res = await authFetch("/admin/ingredients")
+      if (res.ok) setIngredients((await res.json()) as IngredientEntry[])
+    } catch {
+      setIngredients([])
+    }
+  }, [authFetch])
+
+  const fetchRecipeSummaries = useCallback(async (nextComponents: ComponentEntry[]) => {
+    const entries = await Promise.all(
+      nextComponents.map(async (component) => {
+        try {
+          const res = await authFetch(`/admin/components/${component.id}/recipe`)
+          if (res.status === 404) return [component.id, { status: "none" } as RecipeSummary] as const
+          const body = (await res.json().catch(() => null)) as RecipeDto | null
+          if (!res.ok || !body) return [component.id, { status: "error" } as RecipeSummary] as const
+          return [component.id, { status: "configured", batchSize: body.batchSize, lineCount: Array.isArray(body.lines) ? body.lines.length : 0 } as RecipeSummary] as const
+        } catch {
+          return [component.id, { status: "error" } as RecipeSummary] as const
+        }
+      }),
+    )
+    setRecipeSummaryByComponentId(Object.fromEntries(entries))
+  }, [authFetch])
+
   const fetchComponents = useCallback(async () => {
     setComponentsLoading(true)
     try {
       const res = await authFetch("/admin/component-catalog")
-      if (res.ok) setComponents((await res.json()) as ComponentEntry[])
+      if (res.ok) {
+        const nextComponents = (await res.json()) as ComponentEntry[]
+        setComponents(nextComponents)
+        await fetchRecipeSummaries(nextComponents)
+      }
     } catch {
-      // leave list as-is on network error
+      setComponents([])
+      setRecipeSummaryByComponentId({})
     } finally {
       setComponentsLoading(false)
     }
-  }, [authFetch])
+  }, [authFetch, fetchRecipeSummaries])
 
   const fetchMeals = useCallback(async () => {
     setMealsLoading(true)
@@ -105,7 +168,7 @@ export default function CatalogPage() {
       const res = await authFetch("/admin/meal-catalog")
       if (res.ok) setMeals((await res.json()) as MealEntry[])
     } catch {
-      // leave list as-is on network error
+      setMeals([])
     } finally {
       setMealsLoading(false)
     }
@@ -113,36 +176,35 @@ export default function CatalogPage() {
 
   useEffect(() => {
     if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
-      fetchComponents()
-      fetchMeals()
+      void fetchComponents()
+      void fetchMeals()
+      void fetchIngredients()
     }
-  }, [isAuthenticated, user, fetchComponents, fetchMeals])
+  }, [isAuthenticated, user, fetchComponents, fetchMeals, fetchIngredients])
 
-  // ── Component dialog handlers ──────────────────────────────────────────────
+  const activeIngredients = useMemo(() => ingredients.filter((ingredient) => ingredient.active), [ingredients])
+
   const openNewComponent = () => {
     setEditingComponent(null)
-    setComponentForm({ name: "", extraPrice: "" })
+    setComponentForm({ name: "", extraPrice: "", active: true })
     setComponentError(null)
     setComponentDialogOpen(true)
   }
 
-  const openEditComponent = (c: ComponentEntry) => {
-    setEditingComponent(c)
-    setComponentForm({ name: c.name, extraPrice: String(c.extraPrice) })
+  const openEditComponent = (component: ComponentEntry) => {
+    setEditingComponent(component)
+    setComponentForm({ name: component.name, extraPrice: String(component.extraPrice), active: component.active })
     setComponentError(null)
     setComponentDialogOpen(true)
   }
 
-  const handleSaveComponent = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSaveComponent = async (event: React.FormEvent) => {
+    event.preventDefault()
     if (!componentForm.name.trim() || !componentForm.extraPrice) return
     setComponentSaving(true)
     setComponentError(null)
     try {
-      const payload = {
-        name: componentForm.name.trim(),
-        extraPrice: parseFloat(componentForm.extraPrice),
-      }
+      const payload = { name: componentForm.name.trim(), extraPrice: parseFloat(componentForm.extraPrice), active: componentForm.active }
       const res = editingComponent
         ? await authFetch(`/admin/component-catalog/${editingComponent.id}`, {
             method: "PUT",
@@ -152,7 +214,7 @@ export default function CatalogPage() {
         : await authFetch("/admin/component-catalog", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ name: payload.name, extraPrice: payload.extraPrice }),
           })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as unknown
@@ -160,8 +222,8 @@ export default function CatalogPage() {
       }
       setComponentDialogOpen(false)
       await fetchComponents()
-      // Re-fetch meals so linked component names stay current
-      fetchMeals()
+      void fetchMeals()
+      toast({ title: editingComponent ? "Component updated" : "Component created", description: `${payload.name} has been saved.` })
     } catch (err) {
       setComponentError(err instanceof Error ? err.message : "Save failed.")
     } finally {
@@ -169,22 +231,87 @@ export default function CatalogPage() {
     }
   }
 
-  // ── Meal dialog handlers ───────────────────────────────────────────────────
+  const makeEmptyRecipeLine = (index: number): RecipeDraftLine => ({ id: `recipe-line-${Date.now()}-${index}`, ingredientId: "", quantity: "" })
+
+  const openRecipeDialog = async (component: ComponentEntry) => {
+    setRecipeComponent(component)
+    setRecipeDialogOpen(true)
+    setRecipeLoading(true)
+    setRecipeSaving(false)
+    setRecipeError(null)
+    setRecipeBatchSize("")
+    setRecipeLines([makeEmptyRecipeLine(0)])
+
+    try {
+      const res = await authFetch(`/admin/components/${component.id}/recipe`)
+      if (res.status === 404) return
+      const body = (await res.json().catch(() => null)) as RecipeDto | null
+      if (!res.ok || !body) {
+        throw new Error(parseError(body, "Unable to load recipe."))
+      }
+      setRecipeBatchSize(String(body.batchSize))
+      setRecipeLines((body.lines ?? []).length > 0 ? body.lines.map((line, index) => ({ id: `recipe-line-${line.ingredientId}-${index}`, ingredientId: String(line.ingredientId), quantity: String(line.quantity) })) : [makeEmptyRecipeLine(0)])
+    } catch (err) {
+      setRecipeError(err instanceof Error ? err.message : "Unable to load recipe.")
+    } finally {
+      setRecipeLoading(false)
+    }
+  }
+
+  const addRecipeLine = () => {
+    setRecipeLines((prev) => [...prev, makeEmptyRecipeLine(prev.length)])
+  }
+
+  const updateRecipeLine = (lineId: string, field: keyof RecipeDraftLine, value: string) => {
+    setRecipeLines((prev) => prev.map((line) => (line.id === lineId ? { ...line, [field]: value } : line)))
+  }
+
+  const removeRecipeLine = (lineId: string) => {
+    setRecipeLines((prev) => (prev.length === 1 ? [makeEmptyRecipeLine(0)] : prev.filter((line) => line.id !== lineId)))
+  }
+
+  const saveRecipe = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!recipeComponent) return
+    setRecipeSaving(true)
+    setRecipeError(null)
+    try {
+      const batchSize = Number(recipeBatchSize)
+      if (!Number.isInteger(batchSize) || batchSize <= 0) throw new Error("Batch size must be a whole number greater than zero.")
+      const lines = recipeLines.filter((line) => line.ingredientId && line.quantity).map((line) => ({ ingredientId: Number(line.ingredientId), quantity: Number(line.quantity) }))
+      const res = await authFetch(`/admin/components/${recipeComponent.id}/recipe`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ batchSize, lines }),
+      })
+      const body = (await res.json().catch(() => null)) as RecipeDto | unknown
+      if (!res.ok || !body) {
+        throw new Error(parseError(body, "Unable to save recipe."))
+      }
+      const savedRecipe = body as RecipeDto
+      setRecipeSummaryByComponentId((prev) => ({
+        ...prev,
+        [recipeComponent.id]: { status: "configured", batchSize: savedRecipe.batchSize, lineCount: Array.isArray(savedRecipe.lines) ? savedRecipe.lines.length : 0 },
+      }))
+      setRecipeDialogOpen(false)
+      toast({ title: "Recipe saved", description: `${recipeComponent.name} recipe was replaced successfully.` })
+    } catch (err) {
+      setRecipeError(err instanceof Error ? err.message : "Unable to save recipe.")
+    } finally {
+      setRecipeSaving(false)
+    }
+  }
+
   const openNewMeal = () => {
     setEditingMeal(null)
-    setMealForm({ name: "", description: "", price: "", componentIds: [] })
+    setMealForm({ name: "", description: "", price: "", componentIds: [], active: true })
     setMealError(null)
     setMealDialogOpen(true)
   }
 
-  const openEditMeal = (m: MealEntry) => {
-    setEditingMeal(m)
-    setMealForm({
-      name: m.name,
-      description: m.description ?? "",
-      price: String(m.price),
-      componentIds: extractComponentIds(m),
-    })
+  const openEditMeal = (meal: MealEntry) => {
+    setEditingMeal(meal)
+    setMealForm({ name: meal.name, description: meal.description ?? "", price: String(meal.price), componentIds: extractComponentIds(meal), active: meal.active })
     setMealError(null)
     setMealDialogOpen(true)
   }
@@ -192,24 +319,17 @@ export default function CatalogPage() {
   const toggleMealComponent = (id: number) => {
     setMealForm((prev) => ({
       ...prev,
-      componentIds: prev.componentIds.includes(id)
-        ? prev.componentIds.filter((c) => c !== id)
-        : [...prev.componentIds, id],
+      componentIds: prev.componentIds.includes(id) ? prev.componentIds.filter((componentId) => componentId !== id) : [...prev.componentIds, id],
     }))
   }
 
-  const handleSaveMeal = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSaveMeal = async (event: React.FormEvent) => {
+    event.preventDefault()
     if (!mealForm.name.trim() || !mealForm.price) return
     setMealSaving(true)
     setMealError(null)
     try {
-      const payload = {
-        name: mealForm.name.trim(),
-        description: mealForm.description.trim() || null,
-        price: parseFloat(mealForm.price),
-        componentIds: mealForm.componentIds,
-      }
+      const payload = { name: mealForm.name.trim(), description: mealForm.description.trim() || null, price: parseFloat(mealForm.price), componentIds: mealForm.componentIds, active: mealForm.active }
       const res = editingMeal
         ? await authFetch(`/admin/meal-catalog/${editingMeal.id}`, {
             method: "PUT",
@@ -219,14 +339,15 @@ export default function CatalogPage() {
         : await authFetch("/admin/meal-catalog", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ name: payload.name, description: payload.description, price: payload.price, componentIds: payload.componentIds }),
           })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as unknown
         throw new Error(parseError(body, "Save failed."))
       }
       setMealDialogOpen(false)
-      fetchMeals()
+      void fetchMeals()
+      toast({ title: editingMeal ? "Meal updated" : "Meal created", description: `${payload.name} has been saved.` })
     } catch (err) {
       setMealError(err instanceof Error ? err.message : "Save failed.")
     } finally {
@@ -234,15 +355,12 @@ export default function CatalogPage() {
     }
   }
 
-  // ── Guard ──────────────────────────────────────────────────────────────────
   if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) return null
 
-  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        {/* Header */}
         <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-[[data-collapsible=icon]]/sidebar-wrapper:h-12">
           <div className="flex items-center gap-2 px-4">
             <SidebarTrigger className="-ml-1" />
@@ -260,33 +378,20 @@ export default function CatalogPage() {
         </header>
 
         <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-          {/* Tab bar */}
           <div className="flex gap-1 border-b">
             {(["components", "meals"] as Tab[]).map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
-                  activeTab === tab
-                    ? "border-foreground text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
+              <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${activeTab === tab ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
                 {tab}
               </button>
             ))}
           </div>
 
-          {/* ── COMPONENTS tab ──────────────────────────────────────────── */}
           {activeTab === "components" && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold">Component Catalog</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Extra-portion items with agreed prices. Create these before adding meals.
-                  </p>
+                  <p className="text-sm text-muted-foreground">Extra-portion items with agreed prices. Recipe setup is managed per component.</p>
                 </div>
                 <Button size="sm" onClick={openNewComponent}>+ Add Component</Button>
               </div>
@@ -299,30 +404,40 @@ export default function CatalogPage() {
                     <TableRow>
                       <TableHead>Name</TableHead>
                       <TableHead>Extra Price</TableHead>
+                      <TableHead>Recipe</TableHead>
                       <TableHead>Active</TableHead>
-                      <TableHead className="w-16" />
+                      <TableHead className="w-[170px]" />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {components.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="py-8 text-center text-sm text-muted-foreground">
-                          No components yet — add one to get started.
-                        </TableCell>
+                        <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No components yet — add one to get started.</TableCell>
                       </TableRow>
                     ) : (
-                      components.map((c) => (
-                        <TableRow key={c.id}>
-                          <TableCell className="font-medium">{c.name}</TableCell>
-                          <TableCell>{formatZarCurrency(c.extraPrice)}</TableCell>
-                          <TableCell>{c.active ? "Yes" : "No"}</TableCell>
-                          <TableCell>
-                            <Button size="sm" variant="outline" onClick={() => openEditComponent(c)}>
-                              Edit
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))
+                      components.map((component) => {
+                        const recipeSummary = recipeSummaryByComponentId[component.id]
+                        return (
+                          <TableRow key={component.id}>
+                            <TableCell className="font-medium">{component.name}</TableCell>
+                            <TableCell>{formatZarCurrency(component.extraPrice)}</TableCell>
+                            <TableCell className="text-sm">
+                              {recipeSummary?.status === "configured"
+                                ? `${recipeSummary.lineCount} lines · batch ${recipeSummary.batchSize}`
+                                : recipeSummary?.status === "error"
+                                  ? "Recipe unavailable"
+                                  : "No recipe"}
+                            </TableCell>
+                            <TableCell>{component.active ? "Yes" : "No"}</TableCell>
+                            <TableCell>
+                              <div className="flex gap-2">
+                                <Button size="sm" variant="outline" onClick={() => openEditComponent(component)}>Edit</Button>
+                                <Button size="sm" variant="outline" onClick={() => void openRecipeDialog(component)}>Recipe</Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })
                     )}
                   </TableBody>
                 </Table>
@@ -330,23 +445,18 @@ export default function CatalogPage() {
             </div>
           )}
 
-          {/* ── MEALS tab ───────────────────────────────────────────────── */}
           {activeTab === "meals" && (
             <div className="space-y-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-lg font-semibold">Meal Catalog</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Predefined meals with agreed prices. Price here is the source of truth — never re-entered elsewhere.
-                  </p>
+                  <p className="text-sm text-muted-foreground">Predefined meals with agreed prices. Price here is the source of truth.</p>
                 </div>
                 <Button size="sm" onClick={openNewMeal}>+ Add Meal</Button>
               </div>
 
               {components.length === 0 && (
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-                  No components exist yet. Switch to the Components tab and add some before linking them to meals.
-                </div>
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">No components exist yet. Add components before linking them to meals.</div>
               )}
 
               {mealsLoading ? (
@@ -366,30 +476,21 @@ export default function CatalogPage() {
                   <TableBody>
                     {meals.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
-                          No meals yet — add one above.
-                        </TableCell>
+                        <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No meals yet — add one above.</TableCell>
                       </TableRow>
                     ) : (
-                      meals.map((m) => {
-                        const linkedIds = extractComponentIds(m)
-                        const linkedNames = components
-                          .filter((c) => linkedIds.includes(c.id))
-                          .map((c) => c.name)
-                          .join(", ")
+                      meals.map((meal) => {
+                        const linkedIds = extractComponentIds(meal)
+                        const linkedNames = components.filter((component) => linkedIds.includes(component.id)).map((component) => component.name).join(", ")
                         return (
-                          <TableRow key={m.id}>
-                            <TableCell className="font-medium">{m.name}</TableCell>
-                            <TableCell className="text-sm text-muted-foreground">
-                              {m.description ?? "—"}
-                            </TableCell>
-                            <TableCell>{formatZarCurrency(m.price)}</TableCell>
+                          <TableRow key={meal.id}>
+                            <TableCell className="font-medium">{meal.name}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{meal.description ?? "—"}</TableCell>
+                            <TableCell>{formatZarCurrency(meal.price)}</TableCell>
                             <TableCell className="text-sm">{linkedNames || "—"}</TableCell>
-                            <TableCell>{m.active ? "Yes" : "No"}</TableCell>
+                            <TableCell>{meal.active ? "Yes" : "No"}</TableCell>
                             <TableCell>
-                              <Button size="sm" variant="outline" onClick={() => openEditMeal(m)}>
-                                Edit
-                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => openEditMeal(meal)}>Edit</Button>
                             </TableCell>
                           </TableRow>
                         )
@@ -402,7 +503,6 @@ export default function CatalogPage() {
           )}
         </div>
 
-        {/* ── Component dialog ────────────────────────────────────────────── */}
         <Dialog open={componentDialogOpen} onOpenChange={setComponentDialogOpen}>
           <DialogContent>
             <DialogHeader>
@@ -411,41 +511,82 @@ export default function CatalogPage() {
             <form onSubmit={handleSaveComponent} className="space-y-4 pt-2">
               <div className="space-y-1">
                 <Label htmlFor="c-name">Name</Label>
-                <Input
-                  id="c-name"
-                  value={componentForm.name}
-                  onChange={(e) => setComponentForm((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="e.g. Chicken"
-                  required
-                />
+                <Input id="c-name" value={componentForm.name} onChange={(e) => setComponentForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="e.g. Chicken" required />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="c-price">Extra portion price (R)</Label>
-                <Input
-                  id="c-price"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={componentForm.extraPrice}
-                  onChange={(e) => setComponentForm((p) => ({ ...p, extraPrice: e.target.value }))}
-                  placeholder="0.00"
-                  required
-                />
+                <Input id="c-price" type="number" min="0" step="0.01" value={componentForm.extraPrice} onChange={(e) => setComponentForm((prev) => ({ ...prev, extraPrice: e.target.value }))} placeholder="0.00" required />
               </div>
+              {editingComponent && (
+                <div className="flex items-center gap-2">
+                  <Checkbox id="c-active" checked={componentForm.active} onCheckedChange={(value) => setComponentForm((prev) => ({ ...prev, active: Boolean(value) }))} />
+                  <Label htmlFor="c-active">Active</Label>
+                </div>
+              )}
               {componentError && <p className="text-sm text-destructive">{componentError}</p>}
               <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={() => setComponentDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={componentSaving}>
-                  {componentSaving ? "Saving…" : "Save"}
-                </Button>
+                <Button type="button" variant="outline" onClick={() => setComponentDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={componentSaving}>{componentSaving ? "Saving…" : "Save"}</Button>
               </div>
             </form>
           </DialogContent>
         </Dialog>
 
-        {/* ── Meal dialog ──────────────────────────────────────────────────── */}
+        <Dialog open={recipeDialogOpen} onOpenChange={setRecipeDialogOpen}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Recipe · {recipeComponent?.name ?? "Component"}</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={saveRecipe} className="space-y-4 pt-2">
+              <div className="grid gap-4 md:grid-cols-[220px_1fr]">
+                <div className="space-y-1">
+                  <Label htmlFor="recipe-batch-size">Batch Size</Label>
+                  <Input id="recipe-batch-size" type="number" min="1" step="1" value={recipeBatchSize} onChange={(event) => setRecipeBatchSize(event.target.value)} placeholder="e.g. 10" required />
+                </div>
+                <div className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">Match the paper recipe pattern exactly, for example: 10 portions → 1.5kg Rice. Saving replaces the full recipe for this component.</div>
+              </div>
+
+              {recipeLoading ? (
+                <p className="text-sm text-muted-foreground animate-pulse">Loading recipe…</p>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <Label>Ingredient Lines</Label>
+                    <Button type="button" size="sm" variant="outline" onClick={addRecipeLine}>Add Line</Button>
+                  </div>
+
+                  {recipeLines.map((line) => {
+                    const ingredient = activeIngredients.find((entry) => String(entry.id) === line.ingredientId)
+                    return (
+                      <div key={line.id} className="grid gap-3 rounded-md border p-3 md:grid-cols-[1.3fr_0.8fr_0.4fr_auto]">
+                        <Select value={line.ingredientId} onValueChange={(value) => updateRecipeLine(line.id, "ingredientId", value)}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Ingredient…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {activeIngredients.map((entry) => (
+                              <SelectItem key={entry.id} value={String(entry.id)}>{entry.name}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Input type="number" min="0.0001" step="0.0001" value={line.quantity} onChange={(event) => updateRecipeLine(line.id, "quantity", event.target.value)} placeholder="Quantity" />
+                        <div className="flex items-center text-sm text-muted-foreground">{ingredient?.unit ?? "Unit"}</div>
+                        <Button type="button" variant="outline" onClick={() => removeRecipeLine(line.id)}>Remove</Button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+
+              {recipeError && <p className="text-sm text-destructive">{recipeError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setRecipeDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={recipeSaving || recipeLoading}>{recipeSaving ? "Saving…" : "Save Recipe"}</Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+
         <Dialog open={mealDialogOpen} onOpenChange={setMealDialogOpen}>
           <DialogContent className="max-w-lg">
             <DialogHeader>
@@ -454,67 +595,41 @@ export default function CatalogPage() {
             <form onSubmit={handleSaveMeal} className="space-y-4 pt-2">
               <div className="space-y-1">
                 <Label htmlFor="m-name">Name</Label>
-                <Input
-                  id="m-name"
-                  value={mealForm.name}
-                  onChange={(e) => setMealForm((p) => ({ ...p, name: e.target.value }))}
-                  placeholder="e.g. Potatoes & Beef"
-                  required
-                />
+                <Input id="m-name" value={mealForm.name} onChange={(e) => setMealForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="e.g. Potatoes & Beef" required />
               </div>
               <div className="space-y-1">
                 <Label htmlFor="m-desc">Description (optional)</Label>
-                <Input
-                  id="m-desc"
-                  value={mealForm.description}
-                  onChange={(e) => setMealForm((p) => ({ ...p, description: e.target.value }))}
-                  placeholder="Brief description…"
-                />
+                <Input id="m-desc" value={mealForm.description} onChange={(e) => setMealForm((prev) => ({ ...prev, description: e.target.value }))} placeholder="Brief description…" />
               </div>
               <div className="space-y-1">
-                <Label htmlFor="m-price">Price (R) — agreed with stakeholders</Label>
-                <Input
-                  id="m-price"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={mealForm.price}
-                  onChange={(e) => setMealForm((p) => ({ ...p, price: e.target.value }))}
-                  placeholder="0.00"
-                  required
-                />
+                <Label htmlFor="m-price">Price (R)</Label>
+                <Input id="m-price" type="number" min="0" step="0.01" value={mealForm.price} onChange={(e) => setMealForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="0.00" required />
               </div>
               <div className="space-y-2">
-                <Label>Components (informational composition)</Label>
+                <Label>Components</Label>
                 {components.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">
-                    No components available — add them in the Components tab first.
-                  </p>
+                  <p className="text-sm text-muted-foreground">No components available — add them first.</p>
                 ) : (
                   <div className="max-h-44 overflow-y-auto space-y-2 rounded-md border p-3">
-                    {components.map((c) => (
-                      <div key={c.id} className="flex items-center gap-2">
-                        <Checkbox
-                          id={`comp-${c.id}`}
-                          checked={mealForm.componentIds.includes(c.id)}
-                          onCheckedChange={() => toggleMealComponent(c.id)}
-                        />
-                        <label htmlFor={`comp-${c.id}`} className="cursor-pointer text-sm">
-                          {c.name}
-                        </label>
+                    {components.map((component) => (
+                      <div key={component.id} className="flex items-center gap-2">
+                        <Checkbox id={`comp-${component.id}`} checked={mealForm.componentIds.includes(component.id)} onCheckedChange={() => toggleMealComponent(component.id)} />
+                        <label htmlFor={`comp-${component.id}`} className="cursor-pointer text-sm">{component.name}</label>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
+              {editingMeal && (
+                <div className="flex items-center gap-2">
+                  <Checkbox id="m-active" checked={mealForm.active} onCheckedChange={(value) => setMealForm((prev) => ({ ...prev, active: Boolean(value) }))} />
+                  <Label htmlFor="m-active">Active</Label>
+                </div>
+              )}
               {mealError && <p className="text-sm text-destructive">{mealError}</p>}
               <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={() => setMealDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={mealSaving}>
-                  {mealSaving ? "Saving…" : "Save"}
-                </Button>
+                <Button type="button" variant="outline" onClick={() => setMealDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={mealSaving}>{mealSaving ? "Saving…" : "Save"}</Button>
               </div>
             </form>
           </DialogContent>

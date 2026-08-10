@@ -11,6 +11,7 @@ import {
 } from "react";
 
 const AUTH_STORAGE_KEY = "bar-talk.auth";
+const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
 export interface AuthUser {
@@ -163,6 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const tokenRef = useRef<string | null>(null);
   const refreshInFlightRef = useRef<Promise<string | null> | null>(null);
+  const logoutRequestedRef = useRef(false);
 
   const clearAuthState = useCallback(() => {
     tokenRef.current = null;
@@ -171,15 +173,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const persistAuthState = useCallback((nextState: AuthState) => {
+    logoutRequestedRef.current = false;
     tokenRef.current = nextState.token;
     setState(nextState);
     localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextState));
+    sessionStorage.removeItem(AUTH_LOGOUT_MARKER_KEY);
   }, []);
 
   useEffect(() => {
     try {
+      logoutRequestedRef.current = sessionStorage.getItem(AUTH_LOGOUT_MARKER_KEY) === "true";
+
       const rawValue = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (!rawValue) {
+      if (!rawValue || logoutRequestedRef.current) {
         setIsLoading(false);
         return;
       }
@@ -295,6 +301,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearAuthState, persistAuthState]);
 
   const logout = useCallback(() => {
+    logoutRequestedRef.current = true;
+    sessionStorage.setItem(AUTH_LOGOUT_MARKER_KEY, "true");
     clearAuthState();
     setError(null);
   }, [clearAuthState]);
@@ -306,6 +314,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const refreshPromise = (async () => {
       try {
+        if (logoutRequestedRef.current) {
+          clearAuthState();
+          return null;
+        }
+
         const response = await fetch(`${AUTH_API_BASE_URL}/auth/refresh`, {
           method: "POST",
           credentials: "include",
@@ -370,6 +383,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const initialResponse = await execute(tokenRef.current);
       const shouldAttemptRefresh =
+        !logoutRequestedRef.current &&
+        tokenRef.current !== null &&
         initialResponse.status === 401 &&
         !url.endsWith("/auth/login") &&
         !url.endsWith("/auth/pin-login") &&

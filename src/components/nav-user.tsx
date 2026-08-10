@@ -1,5 +1,6 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import {
   BadgeCheck,
   Bell,
@@ -23,6 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { useAuth } from "@/hooks/use-auth"
 import {
   SidebarMenu,
   SidebarMenuButton,
@@ -39,6 +41,8 @@ export function NavUser({
     avatar: string
   }
 }) {
+  const router = useRouter()
+  const { logout } = useAuth()
   const { isMobile } = useSidebar()
 
   return (
@@ -102,12 +106,14 @@ export function NavUser({
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => {
+                logout()
+                router.replace("/login")
+              }}
+            >
               <LogOut />
-              
-              <a href="/login">
               Log out
-              </a>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
