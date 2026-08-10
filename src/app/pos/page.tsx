@@ -1,19 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Clock, LogOut, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
-import { LogOut, Clock } from "lucide-react";
+import { useManagementSession } from "@/hooks/use-management-session";
 import { PosOrderBuilder } from "@/components/pos/order-builder";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
+import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
 type ShiftSummaryDto = {
-  shiftId: number;
+  shiftId?: number;
   openingFloat: number;
   cashSalesTotal: number;
   adjustmentsTotal: number;
@@ -85,10 +87,26 @@ function formatDate(iso: string): string {
   }
 }
 
-export default function PosMainPage() {
+function formatRemainingMs(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function PosMainContent() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, logout, authFetch } = useAuth();
   const { shift, isLoading: shiftLoading, refetch } = useShift();
+  const {
+    sessionToken,
+    remainingMs,
+    isActive: isManagementActive,
+    runWithManagementSession,
+    invalidateManagementSession,
+  } = useManagementSession();
 
   const [confirmClose, setConfirmClose] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -104,28 +122,30 @@ export default function PosMainPage() {
   const [varianceNote, setVarianceNote] = useState("");
   const [varianceFormError, setVarianceFormError] = useState<string | null>(null);
   const [closeoutRecord, setCloseoutRecord] = useState<ShiftCloseResponse | null>(null);
+  const [managementSummaryOpen, setManagementSummaryOpen] = useState(false);
+  const [managementSummaryLoading, setManagementSummaryLoading] = useState(false);
+  const [managementSummaryError, setManagementSummaryError] = useState<string | null>(null);
+  const [managementSummary, setManagementSummary] = useState<ShiftSummaryDto | null>(null);
 
-  // Auth guard
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace("/pos/login");
     }
   }, [isAuthenticated, authLoading, router]);
 
-  // Shift guard — must have an open shift to be here
   useEffect(() => {
     if (!shiftLoading && !shift) {
       router.replace("/pos/shift-open");
     }
   }, [shift, shiftLoading, router]);
 
-  const parseMessage = (payload: unknown, fallback: string): string => {
+  const parseMessage = useCallback((payload: unknown, fallback: string): string => {
     if (!payload || typeof payload !== "object") return fallback;
     const source = payload as Record<string, unknown>;
     if (typeof source.message === "string" && source.message.trim()) return source.message;
     if (typeof source.error === "string" && source.error.trim()) return source.error;
     return fallback;
-  };
+  }, []);
 
   const toUnits = (raw: string): number => {
     if (!raw) return 0;
@@ -139,6 +159,7 @@ export default function PosMainPage() {
     if (Math.abs(variance) < 0.000001) {
       return { variance: 0, isZero: true, direction: "EVEN" };
     }
+
     return {
       variance,
       isZero: false,
@@ -188,6 +209,69 @@ export default function PosMainPage() {
     } finally {
       setSummaryLoading(false);
     }
+  };
+
+  const loadManagementSummary = useCallback(
+    async (token: string) => {
+      if (!shift) return;
+
+      setManagementSummaryLoading(true);
+      setManagementSummaryError(null);
+
+      try {
+        const params = new URLSearchParams({ sessionToken: token });
+        const res = await authFetch(`/shifts/${shift.id}/summary?${params.toString()}`);
+        const body = (await res.json().catch(() => null)) as ShiftSummaryDto | Record<string, unknown> | null;
+
+        if (res.status === 401) {
+          invalidateManagementSession();
+          runWithManagementSession(
+            async (freshToken) => {
+              await loadManagementSummary(freshToken);
+            },
+            {
+              description: "Management mode expired. Enter admin PIN to reopen the cashup summary.",
+              submitLabel: "Re-authorize",
+            },
+          );
+          return;
+        }
+
+        if (!res.ok || !body) {
+          throw new Error(parseMessage(body, "Unable to load cashup summary."));
+        }
+
+        setManagementSummary(body as ShiftSummaryDto);
+        setManagementSummaryOpen(true);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Unable to load cashup summary.";
+        setManagementSummaryError(message);
+        setManagementSummaryOpen(true);
+      } finally {
+        setManagementSummaryLoading(false);
+      }
+    },
+    [authFetch, invalidateManagementSession, parseMessage, runWithManagementSession, shift],
+  );
+
+  const openManagementMenu = () => {
+    runWithManagementSession(
+      async (token) => {
+        await loadManagementSummary(token);
+      },
+      {
+        title: "Management PIN Required",
+        description: "Enter admin PIN to unlock management mode for 5 minutes.",
+        submitLabel: "Unlock Management",
+      },
+    );
+  };
+
+  const endManagementMode = () => {
+    invalidateManagementSession();
+    setManagementSummaryOpen(false);
+    setManagementSummary(null);
+    setManagementSummaryError(null);
   };
 
   const closeShiftRequest = async (payload: ShiftCloseRequest): Promise<ShiftCloseResponse> => {
@@ -412,13 +496,12 @@ export default function PosMainPage() {
 
   const countedCashUnits = toUnits(countedCashInput);
   const currentVariance = closeSummary ? evaluateVariance(closeSummary.expectedCash, countedCashUnits) : null;
+  const managementCountdown = formatRemainingMs(remainingMs);
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-950">
-      {/* ── Shift chrome header ───────────────────────────────────────────── */}
       <header className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-6 py-3">
         <div className="flex items-center gap-3">
-          {/* Shift open indicator */}
           <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-400 ring-1 ring-emerald-500/30">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
             Shift Open
@@ -431,9 +514,30 @@ export default function PosMainPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-4">
-          {user?.name && (
-            <span className="text-sm text-slate-400">{user.name}</span>
+        <div className="flex items-center gap-3">
+          {isManagementActive && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Management Active · {managementCountdown}
+            </span>
+          )}
+          {user?.name && <span className="text-sm text-slate-400">{user.name}</span>}
+          <button
+            type="button"
+            onClick={openManagementMenu}
+            className="flex items-center gap-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+          >
+            <ShieldCheck className="h-3.5 w-3.5" />
+            Management
+          </button>
+          {isManagementActive && (
+            <button
+              type="button"
+              onClick={endManagementMode}
+              className="flex items-center gap-1.5 rounded-lg border border-amber-500/30 bg-slate-900 px-3 py-1.5 text-xs font-medium text-amber-300 transition-colors hover:bg-amber-500/10"
+            >
+              End Management
+            </button>
           )}
           <button
             type="button"
@@ -446,9 +550,14 @@ export default function PosMainPage() {
         </div>
       </header>
 
-      <PosOrderBuilder />
+      <PosOrderBuilder
+        managementSessionToken={sessionToken}
+        managementSessionActive={isManagementActive}
+        managementRemainingMs={remainingMs}
+        requestManagementSession={runWithManagementSession}
+        invalidateManagementSession={invalidateManagementSession}
+      />
 
-      {/* ── Close-shift confirmation overlay ─────────────────────────────── */}
       {confirmClose && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
           <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-800 p-6 flex flex-col gap-5">
@@ -501,9 +610,7 @@ export default function PosMainPage() {
                         ? "Shortage detected"
                         : "Counted matches expected"}
                     </p>
-                    <p className="mt-1">
-                      Variance: {formatZarCurrency(Math.abs(currentVariance.variance))}
-                    </p>
+                    <p className="mt-1">Variance: {formatZarCurrency(Math.abs(currentVariance.variance))}</p>
 
                     {!currentVariance.isZero && (
                       <>
@@ -602,6 +709,57 @@ export default function PosMainPage() {
         </div>
       )}
 
+      {managementSummaryOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-6">
+          <div className="w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-900 p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.15em] text-amber-200">Management</p>
+                <h2 className="mt-1 text-xl font-bold text-white">Cashup Summary</h2>
+                <p className="mt-1 text-sm text-slate-400">
+                  Management mode remains active for {managementCountdown}. Order-level void, refund, and discount actions are available from an order detail view while this session is active.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setManagementSummaryOpen(false)}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+
+            {isManagementActive && (
+              <div className="mt-4 flex justify-end">
+                <button
+                  type="button"
+                  onClick={endManagementMode}
+                  className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-sm font-medium text-amber-200 hover:bg-amber-500/20"
+                >
+                  End Management
+                </button>
+              </div>
+            )}
+
+            {managementSummaryLoading ? (
+              <p className="mt-4 text-sm text-slate-300">Loading cashup summary...</p>
+            ) : managementSummaryError ? (
+              <div className="mt-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+                {managementSummaryError}
+              </div>
+            ) : managementSummary ? (
+              <div className="mt-4 grid gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-4 text-sm text-slate-200 sm:grid-cols-2">
+                <p>Opening Float: {formatZarCurrency(managementSummary.openingFloat)}</p>
+                <p>Cash Sales: {formatZarCurrency(managementSummary.cashSalesTotal)}</p>
+                <p>Adjustments: {formatZarCurrency(managementSummary.adjustmentsTotal)}</p>
+                <p className="text-base font-semibold text-amber-100">Expected Cash: {formatZarCurrency(managementSummary.expectedCash)}</p>
+                <p>Orders Ringed Up: {managementSummary.orderCount}</p>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       <AdminAuthorizationOverlay
         isOpen={showPinOverlay}
         title="Manager PIN Required"
@@ -620,5 +778,13 @@ export default function PosMainPage() {
         onSubmit={() => void submitVarianceClose()}
       />
     </div>
+  );
+}
+
+export default function PosMainPage() {
+  return (
+    <ManagementSessionProvider>
+      <PosMainContent />
+    </ManagementSessionProvider>
   );
 }

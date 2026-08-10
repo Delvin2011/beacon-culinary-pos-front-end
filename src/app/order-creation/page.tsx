@@ -1,66 +1,34 @@
 "use client";
 
-import { useState } from "react";
-import { AppSidebar } from "@/components/app-sidebar";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import { Separator } from "@/components/ui/separator";
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar";
-import { OrderProvider } from "@/contexts/order-context";
-import CustomerOrder from "@/components/customer-orders/order-creation";
-import { Payment } from "@/components/customer-orders/order-payments";
+import Link from "next/link";
 
 export default function Page() {
-  const [breadcrumbPath, setBreadcrumbPath] = useState(["Customer", "CreateOrder"]);
-  const [currentPage, setCurrentPage] = useState("CustomerOrder");
-
-  const navigateToPayment = () => {
-    setBreadcrumbPath([...breadcrumbPath, "Payment"]);
-    setCurrentPage("Payment");
-  };
-
   return (
-    <OrderProvider>
-      <SidebarProvider>
-        <AppSidebar />
-        <SidebarInset>
-          <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-[[data-collapsible=icon]]/sidebar-wrapper:h-12">
-            <div className="flex items-center gap-2 px-4">
-              <SidebarTrigger className="-ml-1" />
-              <Separator orientation="vertical" className="mr-2 h-4" />
-              <Breadcrumb>
-                <BreadcrumbList>
-                  {breadcrumbPath.map((crumb, index) => (
-                    <BreadcrumbItem key={index}>
-                      {index < breadcrumbPath.length - 1 ? (
-                        <>
-                          <BreadcrumbPage className="hidden md:block">{crumb}</BreadcrumbPage>
-                          <BreadcrumbSeparator className="hidden md:block" />
-                        </>
-                      ) : (
-                        <BreadcrumbPage>{crumb}</BreadcrumbPage>
-                      )}
-                    </BreadcrumbItem>
-                  ))}
-                </BreadcrumbList>
-              </Breadcrumb>
-            </div>
-          </header>
-          <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-            {currentPage === "CustomerOrder" && <CustomerOrder onCheckout={navigateToPayment} />}
-            {currentPage === "Payment" && <Payment />}
-          </div>
-        </SidebarInset>
-      </SidebarProvider>
-    </OrderProvider>
+    <main className="flex min-h-screen items-center justify-center bg-slate-950 px-6 py-12">
+      <section className="w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-900 p-6 text-slate-100">
+        <h1 className="text-xl font-bold text-white">Route Retired</h1>
+        <p className="mt-3 text-sm text-slate-300">
+          The old order-creation flow has been retired because Stage 4 uses the new payments array contract and account/split payment rules.
+        </p>
+        <p className="mt-2 text-sm text-slate-300">
+          Use the POS terminal flow for all new orders.
+        </p>
+
+        <div className="mt-5 flex flex-wrap gap-3">
+          <Link
+            href="/pos/login"
+            className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-400"
+          >
+            Open POS Login
+          </Link>
+          <Link
+            href="/dashboard"
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+          >
+            Back to Dashboard
+          </Link>
+        </div>
+      </section>
+    </main>
   );
 }

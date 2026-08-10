@@ -59,6 +59,10 @@ const data = {
           title: "Daily Planning",
           url: "/daily-planning",
         },
+        {
+          title: "Accounts",
+          url: "/accounts",
+        },
       ],
     },
     {

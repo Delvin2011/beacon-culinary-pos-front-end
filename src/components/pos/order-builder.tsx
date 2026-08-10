@@ -4,7 +4,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
-import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
+import {
+  AdjustmentReasonFields,
+  type OrderAdjustmentReasonCode,
+} from "@/components/pos/adjustment-reason-fields";
+import { Input } from "@/components/ui/input";
 import { formatZarCurrency } from "@/lib/utils";
 
 type MealPeriod = {
@@ -62,17 +66,17 @@ type DraftLine = {
 
 type OrderStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" | "REFUNDED";
 
+type PaymentMethod = "CASH" | "CARD" | "ACCOUNT";
+
+type RefundMethod = "CASH" | "ACCOUNT_BALANCE";
+
 type OrderAdjustmentScope = "WHOLE_ORDER" | "EXTRAS_ONLY";
 
-type OrderAdjustmentAction = "VOID" | "REFUND";
+type OrderAdjustmentAction = "VOID" | "REFUND" | "DISCOUNT";
 
-type OrderAdjustmentReasonCode =
-  | "WRONG_ORDER"
-  | "CUSTOMER_COMPLAINT"
-  | "KITCHEN_ERROR"
-  | "DUPLICATE_ENTRY"
-  | "OUT_OF_STOCK_ERROR"
-  | "OTHER";
+type AdjustmentRequestAction = "CANCEL" | "DISCOUNT";
+
+type DiscountType = "PERCENTAGE" | "FIXED_AMOUNT";
 
 type OrderAdjustmentDto = {
   id: number;
@@ -81,9 +85,23 @@ type OrderAdjustmentDto = {
   reasonCode: OrderAdjustmentReasonCode;
   note?: string;
   amount: number;
+  discountType?: DiscountType;
+  discountValue?: number;
+  refundMethod?: RefundMethod;
+  accountId?: number;
   requestedById: number;
   authorizedById: number;
   createdAt: string;
+};
+
+type OrderPaymentDto = {
+  id: number;
+  method: PaymentMethod;
+  amount: number;
+  amountTendered?: number;
+  changeDue?: number;
+  cardReference?: string;
+  accountId?: number;
 };
 
 type OrderDto = {
@@ -92,15 +110,26 @@ type OrderDto = {
   status?: OrderStatus;
   orderDate?: string;
   createdAt?: string;
-  paymentMethod?: "CASH";
-  changeDue: number;
   subtotal: number;
   total: number;
   originalTotal?: number;
-  amountTendered: number;
   printFailed?: boolean;
   lines?: OrderLineDto[];
   adjustments?: OrderAdjustmentDto[];
+  payments?: OrderPaymentDto[];
+};
+
+type AccountDto = {
+  id: number;
+  name: string;
+};
+
+type DraftPaymentEntry = {
+  method: PaymentMethod;
+  amount: number;
+  amountTendered?: number;
+  cardReference?: string;
+  accountId?: number;
 };
 
 type OrderLineDto = {
@@ -134,14 +163,22 @@ type ApiErrorPayload = {
 
 const LOW_STOCK_THRESHOLD = 10;
 
-const ADJUSTMENT_REASON_OPTIONS: Array<{ value: OrderAdjustmentReasonCode; label: string }> = [
-  { value: "WRONG_ORDER", label: "Wrong Order" },
-  { value: "CUSTOMER_COMPLAINT", label: "Customer Complaint" },
-  { value: "KITCHEN_ERROR", label: "Kitchen Error" },
-  { value: "DUPLICATE_ENTRY", label: "Duplicate Entry" },
-  { value: "OUT_OF_STOCK_ERROR", label: "Out of Stock Error" },
-  { value: "OTHER", label: "Other" },
-];
+type ManagementPrompt = {
+  title?: string;
+  description?: string;
+  submitLabel?: string;
+};
+
+type PosOrderBuilderProps = {
+  managementSessionToken: string | null;
+  managementSessionActive: boolean;
+  managementRemainingMs: number;
+  requestManagementSession: (
+    action: (sessionToken: string) => void | Promise<void>,
+    prompt?: ManagementPrompt,
+  ) => void;
+  invalidateManagementSession: () => void;
+};
 
 function nowTimeHHMMSS(): string {
   return new Date().toTimeString().slice(0, 8);
@@ -153,6 +190,16 @@ function isWithinPeriod(startTime: string, endTime: string, now: string): boolea
 
 function toMoney(value: number): string {
   return formatZarCurrency(value);
+}
+
+function toCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function fromCentsInput(raw: string): number {
+  const parsed = Number(raw || "0");
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, parsed) / 100;
 }
 
 function parseMessage(payload: unknown, fallback: string): string {
@@ -258,6 +305,15 @@ function adjustmentActionLabel(action: OrderAdjustmentAction): string {
   return action === "VOID" ? "Voided" : "Refunded";
 }
 
+function formatRemainingMs(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
 function alreadyAdjustedMessage(order: OrderDto): string {
   if (order.status === "VOIDED") return "This order has already been voided.";
   if (order.status === "REFUNDED") return "This order has already been refunded.";
@@ -265,13 +321,13 @@ function alreadyAdjustedMessage(order: OrderDto): string {
   return "This order was already adjusted. The latest state has been loaded.";
 }
 
-function isTokenIssue(status: number, message: string): boolean {
-  if (status === 401) return true;
-  const normalized = message.toLowerCase();
-  return normalized.includes("token") || normalized.includes("expired") || normalized.includes("used");
-}
-
-export function PosOrderBuilder() {
+export function PosOrderBuilder({
+  managementSessionToken,
+  managementSessionActive,
+  managementRemainingMs,
+  requestManagementSession,
+  invalidateManagementSession,
+}: PosOrderBuilderProps) {
   const { authFetch } = useAuth();
 
   const [periods, setPeriods] = useState<MealPeriod[]>([]);
@@ -289,7 +345,18 @@ export function PosOrderBuilder() {
   const [submissionError, setSubmissionError] = useState<string | null>(null);
 
   const [showPayment, setShowPayment] = useState(false);
-  const [cashInput, setCashInput] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
+  const [paymentEntries, setPaymentEntries] = useState<DraftPaymentEntry[]>([]);
+  const [paymentAmountInput, setPaymentAmountInput] = useState("");
+  const [cashTenderedInput, setCashTenderedInput] = useState("");
+  const [cardReference, setCardReference] = useState("");
+  const [cardReferenceError, setCardReferenceError] = useState<string | null>(null);
+  const [paymentEntryError, setPaymentEntryError] = useState<string | null>(null);
+  const [checkoutAccounts, setCheckoutAccounts] = useState<AccountDto[]>([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [accountsError, setAccountsError] = useState<string | null>(null);
+  const [accountSearch, setAccountSearch] = useState("");
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [completedOrder, setCompletedOrder] = useState<OrderDto | null>(null);
@@ -301,17 +368,18 @@ export function PosOrderBuilder() {
   const [todayOrdersLoading, setTodayOrdersLoading] = useState(false);
   const [todayOrdersError, setTodayOrdersError] = useState<string | null>(null);
   const [showTodayOrdersPanel, setShowTodayOrdersPanel] = useState(false);
+  const [requestedAction, setRequestedAction] = useState<AdjustmentRequestAction | null>(null);
   const [adjustmentScope, setAdjustmentScope] = useState<OrderAdjustmentScope | null>(null);
   const [adjustmentReasonCode, setAdjustmentReasonCode] = useState<OrderAdjustmentReasonCode>("WRONG_ORDER");
   const [adjustmentNote, setAdjustmentNote] = useState("");
   const [showAdjustmentForm, setShowAdjustmentForm] = useState(false);
-  const [showManagerPinOverlay, setShowManagerPinOverlay] = useState(false);
-  const [managerPinInput, setManagerPinInput] = useState("");
   const [adjustmentError, setAdjustmentError] = useState<string | null>(null);
   const [adjustmentFormError, setAdjustmentFormError] = useState<string | null>(null);
-  const [managerPinError, setManagerPinError] = useState<string | null>(null);
   const [isApplyingAdjustment, setIsApplyingAdjustment] = useState(false);
   const [adjustmentSuccess, setAdjustmentSuccess] = useState<string | null>(null);
+  const [discountType, setDiscountType] = useState<DiscountType>("PERCENTAGE");
+  const [discountValueInput, setDiscountValueInput] = useState("");
+  const [discountValueError, setDiscountValueError] = useState<string | null>(null);
 
   const selectedPeriod = useMemo(
     () => periods.find((p) => p.id === selectedPeriodId) ?? null,
@@ -410,13 +478,93 @@ export function PosOrderBuilder() {
   );
 
   const draftTotal = draftSubtotal + draftExtrasTotal;
+  const draftTotalCents = useMemo(() => toCents(draftTotal), [draftTotal]);
 
-  const tenderedAmount = useMemo(() => {
-    const parsed = Number(cashInput || "0");
-    return Number.isFinite(parsed) ? parsed / 100 : 0;
-  }, [cashInput]);
+  const paymentAmount = useMemo(() => fromCentsInput(paymentAmountInput), [paymentAmountInput]);
+  const cashTenderedAmount = useMemo(() => fromCentsInput(cashTenderedInput), [cashTenderedInput]);
 
-  const canConfirmPayment = draftLines.length > 0 && tenderedAmount >= draftTotal && !isSubmitting;
+  const totalPaidCents = useMemo(
+    () => paymentEntries.reduce((sum, entry) => sum + toCents(entry.amount), 0),
+    [paymentEntries],
+  );
+
+  const remainingToPayCents = Math.max(0, draftTotalCents - totalPaidCents);
+  const remainingToPay = remainingToPayCents / 100;
+
+  const hasAccountEntry = paymentEntries.some((entry) => entry.method === "ACCOUNT");
+  const hasCashOrCardEntry = paymentEntries.some((entry) => entry.method === "CASH" || entry.method === "CARD");
+  const availableMethods = useMemo(() => {
+    if (hasAccountEntry) return ["ACCOUNT"] as PaymentMethod[];
+    if (hasCashOrCardEntry) return ["CASH", "CARD"] as PaymentMethod[];
+    return ["CASH", "CARD", "ACCOUNT"] as PaymentMethod[];
+  }, [hasAccountEntry, hasCashOrCardEntry]);
+
+  const accountSearchLower = accountSearch.trim().toLowerCase();
+  const filteredAccounts = useMemo(() => {
+    if (!accountSearchLower) return checkoutAccounts;
+    return checkoutAccounts.filter((account) => account.name.toLowerCase().includes(accountSearchLower));
+  }, [accountSearchLower, checkoutAccounts]);
+
+  const existingMethodSet = useMemo(
+    () => new Set(paymentEntries.map((entry) => entry.method)),
+    [paymentEntries],
+  );
+
+  const singlePaymentDraft = useMemo<DraftPaymentEntry | null>(() => {
+    if (paymentEntries.length > 0 || remainingToPayCents <= 0) return null;
+
+    const amount = remainingToPay;
+    if (paymentMethod === "ACCOUNT") {
+      if (!selectedAccountId) return null;
+      return { method: "ACCOUNT", amount, accountId: selectedAccountId };
+    }
+
+    if (paymentMethod === "CARD") {
+      const reference = cardReference.trim();
+      if (!reference) return null;
+      return { method: "CARD", amount, cardReference: reference };
+    }
+
+    if (cashTenderedAmount < amount) return null;
+    return { method: "CASH", amount, amountTendered: cashTenderedAmount };
+  }, [
+    cardReference,
+    cashTenderedAmount,
+    paymentEntries.length,
+    paymentMethod,
+    remainingToPay,
+    remainingToPayCents,
+    selectedAccountId,
+  ]);
+
+  const discountValue = useMemo(() => {
+    const parsed = Number.parseFloat(discountValueInput);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }, [discountValueInput]);
+
+  const discountPreview = useMemo(() => {
+    const targetOrder = receiptOrder ?? completedOrder;
+    if (!targetOrder) return { amount: 0, newTotal: 0 };
+
+    const currentTotal = targetOrder.total ?? 0;
+    if (discountType === "PERCENTAGE") {
+      const amount = Math.round(((currentTotal * discountValue) / 100) * 100) / 100;
+      return {
+        amount,
+        newTotal: Math.max(0, currentTotal - amount),
+      };
+    }
+
+    return {
+      amount: discountValue,
+      newTotal: Math.max(0, currentTotal - discountValue),
+    };
+  }, [completedOrder, discountType, discountValue, receiptOrder]);
+
+  const canConfirmPayment =
+    draftLines.length > 0 &&
+    !isSubmitting &&
+    ((paymentEntries.length > 0 && remainingToPayCents === 0) || singlePaymentDraft !== null);
 
   const openBuilderForOption = (option: DailyMealOption) => {
     if (option.portionsRemaining <= 0) return;
@@ -503,8 +651,168 @@ export function PosOrderBuilder() {
     setDraftLines([]);
     setSubmissionError(null);
     setShowPayment(false);
-    setCashInput("");
+    setPaymentMethod("CASH");
+    setPaymentEntries([]);
+    setPaymentAmountInput("");
+    setCashTenderedInput("");
+    setCardReference("");
+    setCardReferenceError(null);
+    setPaymentEntryError(null);
+    setAccountsError(null);
+    setAccountSearch("");
+    setSelectedAccountId(null);
   };
+
+  const resetPaymentEditor = useCallback(
+    (nextAmountCents?: number) => {
+      const amountCents = Math.max(0, nextAmountCents ?? remainingToPayCents);
+      setPaymentAmountInput(String(amountCents));
+      setCashTenderedInput(String(amountCents));
+      setCardReference("");
+      setCardReferenceError(null);
+      setPaymentEntryError(null);
+    },
+    [remainingToPayCents],
+  );
+
+  const loadCheckoutAccounts = useCallback(async () => {
+    setAccountsLoading(true);
+    setAccountsError(null);
+    try {
+      const res = await authFetch("/accounts?active=true");
+      const body = (await res.json().catch(() => null)) as AccountDto[] | ApiErrorPayload | null;
+      if (!res.ok || !Array.isArray(body)) {
+        throw new Error(parseMessage(body, "Unable to load accounts for checkout."));
+      }
+
+      setCheckoutAccounts(body);
+      setSelectedAccountId((current) => {
+        if (current && body.some((account) => account.id === current)) return current;
+        return body.length > 0 ? body[0].id : null;
+      });
+    } catch (err) {
+      setAccountsError(err instanceof Error ? err.message : "Unable to load accounts for checkout.");
+      setCheckoutAccounts([]);
+      setSelectedAccountId(null);
+    } finally {
+      setAccountsLoading(false);
+    }
+  }, [authFetch]);
+
+  useEffect(() => {
+    if (!showPayment) return;
+
+    if (!availableMethods.includes(paymentMethod)) {
+      setPaymentMethod(availableMethods[0]);
+      return;
+    }
+
+    if (paymentMethod === "ACCOUNT" && checkoutAccounts.length === 0 && !accountsLoading) {
+      void loadCheckoutAccounts();
+    }
+  }, [
+    accountsLoading,
+    availableMethods,
+    checkoutAccounts.length,
+    loadCheckoutAccounts,
+    paymentMethod,
+    showPayment,
+  ]);
+
+  useEffect(() => {
+    if (!showPayment) return;
+    if (remainingToPayCents <= 0) return;
+    resetPaymentEditor(remainingToPayCents);
+  }, [paymentMethod, remainingToPayCents, resetPaymentEditor, showPayment]);
+
+  const addPaymentEntry = () => {
+    if (remainingToPayCents <= 0) {
+      setPaymentEntryError("Order is already fully paid.");
+      return;
+    }
+
+    if (paymentEntries.length >= 2) {
+      setPaymentEntryError("Only up to two payment entries are allowed.");
+      return;
+    }
+
+    if (existingMethodSet.has(paymentMethod)) {
+      setPaymentEntryError("This payment method has already been added.");
+      return;
+    }
+
+    const amount = paymentMethod === "ACCOUNT" ? remainingToPay : paymentAmount;
+    const amountCents = toCents(amount);
+    if (amountCents <= 0 || amountCents > remainingToPayCents) {
+      setPaymentEntryError("Amount must be greater than zero and no more than the remaining balance.");
+      return;
+    }
+
+    if (paymentMethod === "CASH") {
+      if (cashTenderedAmount < amount) {
+        setPaymentEntryError("Tendered amount must be at least the cash amount.");
+        return;
+      }
+
+      setPaymentEntries((prev) => [
+        ...prev,
+        {
+          method: "CASH",
+          amount,
+          amountTendered: cashTenderedAmount,
+        },
+      ]);
+      resetPaymentEditor(remainingToPayCents - amountCents);
+      return;
+    }
+
+    if (paymentMethod === "CARD") {
+      const reference = cardReference.trim();
+      if (!reference) {
+        setCardReferenceError("Card reference is required.");
+        return;
+      }
+
+      setPaymentEntries((prev) => [
+        ...prev,
+        {
+          method: "CARD",
+          amount,
+          cardReference: reference,
+        },
+      ]);
+      resetPaymentEditor(remainingToPayCents - amountCents);
+      return;
+    }
+
+    if (!selectedAccountId) {
+      setPaymentEntryError("Select an account to continue.");
+      return;
+    }
+
+    setPaymentEntries((prev) => [
+      ...prev,
+      {
+        method: "ACCOUNT",
+        amount,
+        accountId: selectedAccountId,
+      },
+    ]);
+    resetPaymentEditor(0);
+  };
+
+  const removePaymentEntry = (index: number) => {
+    setPaymentEntries((prev) => prev.filter((_, entryIndex) => entryIndex !== index));
+    setPaymentEntryError(null);
+  };
+
+  const getAccountName = useCallback(
+    (accountId?: number) => {
+      if (!accountId) return null;
+      return checkoutAccounts.find((account) => account.id === accountId)?.name ?? `Account #${accountId}`;
+    },
+    [checkoutAccounts],
+  );
 
   const applyConflictFeedback = (payload: unknown) => {
     const { optionIds, extraIds } = extractConflictIds(payload);
@@ -595,9 +903,23 @@ export function PosOrderBuilder() {
 
     setIsSubmitting(true);
     setSubmissionError(null);
+    setCardReferenceError(null);
 
-    const payload = {
-      amountTendered: tenderedAmount,
+    const paymentsForSubmit = paymentEntries.length > 0 ? paymentEntries : singlePaymentDraft ? [singlePaymentDraft] : [];
+    if (paymentsForSubmit.length === 0) {
+      setSubmissionError("Add a valid payment before confirming.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      payments: paymentsForSubmit.map((entry) => ({
+        method: entry.method,
+        amount: entry.amount,
+        amountTendered: entry.amountTendered,
+        cardReference: entry.cardReference,
+        accountId: entry.accountId,
+      })),
       lines: draftLines.map((line) => ({
         dailyMealOptionId: line.dailyMealOptionId,
         quantity: line.quantity,
@@ -636,7 +958,13 @@ export function PosOrderBuilder() {
       setReceiptError(null);
       setDraftLines([]);
       setShowPayment(false);
-      setCashInput("");
+      setPaymentMethod("CASH");
+      setPaymentEntries([]);
+      setPaymentAmountInput("");
+      setCashTenderedInput("");
+      setCardReference("");
+      setPaymentEntryError(null);
+      setAccountSearch("");
       await loadOrderReceipt(order.id);
       await loadTodayOrders();
       await loadMenuForPeriod(selectedPeriod?.name ?? "");
@@ -649,72 +977,46 @@ export function PosOrderBuilder() {
   };
 
   const beginAdjustment = (scope: OrderAdjustmentScope) => {
+    setRequestedAction("CANCEL");
     setAdjustmentScope(scope);
     setShowAdjustmentForm(true);
-    setShowManagerPinOverlay(false);
-    setManagerPinInput("");
     setAdjustmentFormError(null);
-    setManagerPinError(null);
     setAdjustmentError(null);
     setAdjustmentSuccess(null);
+    setDiscountValueError(null);
   };
 
-  const continueToPin = () => {
-    if (!adjustmentScope) return;
-
-    const trimmedNote = adjustmentNote.trim();
-    if (adjustmentReasonCode === "OTHER" && trimmedNote.length === 0) {
-      setAdjustmentFormError("A note is required when reason is Other.");
-      return;
-    }
-
+  const beginDiscount = () => {
+    setRequestedAction("DISCOUNT");
+    setAdjustmentScope(null);
+    setShowAdjustmentForm(true);
     setAdjustmentFormError(null);
-    setManagerPinError(null);
-    setShowManagerPinOverlay(true);
+    setAdjustmentError(null);
+    setAdjustmentSuccess(null);
+    setDiscountValueError(null);
   };
 
-  const submitAdjustment = useCallback(
-    async (order: OrderDto) => {
-      if (!adjustmentScope || managerPinInput.trim().length < 4) {
-        setManagerPinError("Enter the manager PIN to continue.");
-        return;
-      }
+  const submitOrderAdjustment = useCallback(
+    async (order: OrderDto, sessionToken: string) => {
+      if (!requestedAction) return;
 
       setIsApplyingAdjustment(true);
-      setManagerPinError(null);
       setAdjustmentError(null);
+      setDiscountValueError(null);
 
       try {
-        const authorizeRes = await authFetch("/admin/authorize", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ pin: managerPinInput }),
-        });
+        const payload: Record<string, unknown> = {
+          requestedAction,
+          reasonCode: adjustmentReasonCode,
+          note: adjustmentNote.trim() || undefined,
+          sessionToken,
+        };
 
-        const authorizeBody = (await authorizeRes.json().catch(() => null)) as
-          | { authorizationToken?: string }
-          | ApiErrorPayload
-          | null;
-
-        if (authorizeRes.status === 401) {
-          setManagerPinError("Incorrect manager PIN. Try again.");
-          setManagerPinInput("");
-          return;
-        }
-
-        if (!authorizeRes.ok) {
-          throw new Error(parseMessage(authorizeBody, "Authorization failed."));
-        }
-
-        const authorizationToken =
-          authorizeBody && typeof authorizeBody === "object" && "authorizationToken" in authorizeBody
-            ? (authorizeBody as { authorizationToken?: string }).authorizationToken
-            : undefined;
-
-        if (!authorizationToken) {
-          throw new Error("Authorization token was not returned.");
+        if (requestedAction === "CANCEL") {
+          payload.scope = adjustmentScope;
+        } else {
+          payload.discountType = discountType;
+          payload.discountValue = discountValue;
         }
 
         const adjustmentRes = await authFetch(`/orders/${order.id}/adjustments`, {
@@ -722,44 +1024,43 @@ export function PosOrderBuilder() {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            scope: adjustmentScope,
-            reasonCode: adjustmentReasonCode,
-            note: adjustmentNote.trim() || undefined,
-            authorizationToken,
-          }),
+          body: JSON.stringify(payload),
         });
 
         const adjustmentBody = (await adjustmentRes.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
 
         if (!adjustmentRes.ok) {
-          const parsedMessage = parseMessage(adjustmentBody, "Unable to apply adjustment.");
+          const parsedMessage = parseMessage(adjustmentBody, "Unable to apply management action.");
+
+          if (adjustmentRes.status === 401) {
+            invalidateManagementSession();
+            requestManagementSession(
+              async (freshSessionToken) => {
+                await submitOrderAdjustment(order, freshSessionToken);
+              },
+              {
+                description: "Management mode expired. Enter admin PIN to continue this action.",
+                submitLabel: "Re-authorize",
+              },
+            );
+            return;
+          }
 
           if (adjustmentRes.status === 409) {
             const refreshed = await loadOrderReceipt(order.id);
             await loadTodayOrders();
-            setShowManagerPinOverlay(false);
             setShowAdjustmentForm(false);
             setAdjustmentError(alreadyAdjustedMessage(refreshed ?? order));
             return;
           }
 
-          if (isTokenIssue(adjustmentRes.status, parsedMessage)) {
-            await loadOrderReceipt(order.id);
-            await loadTodayOrders();
-            setShowManagerPinOverlay(false);
-            setShowAdjustmentForm(false);
-            setManagerPinInput("");
-            setAdjustmentError("Authorization expired or was already used. Start again with a fresh manager PIN.");
-            return;
-          }
-
           if (adjustmentRes.status === 400) {
             await loadOrderReceipt(order.id);
-            setShowManagerPinOverlay(false);
-            setShowAdjustmentForm(false);
-            setManagerPinInput("");
-            setAdjustmentError(parsedMessage);
+            if (requestedAction === "DISCOUNT") {
+              setDiscountValueError(parsedMessage);
+            } else {
+              setAdjustmentError(parsedMessage);
+            }
             return;
           }
 
@@ -773,36 +1074,46 @@ export function PosOrderBuilder() {
         setReceiptOrder(updatedOrder);
         await loadTodayOrders();
 
-        const amount = recent?.amount ?? Math.max(0, (order.total ?? 0) - (updatedOrder.total ?? 0));
-        const action = recent?.action ?? (updatedOrder.status === "VOIDED" ? "VOID" : "REFUND");
-        const scope = recent?.scope ?? adjustmentScope;
-
-        if (action === "VOID") {
-          if (scope === "WHOLE_ORDER") {
-            const portionsReturned = getTotalMealPortions(order);
-            const extraUnitsReturned = getUnadjustedExtraUnits(order);
-            const extraSuffix = extraUnitsReturned > 0 ? ` and ${extraUnitsReturned} extra units` : "";
-            setAdjustmentSuccess(
-              `${adjustmentActionLabel(action)} ${toMoney(amount)}. ${portionsReturned} portions${extraSuffix} returned to today's stock.`,
-            );
-          } else {
-            const extraUnitsReturned = getUnadjustedExtraUnits(order);
-            const detail =
-              extraUnitsReturned > 0
-                ? `${extraUnitsReturned} extra units returned to today's stock.`
-                : "Extras were removed and today's stock was restored.";
-            setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. ${detail}`);
-          }
+        if (requestedAction === "DISCOUNT") {
+          const discountAmount = recent?.amount ?? discountPreview.amount;
+          setAdjustmentSuccess(
+            `Discount applied: ${toMoney(discountAmount)}. New total ${toMoney(updatedOrder.total)}.`,
+          );
         } else {
-          setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. No stock was restored.`);
+          const amount = recent?.amount ?? Math.max(0, (order.total ?? 0) - (updatedOrder.total ?? 0));
+          const action = recent?.action ?? (updatedOrder.status === "VOIDED" ? "VOID" : "REFUND");
+          const scope = recent?.scope ?? adjustmentScope;
+          const usesCard = (order.payments ?? []).some((payment) => payment.method === "CARD");
+
+          const payoutInstruction =
+            recent?.refundMethod === "ACCOUNT_BALANCE"
+              ? `Credited to ${getAccountName(recent.accountId) ?? "linked account"} - no cash or card action needed.`
+              : `Hand back ${toMoney(amount)} in cash.${usesCard ? " Originally paid by card - refund is cash." : ""}`;
+
+          if (action === "VOID") {
+            if (scope === "WHOLE_ORDER") {
+              const portionsReturned = getTotalMealPortions(order);
+              const extraUnitsReturned = getUnadjustedExtraUnits(order);
+              const extraSuffix = extraUnitsReturned > 0 ? ` and ${extraUnitsReturned} extra units` : "";
+              setAdjustmentSuccess(
+                `${adjustmentActionLabel(action)} ${toMoney(amount)}. ${portionsReturned} portions${extraSuffix} returned to today's stock. ${payoutInstruction}`,
+              );
+            } else {
+              const extraUnitsReturned = getUnadjustedExtraUnits(order);
+              const detail =
+                extraUnitsReturned > 0
+                  ? `${extraUnitsReturned} extra units returned to today's stock.`
+                  : "Extras were removed and today's stock was restored.";
+              setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. ${detail} ${payoutInstruction}`);
+            }
+          } else {
+            setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. No stock was restored. ${payoutInstruction}`);
+          }
         }
 
-        setShowManagerPinOverlay(false);
         setShowAdjustmentForm(false);
-        setManagerPinInput("");
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unable to apply adjustment.";
-        setManagerPinError(msg);
+        setAdjustmentError(err instanceof Error ? err.message : "Unable to apply management action.");
       } finally {
         setIsApplyingAdjustment(false);
       }
@@ -812,9 +1123,76 @@ export function PosOrderBuilder() {
       adjustmentReasonCode,
       adjustmentScope,
       authFetch,
+      discountPreview.amount,
+      discountType,
+      discountValue,
+      invalidateManagementSession,
       loadOrderReceipt,
       loadTodayOrders,
-      managerPinInput,
+      getAccountName,
+      requestManagementSession,
+      requestedAction,
+    ],
+  );
+
+  const submitManagementAction = useCallback(
+    (order: OrderDto) => {
+      const trimmedNote = adjustmentNote.trim();
+      if (adjustmentReasonCode === "OTHER" && trimmedNote.length === 0) {
+        setAdjustmentFormError("A note is required when reason is Other.");
+        return;
+      }
+
+      if (requestedAction === "CANCEL" && !adjustmentScope) {
+        setAdjustmentError("Select how this order should be adjusted.");
+        return;
+      }
+
+      if (requestedAction === "DISCOUNT") {
+        if (discountValue <= 0) {
+          setDiscountValueError("Enter a discount value greater than zero.");
+          return;
+        }
+
+        if (discountType === "PERCENTAGE" && (discountValue <= 0 || discountValue > 100)) {
+          setDiscountValueError("Percentage discounts must be greater than 0 and no more than 100.");
+          return;
+        }
+
+        if (discountType === "FIXED_AMOUNT" && discountValue > order.total) {
+          setDiscountValueError("Discount cannot exceed the current order total.");
+          return;
+        }
+
+        if (discountPreview.amount > order.total) {
+          setDiscountValueError("Discount cannot exceed the current order total.");
+          return;
+        }
+      }
+
+      setAdjustmentFormError(null);
+      setDiscountValueError(null);
+
+      requestManagementSession(
+        async (token) => {
+          await submitOrderAdjustment(order, token);
+        },
+        {
+          description: "Enter admin PIN to unlock management mode for order actions.",
+          submitLabel: "Unlock Management",
+        },
+      );
+    },
+    [
+      adjustmentNote,
+      adjustmentReasonCode,
+      adjustmentScope,
+      discountPreview.amount,
+      discountType,
+      discountValue,
+      requestManagementSession,
+      requestedAction,
+      submitOrderAdjustment,
     ],
   );
 
@@ -829,9 +1207,20 @@ export function PosOrderBuilder() {
 
   if (completedOrderId !== null && completedOrder) {
     const shownOrder = receiptOrder ?? completedOrder;
+    const shownPayments = shownOrder.payments ?? [];
+    const shownChangeDue = shownPayments
+      .filter((payment) => payment.method === "CASH")
+      .reduce((sum, payment) => sum + (payment.changeDue ?? 0), 0);
+    const recentAdjustment = latestAdjustment(shownOrder);
     const terminalOrder = isTerminalOrderStatus(shownOrder.status);
     const canRemoveExtras = hasAnyUnadjustedExtras(shownOrder);
-    const selectedScopeLabel = adjustmentScope === "WHOLE_ORDER" ? "Cancel Order" : "Remove Extras";
+    const managementReady = managementSessionActive && Boolean(managementSessionToken);
+    const selectedActionLabel =
+      requestedAction === "DISCOUNT"
+        ? "Apply Discount"
+        : adjustmentScope === "WHOLE_ORDER"
+          ? "Cancel Order"
+          : "Remove Extras";
     return (
       <>
       <main className="grid flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[1.2fr_0.8fr]">
@@ -844,19 +1233,63 @@ export function PosOrderBuilder() {
           <p className="mt-6 text-sm text-emerald-200/90">Order Number</p>
           <p className="text-7xl font-black text-white">#{shownOrder.orderNumber}</p>
 
-          <p className="mt-6 text-sm text-emerald-200/90">Change Due</p>
-          <p className="text-6xl font-black text-white">{toMoney(shownOrder.changeDue)}</p>
+          {shownChangeDue > 0 ? (
+            <>
+              <p className="mt-6 text-sm text-emerald-200/90">Change Due</p>
+              <p className="text-6xl font-black text-white">{toMoney(shownChangeDue)}</p>
+            </>
+          ) : (
+            <>
+              <p className="mt-6 text-sm text-emerald-200/90">Order Total</p>
+              <p className="text-6xl font-black text-white">{toMoney(shownOrder.total)}</p>
+            </>
+          )}
 
           <div className="mt-8 grid gap-2 text-sm text-emerald-100">
             {shownOrder.status && <p>Status: {shownOrder.status.replace("_", " ")}</p>}
             <p>Subtotal: {toMoney(shownOrder.subtotal)}</p>
             <p>Total: {toMoney(shownOrder.total)}</p>
             {typeof shownOrder.originalTotal === "number" && <p>Original Total: {toMoney(shownOrder.originalTotal)}</p>}
-            <p>Tendered: {toMoney(shownOrder.amountTendered)}</p>
+            {shownPayments.length > 0 && (
+              <div className="rounded-lg border border-emerald-200/20 bg-emerald-500/10 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-200">Payments</p>
+                <div className="mt-2 space-y-1">
+                  {shownPayments.map((payment) => (
+                    <div key={payment.id} className="text-xs text-emerald-100/95">
+                      <p>
+                        {payment.method}: {toMoney(payment.amount)}
+                        {payment.method === "ACCOUNT" && payment.accountId ? ` to ${getAccountName(payment.accountId)}` : ""}
+                      </p>
+                      {payment.method === "CASH" && typeof payment.amountTendered === "number" && (
+                        <p>Tendered: {toMoney(payment.amountTendered)}{payment.changeDue ? ` · Change ${toMoney(payment.changeDue)}` : ""}</p>
+                      )}
+                      {payment.method === "CARD" && payment.cardReference && <p>Card Ref: {payment.cardReference}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {typeof shownOrder.printFailed === "boolean" && (
               <p>Print Failed: {shownOrder.printFailed ? "Yes" : "No"}</p>
             )}
           </div>
+
+          {recentAdjustment && (recentAdjustment.action === "REFUND" || recentAdjustment.action === "VOID" || recentAdjustment.action === "DISCOUNT") && (
+            <div className="mt-4 rounded-xl border border-amber-300/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+              {recentAdjustment.refundMethod === "ACCOUNT_BALANCE" ? (
+                <p>
+                  Credited to {getAccountName(recentAdjustment.accountId) ?? "linked account"}. No cash or card action needed.
+                </p>
+              ) : (
+                <p className="font-semibold">
+                  Hand back {toMoney(recentAdjustment.amount)} in cash.
+                  {(shownOrder.payments ?? []).some((payment) => payment.method === "CARD")
+                    ? " Originally paid by card - refund is cash."
+                    : ""}
+                </p>
+              )}
+            </div>
+          )}
 
           {receiptError && (
             <div className="mt-6 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
@@ -946,8 +1379,12 @@ export function PosOrderBuilder() {
 
           {!terminalOrder && (
             <div className="mt-8 rounded-2xl border border-amber-300/30 bg-amber-500/10 p-4">
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-100">Order Adjustment</h3>
-              <p className="mt-2 text-sm text-amber-100/90">Manager authorization is required.</p>
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-100">Management Actions</h3>
+              <p className="mt-2 text-sm text-amber-100/90">
+                {managementReady
+                  ? `Management mode active for ${formatRemainingMs(managementRemainingMs)}.`
+                  : "Manager authorization will be requested when you submit an action."}
+              </p>
 
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
@@ -965,6 +1402,13 @@ export function PosOrderBuilder() {
                 >
                   Remove Extras
                 </button>
+                <button
+                  type="button"
+                  onClick={beginDiscount}
+                  className="rounded-lg border border-blue-300/40 bg-blue-500/20 px-3 py-2 text-sm font-semibold text-blue-50 hover:bg-blue-500/30"
+                >
+                  Apply Discount
+                </button>
               </div>
 
               {!canRemoveExtras && (
@@ -975,68 +1419,89 @@ export function PosOrderBuilder() {
 
               {showAdjustmentForm && (
                 <div className="mt-4 rounded-xl border border-amber-300/30 bg-slate-950/50 p-4">
-                  <p className="text-sm font-semibold text-white">{selectedScopeLabel}</p>
-                  <p className="mt-1 text-xs text-slate-300">Select a reason:</p>
+                  <p className="text-sm font-semibold text-white">{selectedActionLabel}</p>
 
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {ADJUSTMENT_REASON_OPTIONS.map((option) => {
-                      const active = option.value === adjustmentReasonCode;
-                      return (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => {
-                            setAdjustmentReasonCode(option.value);
-                            if (option.value !== "OTHER") {
-                              setAdjustmentFormError(null);
-                            }
+                  {requestedAction === "DISCOUNT" && (
+                    <div className="mt-3 space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+                      <div className="flex flex-wrap gap-2">
+                        {(["PERCENTAGE", "FIXED_AMOUNT"] as const).map((type) => {
+                          const active = discountType === type;
+                          return (
+                            <button
+                              key={type}
+                              type="button"
+                              onClick={() => {
+                                setDiscountType(type);
+                                setDiscountValueError(null);
+                              }}
+                              className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
+                                active
+                                  ? "border-blue-300 bg-blue-500/25 text-blue-50"
+                                  : "border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
+                              }`}
+                            >
+                              {type === "PERCENTAGE" ? "Percentage" : "Fixed Amount"}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div>
+                        <label htmlFor="discount-value" className="text-xs font-medium text-slate-200">
+                          {discountType === "PERCENTAGE" ? "Discount Percentage" : "Discount Amount"}
+                        </label>
+                        <Input
+                          id="discount-value"
+                          type="number"
+                          min="0"
+                          step={discountType === "PERCENTAGE" ? "0.01" : "0.01"}
+                          value={discountValueInput}
+                          onChange={(event) => {
+                            setDiscountValueInput(event.target.value);
+                            setDiscountValueError(null);
                           }}
-                          className={`rounded-xl border px-3 py-3 text-left text-sm font-semibold transition-colors ${
-                            active
-                              ? "border-amber-300 bg-amber-400/25 text-amber-50"
-                              : "border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800"
-                          }`}
-                        >
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                  </div>
+                          className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
+                          placeholder={discountType === "PERCENTAGE" ? "e.g. 10" : "e.g. 25.00"}
+                        />
+                        {discountValueError && (
+                          <p className="mt-2 text-xs text-rose-200">{discountValueError}</p>
+                        )}
+                      </div>
 
-                  <div className="mt-3">
-                    <label htmlFor="adjustment-note" className="text-xs font-medium text-slate-200">
-                      Note {adjustmentReasonCode === "OTHER" ? "(required)" : "(optional)"}
-                    </label>
-                    <textarea
-                      id="adjustment-note"
-                      value={adjustmentNote}
-                      onChange={(event) => {
-                        setAdjustmentNote(event.target.value);
-                        if (adjustmentReasonCode === "OTHER" && event.target.value.trim().length > 0) {
-                          setAdjustmentFormError(null);
-                        }
-                      }}
-                      rows={3}
-                      className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-amber-300"
-                      placeholder="Add context for audit history"
-                    />
-                  </div>
-
-                  {adjustmentFormError && (
-                    <div className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/15 p-2 text-xs text-rose-200">
-                      {adjustmentFormError}
+                      <div className="rounded-lg border border-blue-300/20 bg-blue-500/10 p-3 text-sm text-blue-100">
+                        <p>Discount Preview: {toMoney(discountPreview.amount)}</p>
+                        <p className="mt-1 font-semibold">New Total: {toMoney(discountPreview.newTotal)}</p>
+                      </div>
                     </div>
                   )}
+
+                  <AdjustmentReasonFields
+                    reasonCode={adjustmentReasonCode}
+                    note={adjustmentNote}
+                    onReasonCodeChange={(value) => {
+                      setAdjustmentReasonCode(value);
+                      if (value !== "OTHER") {
+                        setAdjustmentFormError(null);
+                      }
+                    }}
+                    onNoteChange={(value) => {
+                      setAdjustmentNote(value);
+                      if (adjustmentReasonCode === "OTHER" && value.trim().length > 0) {
+                        setAdjustmentFormError(null);
+                      }
+                    }}
+                    error={adjustmentFormError}
+                    noteId="adjustment-note"
+                    className="mt-3 border-0 bg-transparent p-0"
+                  />
 
                   <div className="mt-3 flex gap-2">
                     <button
                       type="button"
                       onClick={() => {
                         setShowAdjustmentForm(false);
-                        setShowManagerPinOverlay(false);
-                        setManagerPinInput("");
-                        setManagerPinError(null);
                         setAdjustmentFormError(null);
+                        setDiscountValueError(null);
                       }}
                       className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
                     >
@@ -1044,10 +1509,11 @@ export function PosOrderBuilder() {
                     </button>
                     <button
                       type="button"
-                      onClick={continueToPin}
+                      disabled={isApplyingAdjustment}
+                      onClick={() => submitManagementAction(shownOrder)}
                       className="rounded-lg bg-amber-400 px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300"
                     >
-                      Request Manager PIN
+                      {isApplyingAdjustment ? "Processing..." : managementReady ? selectedActionLabel : "Unlock & Apply"}
                     </button>
                   </div>
                 </div>
@@ -1106,23 +1572,6 @@ export function PosOrderBuilder() {
           )}
         </aside>
       </main>
-      <AdminAuthorizationOverlay
-        isOpen={showManagerPinOverlay}
-        title="Manager PIN Required"
-        description={`Enter admin PIN to approve ${selectedScopeLabel.toLowerCase()}.`}
-        pin={managerPinInput}
-        onPinChange={setManagerPinInput}
-        error={managerPinError}
-        submitting={isApplyingAdjustment}
-        submitLabel="Authorize & Apply"
-        canSubmit={managerPinInput.trim().length >= 4}
-        onBack={() => {
-          setShowManagerPinOverlay(false);
-          setManagerPinInput("");
-          setManagerPinError(null);
-        }}
-        onSubmit={() => void submitAdjustment(shownOrder)}
-      />
       </>
     );
   }
@@ -1437,28 +1886,204 @@ export function PosOrderBuilder() {
             onClick={() => {
               setShowPayment(true);
               setSubmissionError(null);
+              setCardReferenceError(null);
+              setPaymentEntryError(null);
+              resetPaymentEditor(draftTotalCents);
             }}
             className="mt-4 w-full rounded-xl bg-emerald-500 px-4 py-3 text-base font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
           >
-            Charge (Cash)
+            Charge
           </button>
         ) : (
           <div className="mt-4 rounded-xl border border-emerald-500/40 bg-slate-950/60 p-3">
-            <p className="text-xs uppercase tracking-wider text-emerald-300">Cash Tendered</p>
-            <p className="mb-3 mt-1 text-3xl font-black text-white">{toMoney(tenderedAmount)}</p>
+            <div className="mb-3 rounded-lg border border-emerald-300/25 bg-emerald-500/10 p-3 text-sm text-emerald-100">
+              <p className="font-semibold">Remaining to pay: {toMoney(remainingToPay)}</p>
+              <p className="text-xs text-emerald-100/80">Confirm payment is enabled only when this reaches zero.</p>
+            </div>
 
-            <NumericKeypad value={cashInput} onChange={setCashInput} />
+            {paymentEntries.length > 0 && (
+              <div className="mb-3 space-y-2 rounded-lg border border-slate-800 bg-slate-900/70 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">Payment Entries</p>
+                {paymentEntries.map((entry, index) => (
+                  <div key={`${entry.method}-${index}`} className="flex items-start justify-between gap-3 rounded-md border border-slate-700 bg-slate-950/60 p-2 text-xs text-slate-200">
+                    <div>
+                      <p className="font-semibold">{entry.method}: {toMoney(entry.amount)}</p>
+                      {entry.method === "CASH" && typeof entry.amountTendered === "number" && (
+                        <p>Tendered: {toMoney(entry.amountTendered)}</p>
+                      )}
+                      {entry.method === "CARD" && entry.cardReference && <p>Card Ref: {entry.cardReference}</p>}
+                      {entry.method === "ACCOUNT" && entry.accountId && <p>Account: {getAccountName(entry.accountId)}</p>}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removePaymentEntry(index)}
+                      className="rounded border border-rose-400/40 px-2 py-1 text-rose-200 hover:bg-rose-500/10"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
 
-            <p className="mt-3 text-xs text-slate-400">
-              Confirm is enabled only when tendered amount is at least the total.
-            </p>
+            <p className="text-xs uppercase tracking-wider text-emerald-300">Payment Method</p>
+            <div className="mt-3 flex gap-2">
+              {(["CASH", "CARD", "ACCOUNT"] as const).map((method) => {
+                const active = paymentMethod === method;
+                const disabled = !availableMethods.includes(method) || existingMethodSet.has(method);
+                return (
+                  <button
+                    key={method}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => {
+                      setPaymentMethod(method);
+                      setCardReferenceError(null);
+                      setPaymentEntryError(null);
+                    }}
+                    className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
+                      disabled
+                        ? "cursor-not-allowed border-slate-800 bg-slate-900 text-slate-600"
+                        : active
+                        ? "border-emerald-300 bg-emerald-500/20 text-emerald-100"
+                        : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    {method === "CASH" ? "Cash" : method === "CARD" ? "Card" : "Account"}
+                  </button>
+                );
+              })}
+            </div>
+
+            {paymentEntryError && (
+              <p className="mt-2 text-xs text-rose-200">{paymentEntryError}</p>
+            )}
+
+            {(paymentMethod === "CASH" || paymentMethod === "CARD") && (
+              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                <p className="text-xs uppercase tracking-wider text-slate-300">Payment Amount</p>
+                <p className="mt-1 text-3xl font-black text-white">{toMoney(paymentAmount)}</p>
+                <p className="text-xs text-slate-400">Set amount for this {paymentMethod.toLowerCase()} entry.</p>
+                <div className="mt-3 flex justify-center">
+                  <NumericKeypad value={paymentAmountInput} onChange={setPaymentAmountInput} />
+                </div>
+              </div>
+            )}
+
+            {paymentMethod === "CASH" ? (
+              <>
+                <p className="mt-4 text-xs uppercase tracking-wider text-emerald-300">Cash Tendered</p>
+                <p className="mb-3 mt-1 text-3xl font-black text-white">{toMoney(cashTenderedAmount)}</p>
+
+                <NumericKeypad value={cashTenderedInput} onChange={setCashTenderedInput} />
+
+                <p className="mt-3 text-xs text-slate-400">
+                  Tendered cash must be at least the cash amount for this entry.
+                </p>
+              </>
+            ) : paymentMethod === "CARD" ? (
+              <div className="mt-4 rounded-xl border border-blue-300/25 bg-blue-500/10 p-4">
+                <p className="text-xs uppercase tracking-wider text-blue-100">Card Payment</p>
+                <p className="mt-2 text-3xl font-black text-white">{toMoney(paymentAmount)}</p>
+                <p className="mt-2 text-sm text-slate-300">
+                  Process the payment on the physical card machine, then enter the reference shown on the device.
+                </p>
+                <div className="mt-3">
+                  <label htmlFor="card-reference" className="text-xs font-medium text-slate-200">
+                    Card Reference
+                  </label>
+                  <Input
+                    id="card-reference"
+                    value={cardReference}
+                    onChange={(event) => {
+                      setCardReference(event.target.value);
+                      setCardReferenceError(null);
+                    }}
+                    className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
+                    placeholder="Approval code or last 4 digits"
+                  />
+                  {cardReferenceError && <p className="mt-2 text-xs text-rose-200">{cardReferenceError}</p>}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 rounded-xl border border-amber-300/25 bg-amber-500/10 p-4">
+                <p className="text-xs uppercase tracking-wider text-amber-100">Bill to Account</p>
+                <p className="mt-2 text-sm text-amber-100">
+                  Account payments always cover the full remaining total and cannot be split with cash or card.
+                </p>
+                <p className="mt-2 text-3xl font-black text-white">{toMoney(remainingToPay)}</p>
+
+                <div className="mt-3">
+                  <label htmlFor="account-search" className="text-xs font-medium text-slate-200">
+                    Search Account
+                  </label>
+                  <Input
+                    id="account-search"
+                    value={accountSearch}
+                    onChange={(event) => setAccountSearch(event.target.value)}
+                    className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
+                    placeholder="Type account name"
+                  />
+                </div>
+
+                {accountsError && <p className="mt-2 text-xs text-rose-200">{accountsError}</p>}
+                {accountsLoading ? (
+                  <p className="mt-2 text-xs text-slate-300">Loading accounts...</p>
+                ) : filteredAccounts.length === 0 ? (
+                  <p className="mt-2 text-xs text-slate-300">No active accounts found.</p>
+                ) : (
+                  <div className="mt-3 max-h-40 space-y-1 overflow-auto rounded-lg border border-slate-700 bg-slate-950/70 p-2">
+                    {filteredAccounts.map((account) => {
+                      const active = selectedAccountId === account.id;
+                      return (
+                        <button
+                          key={account.id}
+                          type="button"
+                          onClick={() => setSelectedAccountId(account.id)}
+                          className={`w-full rounded-md px-2 py-1.5 text-left text-sm ${
+                            active
+                              ? "bg-amber-500/20 text-amber-100"
+                              : "text-slate-200 hover:bg-slate-800"
+                          }`}
+                        >
+                          {account.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {(paymentMethod === "CASH" || paymentMethod === "CARD" || paymentMethod === "ACCOUNT") && (
+              <button
+                type="button"
+                disabled={remainingToPayCents === 0 || paymentEntries.length >= 2}
+                onClick={addPaymentEntry}
+                className="mt-3 w-full rounded-lg border border-emerald-400/40 bg-emerald-500/15 px-3 py-2 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {paymentEntries.length === 0 && paymentMethod !== "ACCOUNT" && toCents(paymentAmount) === remainingToPayCents
+                  ? `Add ${paymentMethod === "CASH" ? "Cash" : "Card"} Full Payment`
+                  : paymentMethod === "ACCOUNT"
+                    ? "Add Account Payment"
+                    : `Add ${paymentMethod === "CASH" ? "Cash" : "Card"} Entry`}
+              </button>
+            )}
 
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={() => {
                   setShowPayment(false);
-                  setCashInput("");
+                  setPaymentEntries([]);
+                  setPaymentAmountInput("");
+                  setCashTenderedInput("");
+                  setCardReference("");
+                  setCardReferenceError(null);
+                  setPaymentEntryError(null);
+                  setAccountsError(null);
+                  setAccountSearch("");
+                  setSelectedAccountId(null);
                 }}
                 className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
               >
