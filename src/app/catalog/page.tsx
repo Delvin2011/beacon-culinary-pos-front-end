@@ -65,7 +65,16 @@ type RecipeDraftLine = {
   quantity: string
 }
 
+interface BulkComponentImportResultDto {
+  componentsCreated: number
+  componentsUpdated: number
+  ingredientsCreated: number
+  ingredientsUpdated: number
+}
+
 type Tab = "components" | "meals"
+
+const BULK_COMPONENT_HEADERS = ["COMPONENT", "INGREDIENT (NAME)", "UNIT", "COUNT SHEET", "Quantities", "Batch Size", "Per Portion Price (R)"] as const
 
 function extractComponentIds(meal: MealEntry): number[] {
   if (meal.componentIds?.length) return meal.componentIds
@@ -79,6 +88,41 @@ function parseError(body: unknown, fallback: string): string {
     if (typeof b.message === "string") return b.message
   }
   return fallback
+}
+
+function parseCsvHeaderLine(line: string): string[] {
+  const columns: string[] = []
+  let current = ""
+  let inQuotes = false
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i]
+    if (char === '"') {
+      const next = line[i + 1]
+      if (inQuotes && next === '"') {
+        current += '"'
+        i += 1
+      } else {
+        inQuotes = !inQuotes
+      }
+      continue
+    }
+
+    if ((char === "," || char === "\t") && !inQuotes) {
+      columns.push(current.trim())
+      current = ""
+      continue
+    }
+
+    current += char
+  }
+
+  columns.push(current.trim())
+  return columns
+}
+
+function normalizeCsvHeader(header: string): string {
+  return header.trim().replace(/\s+/g, " ").toUpperCase()
 }
 
 export default function CatalogPage() {
@@ -104,6 +148,12 @@ export default function CatalogPage() {
   const [recipeComponent, setRecipeComponent] = useState<ComponentEntry | null>(null)
   const [recipeBatchSize, setRecipeBatchSize] = useState("")
   const [recipeLines, setRecipeLines] = useState<RecipeDraftLine[]>([])
+
+  const [bulkImportDialogOpen, setBulkImportDialogOpen] = useState(false)
+  const [bulkImportFile, setBulkImportFile] = useState<File | null>(null)
+  const [bulkImportError, setBulkImportError] = useState<string | null>(null)
+  const [bulkImportResult, setBulkImportResult] = useState<BulkComponentImportResultDto | null>(null)
+  const [bulkImportUploading, setBulkImportUploading] = useState(false)
 
   const [meals, setMeals] = useState<MealEntry[]>([])
   const [mealsLoading, setMealsLoading] = useState(true)
@@ -189,6 +239,91 @@ export default function CatalogPage() {
     setComponentForm({ name: "", extraPrice: "", active: true })
     setComponentError(null)
     setComponentDialogOpen(true)
+  }
+
+  const openBulkImportDialog = () => {
+    setBulkImportFile(null)
+    setBulkImportError(null)
+    setBulkImportResult(null)
+    setBulkImportDialogOpen(true)
+  }
+
+  const saveBulkImport = async (event: React.FormEvent) => {
+    event.preventDefault()
+    setBulkImportError(null)
+    setBulkImportResult(null)
+
+    if (!bulkImportFile) {
+      setBulkImportError("Please select a CSV file.")
+      return
+    }
+
+    const lowerName = bulkImportFile.name.toLowerCase()
+    const isCsvMime = bulkImportFile.type.toLowerCase().includes("csv")
+    if (!lowerName.endsWith(".csv") && !isCsvMime) {
+      setBulkImportError("Invalid file type. Please upload a .csv file.")
+      return
+    }
+
+    let content = ""
+    try {
+      content = await bulkImportFile.text()
+    } catch {
+      setBulkImportError("Unable to read the selected file.")
+      return
+    }
+
+    const nonEmptyLine = content
+      .replace(/^﻿/, "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0)
+
+    if (!nonEmptyLine) {
+      setBulkImportError("The selected CSV file is empty.")
+      return
+    }
+
+    const foundHeaders = parseCsvHeaderLine(nonEmptyLine)
+    const expectedHeaders = [...BULK_COMPONENT_HEADERS]
+    const normalizedFoundHeaders = foundHeaders.map(normalizeCsvHeader)
+    const normalizedExpectedHeaders = expectedHeaders.map(normalizeCsvHeader)
+    const hasValidHeaders =
+      normalizedFoundHeaders.length === normalizedExpectedHeaders.length &&
+      normalizedFoundHeaders.every((header, index) => header === normalizedExpectedHeaders[index])
+
+    if (!hasValidHeaders) {
+      setBulkImportError(`CSV header mismatch. Expected: ${expectedHeaders.join(",")}. Found: ${foundHeaders.join(",") || "(empty)"}.`)
+      return
+    }
+
+    setBulkImportUploading(true)
+    try {
+      const formData = new FormData()
+      formData.append("file", bulkImportFile)
+
+      const res = await authFetch("/admin/component-catalog/bulk-import", {
+        method: "POST",
+        body: formData,
+      })
+      const body = (await res.json().catch(() => null)) as BulkComponentImportResultDto | unknown
+      if (!res.ok || !body || typeof body !== "object") {
+        throw new Error(parseError(body, "Unable to bulk import components."))
+      }
+
+      const result = body as BulkComponentImportResultDto
+      setBulkImportResult(result)
+      await fetchComponents()
+      void fetchIngredients()
+      toast({
+        title: "Bulk import completed",
+        description: `${result.componentsCreated} components created, ${result.componentsUpdated} updated.`,
+      })
+    } catch (err) {
+      setBulkImportError(err instanceof Error ? err.message : "Unable to bulk import components.")
+    } finally {
+      setBulkImportUploading(false)
+    }
   }
 
   const openEditComponent = (component: ComponentEntry) => {
@@ -393,7 +528,10 @@ export default function CatalogPage() {
                   <h2 className="text-lg font-semibold">Component Catalog</h2>
                   <p className="text-sm text-muted-foreground">Extra-portion items with agreed prices. Recipe setup is managed per component.</p>
                 </div>
-                <Button size="sm" onClick={openNewComponent}>+ Add Component</Button>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={openBulkImportDialog}>Bulk Upload CSV</Button>
+                  <Button size="sm" onClick={openNewComponent}>+ Add Component</Button>
+                </div>
               </div>
 
               {componentsLoading ? (
@@ -527,6 +665,92 @@ export default function CatalogPage() {
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setComponentDialogOpen(false)}>Cancel</Button>
                 <Button type="submit" disabled={componentSaving}>{componentSaving ? "Saving…" : "Save"}</Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={bulkImportDialogOpen}
+          onOpenChange={(open) => {
+            setBulkImportDialogOpen(open)
+            if (!open) {
+              setBulkImportFile(null)
+              setBulkImportError(null)
+              setBulkImportResult(null)
+            }
+          }}
+        >
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Bulk Upload Components (CSV)</DialogTitle>
+            </DialogHeader>
+
+            <form onSubmit={saveBulkImport} className="space-y-4 text-sm">
+              <p className="text-muted-foreground">
+                Prepare a CSV file using the exact column order below, then upload it to import components and their recipes in bulk.
+                Rows sharing the same COMPONENT are grouped into that component&apos;s recipe, which is replaced wholesale on import.
+              </p>
+
+              <div className="space-y-1">
+                <Label htmlFor="bulk-component-csv">CSV file</Label>
+                <Input
+                  id="bulk-component-csv"
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null
+                    setBulkImportFile(file)
+                    setBulkImportError(null)
+                    setBulkImportResult(null)
+                  }}
+                />
+                {bulkImportFile && (
+                  <p className="text-xs text-muted-foreground">Selected: {bulkImportFile.name}</p>
+                )}
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Required header order:</p>
+                <p className="font-mono text-xs">COMPONENT,INGREDIENT (NAME),UNIT,COUNT SHEET,Quantities,Batch Size,Per Portion Price (R)</p>
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Sample CSV:</p>
+                <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
+{`COMPONENT,INGREDIENT (NAME),UNIT,COUNT SHEET,Quantities,Batch Size,Per Portion Price (R)
+Beef Stew,Beef Chuck,kg,bulk,2.5,10,25
+Beef Stew,Onion,kg,fveg,0.8,10,25
+Beef Stew,Garlic,kg,fveg,0.1,10,25`}
+                </pre>
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Import rules:</p>
+                <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+                  <li>Comma or tab-delimited; header names are matched loosely.</li>
+                  <li>Components and ingredients are upserted by name (case-insensitive) — no need to pre-create either.</li>
+                  <li>Batch Size and Per Portion Price must match across every row for the same component.</li>
+                  <li>The whole file is validated before anything is saved — one bad row fails the entire import.</li>
+                </ul>
+              </div>
+
+              {bulkImportError && <p className="text-sm text-destructive">{bulkImportError}</p>}
+
+              {bulkImportResult && (
+                <div className="rounded-md border bg-emerald-50 p-3 text-sm text-emerald-900">
+                  Imported successfully: {bulkImportResult.componentsCreated} components created, {bulkImportResult.componentsUpdated} updated
+                  {" "}· {bulkImportResult.ingredientsCreated} ingredients created, {bulkImportResult.ingredientsUpdated} updated.
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setBulkImportDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={bulkImportUploading || !bulkImportFile}>
+                  {bulkImportUploading ? "Importing…" : "Import CSV"}
+                </Button>
               </div>
             </form>
           </DialogContent>

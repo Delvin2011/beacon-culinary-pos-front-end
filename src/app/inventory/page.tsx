@@ -85,9 +85,40 @@ type WasteEntryDto = {
   createdAt: string;
 };
 
+type WasteEntryListItemDto = {
+  id: number;
+  ingredientId: number;
+  ingredientName: string;
+  quantity: number;
+  reason: string;
+  note?: string;
+  recordedBy: string;
+  createdAt: string;
+};
+
+type WasteListResponseDto = {
+  entries: WasteEntryListItemDto[];
+};
+
 type StockTakeResponseDto = {
   id: number;
   variance: number;
+};
+
+type StockTakeListItemDto = {
+  id: number;
+  ingredientId: number;
+  ingredientName: string;
+  countedQuantity: number;
+  expectedQuantity: number;
+  variance: number;
+  note?: string;
+  recordedBy: string;
+  createdAt: string;
+};
+
+type StockTakeListResponseDto = {
+  entries: StockTakeListItemDto[];
 };
 
 type PurchaseOrderLineDto = {
@@ -105,6 +136,17 @@ type PurchaseOrderDto = {
   lines: PurchaseOrderLineDto[];
 };
 
+type BulkIngredientImportResultDto = {
+  created: number;
+  updated: number;
+  ingredients: IngredientDto[];
+};
+
+type BulkGrvImportResultDto = {
+  created: number;
+  grvs: GrvDto[];
+};
+
 type PurchaseOrderDraftLine = {
   id: string;
   ingredientId: string;
@@ -112,23 +154,25 @@ type PurchaseOrderDraftLine = {
   note: string;
 };
 
-type StockTakeHistoryEntry = {
-  ingredientName: string;
-  countedQuantity: number;
-  expectedQuantity: number;
-  variance: number;
-  recordedAt: string;
-};
-
 const INGREDIENT_UNITS: IngredientUnit[] = ["KG", "LITRE", "EACH"];
 const COUNT_SHEET_CATEGORIES: CountSheetCategory[] = ["PREP", "BULK", "DRYSTOCK", "FVEG"];
 const PURCHASE_ORDER_STATUSES: PurchaseOrderStatus[] = ["DRAFT", "SUBMITTED", "RECEIVED"];
+const BULK_INGREDIENT_HEADERS = ["NAME", "UNIT", "COUNT SHEET"] as const;
+const BULK_GRV_HEADERS = ["INGREDIENT NAME", "QUANTITY", "COST PER UNIT", "SUPPLIER NAME", "NOTE (OPTIONAL)"] as const;
+const BULK_GRV_HEADERS_LEGACY = ["INGREDIENT", "QUANTITY", "COST PER UNIT", "SUPPLIER", "NOTE"] as const;
 
 function parseError(body: unknown, fallback: string): string {
   if (!body || typeof body !== "object") return fallback;
   const record = body as Record<string, unknown>;
   if (typeof record.message === "string" && record.message.trim()) return record.message;
   if (typeof record.error === "string" && record.error.trim()) return record.error;
+  if (Array.isArray(record.errors)) {
+    const messages = record.errors
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (messages.length > 0) return messages.join(" ");
+  }
   return fallback;
 }
 
@@ -146,6 +190,41 @@ function dateToApiBoundary(value: string, endOfDay: boolean): string | undefined
   return `${value}T${endOfDay ? "23:59:59" : "00:00:00"}`;
 }
 
+function parseCsvHeaderLine(line: string): string[] {
+  const columns: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"') {
+      const next = line[i + 1];
+      if (inQuotes && next === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === "," && !inQuotes) {
+      columns.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  columns.push(current.trim());
+  return columns;
+}
+
+function normalizeCsvHeader(header: string): string {
+  return header.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
 export default function InventoryPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
@@ -159,6 +238,11 @@ export default function InventoryPage() {
   const [ingredientSearch, setIngredientSearch] = useState("");
 
   const [ingredientDialogOpen, setIngredientDialogOpen] = useState(false);
+  const [bulkIngredientDialogOpen, setBulkIngredientDialogOpen] = useState(false);
+  const [bulkIngredientFile, setBulkIngredientFile] = useState<File | null>(null);
+  const [bulkIngredientError, setBulkIngredientError] = useState<string | null>(null);
+  const [bulkImportResult, setBulkImportResult] = useState<BulkIngredientImportResultDto | null>(null);
+  const [bulkIngredientUploading, setBulkIngredientUploading] = useState(false);
   const [editingIngredient, setEditingIngredient] = useState<IngredientDto | null>(null);
   const [ingredientName, setIngredientName] = useState("");
   const [ingredientUnit, setIngredientUnit] = useState<IngredientUnit>("KG");
@@ -168,6 +252,11 @@ export default function InventoryPage() {
   const [ingredientSaving, setIngredientSaving] = useState(false);
 
   const [grvs, setGrvs] = useState<GrvDto[]>([]);
+  const [grvBulkDialogOpen, setGrvBulkDialogOpen] = useState(false);
+  const [grvBulkFile, setGrvBulkFile] = useState<File | null>(null);
+  const [grvBulkError, setGrvBulkError] = useState<string | null>(null);
+  const [grvBulkResult, setGrvBulkResult] = useState<BulkGrvImportResultDto | null>(null);
+  const [grvBulkUploading, setGrvBulkUploading] = useState(false);
   const [grvLoading, setGrvLoading] = useState(false);
   const [grvError, setGrvError] = useState<string | null>(null);
   const [grvIngredientId, setGrvIngredientId] = useState("");
@@ -187,14 +276,18 @@ export default function InventoryPage() {
   const [wasteNote, setWasteNote] = useState("");
   const [wasteError, setWasteError] = useState<string | null>(null);
   const [wasteSaving, setWasteSaving] = useState(false);
-  const [recentWasteEntries, setRecentWasteEntries] = useState<WasteEntryDto[]>([]);
+  const [wasteEntries, setWasteEntries] = useState<WasteEntryListItemDto[]>([]);
+  const [wasteEntriesLoading, setWasteEntriesLoading] = useState(false);
+  const [wasteEntriesError, setWasteEntriesError] = useState<string | null>(null);
 
   const [stockTakeIngredientId, setStockTakeIngredientId] = useState("");
   const [stockTakeCountedQuantity, setStockTakeCountedQuantity] = useState("");
   const [stockTakeNote, setStockTakeNote] = useState("");
   const [stockTakeError, setStockTakeError] = useState<string | null>(null);
   const [stockTakeSaving, setStockTakeSaving] = useState(false);
-  const [recentStockTakes, setRecentStockTakes] = useState<StockTakeHistoryEntry[]>([]);
+  const [stockTakes, setStockTakes] = useState<StockTakeListItemDto[]>([]);
+  const [stockTakesLoading, setStockTakesLoading] = useState(false);
+  const [stockTakesError, setStockTakesError] = useState<string | null>(null);
 
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrderDto[]>([]);
   const [purchaseOrdersLoading, setPurchaseOrdersLoading] = useState(false);
@@ -281,6 +374,42 @@ export default function InventoryPage() {
     }
   }, [authFetch, grvFilterFrom, grvFilterIngredientId, grvFilterTo]);
 
+  const fetchWasteEntries = useCallback(async () => {
+    setWasteEntriesLoading(true);
+    setWasteEntriesError(null);
+    try {
+      const res = await authFetch("/admin/waste");
+      const body = (await res.json().catch(() => null)) as WasteListResponseDto | unknown;
+      if (!res.ok || !body || typeof body !== "object" || !Array.isArray((body as WasteListResponseDto).entries)) {
+        throw new Error(parseError(body, "Unable to load waste entries."));
+      }
+      setWasteEntries((body as WasteListResponseDto).entries);
+    } catch (err) {
+      setWasteEntriesError(err instanceof Error ? err.message : "Unable to load waste entries.");
+      setWasteEntries([]);
+    } finally {
+      setWasteEntriesLoading(false);
+    }
+  }, [authFetch]);
+
+  const fetchStockTakes = useCallback(async () => {
+    setStockTakesLoading(true);
+    setStockTakesError(null);
+    try {
+      const res = await authFetch("/admin/stock-takes");
+      const body = (await res.json().catch(() => null)) as StockTakeListResponseDto | unknown;
+      if (!res.ok || !body || typeof body !== "object" || !Array.isArray((body as StockTakeListResponseDto).entries)) {
+        throw new Error(parseError(body, "Unable to load stock takes."));
+      }
+      setStockTakes((body as StockTakeListResponseDto).entries);
+    } catch (err) {
+      setStockTakesError(err instanceof Error ? err.message : "Unable to load stock takes.");
+      setStockTakes([]);
+    } finally {
+      setStockTakesLoading(false);
+    }
+  }, [authFetch]);
+
   const fetchPurchaseOrders = useCallback(async () => {
     setPurchaseOrdersLoading(true);
     setPurchaseOrdersError(null);
@@ -304,8 +433,10 @@ export default function InventoryPage() {
       void fetchIngredients();
       void fetchGrvs();
       void fetchPurchaseOrders();
+      void fetchWasteEntries();
+      void fetchStockTakes();
     }
-  }, [fetchGrvs, fetchIngredients, fetchPurchaseOrders, isAuthenticated, user]);
+  }, [fetchGrvs, fetchIngredients, fetchPurchaseOrders, fetchWasteEntries, fetchStockTakes, isAuthenticated, user]);
 
   useEffect(() => {
     if (!isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) return;
@@ -333,6 +464,13 @@ export default function InventoryPage() {
     setIngredientDialogOpen(true);
   };
 
+  const openBulkIngredientDialog = () => {
+    setBulkIngredientFile(null);
+    setBulkIngredientError(null);
+    setBulkImportResult(null);
+    setBulkIngredientDialogOpen(true);
+  };
+
   const openEditIngredient = (ingredient: IngredientDto) => {
     setEditingIngredient(ingredient);
     setIngredientName(ingredient.name);
@@ -341,6 +479,13 @@ export default function InventoryPage() {
     setIngredientActive(ingredient.active);
     setIngredientSaveError(null);
     setIngredientDialogOpen(true);
+  };
+
+  const openGrvBulkDialog = () => {
+    setGrvBulkFile(null);
+    setGrvBulkError(null);
+    setGrvBulkResult(null);
+    setGrvBulkDialogOpen(true);
   };
 
   const refreshStockSensitiveData = useCallback(async () => {
@@ -395,6 +540,85 @@ export default function InventoryPage() {
     }
   };
 
+  const saveBulkIngredients = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setBulkIngredientError(null);
+    setBulkImportResult(null);
+
+    if (!bulkIngredientFile) {
+      setBulkIngredientError("Please select a CSV file.");
+      return;
+    }
+
+    const lowerName = bulkIngredientFile.name.toLowerCase();
+    const isCsvMime = bulkIngredientFile.type.toLowerCase().includes("csv");
+    if (!lowerName.endsWith(".csv") && !isCsvMime) {
+      setBulkIngredientError("Invalid file type. Please upload a .csv file.");
+      return;
+    }
+
+    let content = "";
+    try {
+      content = await bulkIngredientFile.text();
+    } catch {
+      setBulkIngredientError("Unable to read the selected file.");
+      return;
+    }
+
+    const nonEmptyLine = content
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+
+    if (!nonEmptyLine) {
+      setBulkIngredientError("The selected CSV file is empty.");
+      return;
+    }
+
+    const foundHeaders = parseCsvHeaderLine(nonEmptyLine);
+    const expectedHeaders = [...BULK_INGREDIENT_HEADERS];
+    const normalizedFoundHeaders = foundHeaders.map(normalizeCsvHeader);
+    const normalizedExpectedHeaders = expectedHeaders.map(normalizeCsvHeader);
+    const hasValidHeaders =
+      normalizedFoundHeaders.length === normalizedExpectedHeaders.length &&
+      normalizedFoundHeaders.every((header, index) => header === normalizedExpectedHeaders[index]);
+
+    if (!hasValidHeaders) {
+      setBulkIngredientError(
+        `CSV header mismatch. Expected: ${expectedHeaders.join(",")}. Found: ${foundHeaders.join(",") || "(empty)"}.`,
+      );
+      return;
+    }
+
+    setBulkIngredientUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", bulkIngredientFile);
+
+      const res = await authFetch("/admin/ingredients/bulk-import", {
+        method: "POST",
+        body: formData,
+      });
+      const body = (await res.json().catch(() => null)) as BulkIngredientImportResultDto | unknown;
+      if (!res.ok || !body || typeof body !== "object") {
+        throw new Error(parseError(body, "Unable to bulk import ingredients."));
+      }
+
+      const result = body as BulkIngredientImportResultDto;
+      setBulkImportResult(result);
+      await fetchIngredients();
+      toast({
+        title: "Bulk import completed",
+        description: `${result.created} created, ${result.updated} updated.`,
+      });
+    } catch (err) {
+      setBulkIngredientError(err instanceof Error ? err.message : "Unable to bulk import ingredients.");
+    } finally {
+      setBulkIngredientUploading(false);
+    }
+  };
+
   const saveGrv = async (event: React.FormEvent) => {
     event.preventDefault();
     setGrvSaving(true);
@@ -431,6 +655,91 @@ export default function InventoryPage() {
     }
   };
 
+  const saveBulkGrvs = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setGrvBulkError(null);
+    setGrvBulkResult(null);
+
+    if (!grvBulkFile) {
+      setGrvBulkError("Please select a CSV file.");
+      return;
+    }
+
+    const lowerName = grvBulkFile.name.toLowerCase();
+    const isCsvMime = grvBulkFile.type.toLowerCase().includes("csv");
+    if (!lowerName.endsWith(".csv") && !isCsvMime) {
+      setGrvBulkError("Invalid file type. Please upload a .csv file.");
+      return;
+    }
+
+    let content = "";
+    try {
+      content = await grvBulkFile.text();
+    } catch {
+      setGrvBulkError("Unable to read the selected file.");
+      return;
+    }
+
+    const nonEmptyLine = content
+      .replace(/^\uFEFF/, "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+
+    if (!nonEmptyLine) {
+      setGrvBulkError("The selected CSV file is empty.");
+      return;
+    }
+
+    const foundHeaders = parseCsvHeaderLine(nonEmptyLine);
+    const expectedHeaders = [...BULK_GRV_HEADERS];
+    const normalizedFoundHeaders = foundHeaders.map(normalizeCsvHeader);
+
+    const headerSets = [BULK_GRV_HEADERS, BULK_GRV_HEADERS_LEGACY].map((headers) =>
+      headers.map(normalizeCsvHeader),
+    );
+
+    const hasValidHeaders = headerSets.some(
+      (headerSet) =>
+        normalizedFoundHeaders.length === headerSet.length &&
+        normalizedFoundHeaders.every((header, index) => header === headerSet[index]),
+    );
+
+    if (!hasValidHeaders) {
+      setGrvBulkError(
+        `CSV header mismatch. Expected: ${expectedHeaders.join(",")}. Found: ${foundHeaders.join(",") || "(empty)"}.`,
+      );
+      return;
+    }
+
+    setGrvBulkUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", grvBulkFile);
+
+      const res = await authFetch("/admin/grv/bulk-import", {
+        method: "POST",
+        body: formData,
+      });
+      const body = (await res.json().catch(() => null)) as BulkGrvImportResultDto | unknown;
+      if (!res.ok || !body || typeof body !== "object") {
+        throw new Error(parseError(body, "Unable to bulk import GRVs."));
+      }
+
+      const result = body as BulkGrvImportResultDto;
+      setGrvBulkResult(result);
+      await refreshStockSensitiveData();
+      toast({
+        title: "GRV bulk import completed",
+        description: `${result.created} GRV records created.`,
+      });
+    } catch (err) {
+      setGrvBulkError(err instanceof Error ? err.message : "Unable to bulk import GRVs.");
+    } finally {
+      setGrvBulkUploading(false);
+    }
+  };
+
   const saveWaste = async (event: React.FormEvent) => {
     event.preventDefault();
     setWasteSaving(true);
@@ -452,12 +761,11 @@ export default function InventoryPage() {
       }
 
       const wasteEntry = body as WasteEntryDto;
-      setRecentWasteEntries((prev) => [wasteEntry, ...prev].slice(0, 8));
       setWasteIngredientId("");
       setWasteQuantity("");
       setWasteReason("");
       setWasteNote("");
-      await refreshStockSensitiveData();
+      await Promise.all([refreshStockSensitiveData(), fetchWasteEntries()]);
       toast({ title: "Waste recorded", description: `${wasteEntry.ingredientName} decreased by ${wasteEntry.quantity}.` });
     } catch (err) {
       setWasteError(err instanceof Error ? err.message : "Unable to record waste.");
@@ -472,7 +780,6 @@ export default function InventoryPage() {
     setStockTakeError(null);
     try {
       const ingredientId = Number(stockTakeIngredientId);
-      const expectedQuantity = ingredientStocks[ingredientId]?.currentStock ?? 0;
       const countedQuantity = Number(stockTakeCountedQuantity);
 
       const res = await authFetch("/admin/stock-takes", {
@@ -491,17 +798,10 @@ export default function InventoryPage() {
 
       const ingredientName = ingredients.find((ingredient) => ingredient.id === ingredientId)?.name ?? "Ingredient";
       const response = body as StockTakeResponseDto;
-      setRecentStockTakes((prev) => [{
-        ingredientName,
-        countedQuantity,
-        expectedQuantity,
-        variance: response.variance,
-        recordedAt: new Date().toISOString(),
-      }, ...prev].slice(0, 8));
       setStockTakeIngredientId("");
       setStockTakeCountedQuantity("");
       setStockTakeNote("");
-      await refreshStockSensitiveData();
+      await Promise.all([refreshStockSensitiveData(), fetchStockTakes()]);
       toast({ title: "Stock take recorded", description: `${ingredientName} variance: ${response.variance > 0 ? "+" : ""}${response.variance}.` });
     } catch (err) {
       setStockTakeError(err instanceof Error ? err.message : "Unable to record stock take.");
@@ -649,7 +949,12 @@ export default function InventoryPage() {
                     Manage raw ingredients and see current stock derived from the movement ledger.
                   </p>
                 </div>
-                <Button size="sm" onClick={openCreateIngredient}>+ Add Ingredient</Button>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={openBulkIngredientDialog}>
+                    Bulk Upload CSV
+                  </Button>
+                  <Button size="sm" onClick={openCreateIngredient}>+ Add Ingredient</Button>
+                </div>
               </div>
 
               <Input
@@ -712,11 +1017,16 @@ export default function InventoryPage() {
           {activeTab === "grv" && (
             <div className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
               <form onSubmit={saveGrv} className="space-y-4 rounded-lg border p-4">
-                <div>
-                  <h2 className="text-lg font-semibold">GRV Entry</h2>
-                  <p className="text-sm text-muted-foreground">
-                    Receive ingredient stock into the ledger.
-                  </p>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold">GRV Entry</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Receive ingredient stock into the ledger.
+                    </p>
+                  </div>
+                  <Button type="button" size="sm" variant="outline" onClick={openGrvBulkDialog}>
+                    Bulk Upload CSV
+                  </Button>
                 </div>
 
                 <div className="space-y-1">
@@ -879,21 +1189,26 @@ export default function InventoryPage() {
               <div className="space-y-4 rounded-lg border p-4">
                 <div>
                   <h2 className="text-lg font-semibold">Recent Waste Entries</h2>
-                  <p className="text-sm text-muted-foreground">Session history shown here because the current backend exposes create-only waste entry endpoints.</p>
+                  <p className="text-sm text-muted-foreground">Full history, sourced from the backend.</p>
                 </div>
-                {recentWasteEntries.length > 0 ? (
+                {wasteEntriesError && <p className="text-sm text-destructive">{wasteEntriesError}</p>}
+                {wasteEntriesLoading ? (
+                  <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
+                ) : wasteEntries.length > 0 ? (
                   <div className="space-y-3">
-                    {recentWasteEntries.map((entry) => (
-                      <div key={entry.id} className="rounded-md bg-muted p-4 text-sm">
+                    {wasteEntries.map((entry) => (
+                      <div key={entry.id} className="space-y-1 rounded-md bg-muted p-4 text-sm">
                         <p><span className="font-medium">Ingredient:</span> {entry.ingredientName}</p>
                         <p><span className="font-medium">Quantity:</span> {entry.quantity}</p>
                         <p><span className="font-medium">Reason:</span> {entry.reason}</p>
+                        {entry.note && <p><span className="font-medium">Note:</span> {entry.note}</p>}
+                        <p><span className="font-medium">Recorded By:</span> {entry.recordedBy}</p>
                         <p><span className="font-medium">Recorded At:</span> {formatDateTime(entry.createdAt)}</p>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">Record a waste entry to build recent history for this session.</p>
+                  <p className="text-sm text-muted-foreground">No waste entries recorded yet.</p>
                 )}
               </div>
             </div>
@@ -947,16 +1262,21 @@ export default function InventoryPage() {
               <div className="space-y-4 rounded-lg border p-4">
                 <div>
                   <h2 className="text-lg font-semibold">Recent Stock Takes</h2>
-                  <p className="text-sm text-muted-foreground">Session history shown here because the current backend exposes create-only stock-take endpoints.</p>
+                  <p className="text-sm text-muted-foreground">Full history, sourced from the backend. Expected quantity and variance are the historical values recorded at the time, not recalculated against current stock.</p>
                 </div>
-                {recentStockTakes.length > 0 ? (
+                {stockTakesError && <p className="text-sm text-destructive">{stockTakesError}</p>}
+                {stockTakesLoading ? (
+                  <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
+                ) : stockTakes.length > 0 ? (
                   <div className="space-y-3">
-                    {recentStockTakes.map((entry, index) => (
-                      <div key={`${entry.recordedAt}-${index}`} className="space-y-3 rounded-md bg-muted p-4 text-sm">
+                    {stockTakes.map((entry) => (
+                      <div key={entry.id} className="space-y-1 rounded-md bg-muted p-4 text-sm">
                         <p><span className="font-medium">Ingredient:</span> {entry.ingredientName}</p>
                         <p><span className="font-medium">Expected:</span> {entry.expectedQuantity}</p>
                         <p><span className="font-medium">Counted:</span> {entry.countedQuantity}</p>
-                        <p><span className="font-medium">Recorded At:</span> {formatDateTime(entry.recordedAt)}</p>
+                        {entry.note && <p><span className="font-medium">Note:</span> {entry.note}</p>}
+                        <p><span className="font-medium">Recorded By:</span> {entry.recordedBy}</p>
+                        <p><span className="font-medium">Recorded At:</span> {formatDateTime(entry.createdAt)}</p>
                         <p className={entry.variance === 0 ? "font-medium" : entry.variance > 0 ? "font-medium text-emerald-700" : "font-medium text-rose-700"}>
                           Variance: {entry.variance > 0 ? "+" : ""}{entry.variance}
                         </p>
@@ -964,7 +1284,7 @@ export default function InventoryPage() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground">Submit a stock take to build recent history for this session.</p>
+                  <p className="text-sm text-muted-foreground">No stock takes recorded yet.</p>
                 )}
               </div>
             </div>
@@ -1129,6 +1449,134 @@ export default function InventoryPage() {
               <div className="flex justify-end gap-2 pt-2">
                 <Button type="button" variant="outline" onClick={() => setIngredientDialogOpen(false)}>Cancel</Button>
                 <Button type="submit" disabled={ingredientSaving}>{ingredientSaving ? "Saving…" : "Save"}</Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={bulkIngredientDialogOpen} onOpenChange={setBulkIngredientDialogOpen}>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Bulk Upload Ingredients (CSV)</DialogTitle>
+            </DialogHeader>
+
+            <form onSubmit={saveBulkIngredients} className="space-y-4 text-sm">
+              <p className="text-muted-foreground">
+                Prepare a CSV file using the exact column order below, then upload it to import ingredients in bulk.
+              </p>
+
+              <div className="space-y-1">
+                <Label htmlFor="bulk-ingredient-csv">CSV file</Label>
+                <Input
+                  id="bulk-ingredient-csv"
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setBulkIngredientFile(file);
+                    setBulkIngredientError(null);
+                    setBulkImportResult(null);
+                  }}
+                />
+                {bulkIngredientFile && (
+                  <p className="text-xs text-muted-foreground">Selected: {bulkIngredientFile.name}</p>
+                )}
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Required header order:</p>
+                <p className="font-mono text-xs">NAME,UNIT,COUNT SHEET</p>
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Sample CSV:</p>
+                <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
+{`NAME,UNIT,COUNT SHEET
+Tomato,KG,FVEG
+Olive Oil,LITRE,PREP
+Paper Straw,EACH,DRYSTOCK`}
+                </pre>
+              </div>
+
+              {bulkIngredientError && <p className="text-sm text-destructive">{bulkIngredientError}</p>}
+
+              {bulkImportResult && (
+                <div className="rounded-md border bg-emerald-50 p-3 text-sm text-emerald-900">
+                  Imported successfully: {bulkImportResult.created} created, {bulkImportResult.updated} updated.
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setBulkIngredientDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={bulkIngredientUploading || !bulkIngredientFile}>
+                  {bulkIngredientUploading ? "Importing…" : "Import CSV"}
+                </Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={grvBulkDialogOpen} onOpenChange={setGrvBulkDialogOpen}>
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Bulk Upload GRVs (CSV)</DialogTitle>
+            </DialogHeader>
+
+            <form onSubmit={saveBulkGrvs} className="space-y-4 text-sm">
+              <p className="text-muted-foreground">
+                Prepare your GRV CSV using the exact column order below, then upload to import GRVs in bulk.
+              </p>
+
+              <div className="space-y-1">
+                <Label htmlFor="bulk-grv-csv">CSV file</Label>
+                <Input
+                  id="bulk-grv-csv"
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0] ?? null;
+                    setGrvBulkFile(file);
+                    setGrvBulkError(null);
+                    setGrvBulkResult(null);
+                  }}
+                />
+                {grvBulkFile && (
+                  <p className="text-xs text-muted-foreground">Selected: {grvBulkFile.name}</p>
+                )}
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Required header order:</p>
+                <p className="font-mono text-xs">INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL)</p>
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Sample CSV:</p>
+                <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
+{`INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL)
+Tomato,25,17.50,Fresh Farms,Weekly produce delivery
+Olive Oil,12,89.00,Med Supply,
+Paper Straw,500,0.35,Bar Essentials,Promo weekend restock`}
+                </pre>
+              </div>
+
+              {grvBulkError && <p className="text-sm text-destructive">{grvBulkError}</p>}
+
+              {grvBulkResult && (
+                <div className="rounded-md border bg-emerald-50 p-3 text-sm text-emerald-900">
+                  Imported successfully: {grvBulkResult.created} GRV records created.
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setGrvBulkDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={grvBulkUploading || !grvBulkFile}>
+                  {grvBulkUploading ? "Importing…" : "Import CSV"}
+                </Button>
               </div>
             </form>
           </DialogContent>
