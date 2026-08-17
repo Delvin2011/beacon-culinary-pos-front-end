@@ -60,6 +60,10 @@ const data = {
           url: "/daily-planning",
         },
         {
+          title: "Inventory",
+          url: "/inventory",
+        },
+        {
           title: "Accounts",
           url: "/accounts",
         },
