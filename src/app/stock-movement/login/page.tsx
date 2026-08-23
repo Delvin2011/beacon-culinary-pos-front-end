@@ -2,22 +2,22 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ShieldCheck } from "lucide-react";
+import { PackageSearch } from "lucide-react";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { useAuth } from "@/hooks/use-auth";
-import { isKitchenAccessRole } from "@/lib/roles";
+import { isStockAccessRole } from "@/lib/roles";
 
 const PIN_MAX_LENGTH = 6;
 const PIN_MIN_LENGTH = 4;
 
-export default function KitchenLoginPage() {
+export default function StockMovementLoginPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading, user, pinLogin, error, clearError, logout } = useAuth();
 
-  const kitchenCashierId = useMemo(() => {
-    const raw = process.env.NEXT_PUBLIC_KITCHEN_CASHIER_ID ?? "4";
+  const stockMovementCashierId = useMemo(() => {
+    const raw = process.env.NEXT_PUBLIC_STOCK_MOVEMENT_CASHIER_ID ?? "5";
     const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 4;
+    return Number.isFinite(parsed) ? parsed : 5;
   }, []);
 
   const [pin, setPin] = useState("");
@@ -29,8 +29,8 @@ export default function KitchenLoginPage() {
 
     if (!isAuthenticated) return;
 
-    if (isKitchenAccessRole(user?.role)) {
-      router.replace("/kitchen");
+    if (isStockAccessRole(user?.role)) {
+      router.replace("/stock-movement");
       return;
     }
 
@@ -50,8 +50,8 @@ export default function KitchenLoginPage() {
     if (error) clearError();
 
     try {
-      await pinLogin({ cashierId: kitchenCashierId, pin });
-      router.replace("/kitchen");
+      await pinLogin({ cashierId: stockMovementCashierId, pin });
+      router.replace("/stock-movement");
     } catch {
       setPinError("Incorrect PIN.");
       setPin("");
@@ -80,10 +80,10 @@ export default function KitchenLoginPage() {
       <div className="w-full max-w-md rounded-3xl border border-slate-800 bg-slate-900 p-6 shadow-2xl shadow-black/30">
         <div className="mb-6 text-center">
           <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-500/15 text-blue-300 ring-1 ring-blue-500/35">
-            <ShieldCheck className="h-7 w-7" />
+            <PackageSearch className="h-7 w-7" />
           </div>
-          <h1 className="text-2xl font-bold text-white">Kitchen Station</h1>
-          <p className="mt-1 text-sm text-slate-400">Enter PIN to open the live kitchen queue.</p>
+          <h1 className="text-2xl font-bold text-white">Stock Movement Station</h1>
+          <p className="mt-1 text-sm text-slate-400">Enter PIN to submit or track stock requests.</p>
         </div>
 
         <div className="mb-4 flex justify-center gap-3">
@@ -121,7 +121,7 @@ export default function KitchenLoginPage() {
           disabled={submitting || pin.length < PIN_MIN_LENGTH}
           className="mt-4 w-full rounded-2xl bg-blue-500 py-3.5 text-base font-semibold text-white transition hover:bg-blue-400 active:bg-blue-600 disabled:pointer-events-none disabled:opacity-50"
         >
-          {submitting ? "Signing in..." : "Open Kitchen Queue"}
+          {submitting ? "Signing in..." : "Open Stock Requests"}
         </button>
       </div>
     </div>

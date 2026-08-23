@@ -327,11 +327,14 @@ export default function DailyPlanningPage() {
       }
 
       const response = body as ConfirmIngredientRequirementsResponseDto
-      setRequirementShortfalls(Array.isArray(response.shortfalls) ? response.shortfalls : [])
-      setConfirmRequirementsSuccess(`Ingredient requirements confirmed for ${selectedPeriod.name}.`)
+      // Reload after capturing the response, not before — loadIngredientRequirements
+      // resets confirmRequirementsSuccess/requirementShortfalls at its start, so setting
+      // them first would have them wiped before the next render ever shows them.
       await loadIngredientRequirements(selectedPeriod)
       await fetchTodayPlan(selectedPeriod)
-      toast({ title: "Ingredient requirements confirmed", description: response.shortfalls?.length ? `${response.shortfalls.length} shortfall warning(s) returned.` : `Requirements for ${selectedPeriod.name} were confirmed successfully.` })
+      setRequirementShortfalls(Array.isArray(response.shortfalls) ? response.shortfalls : [])
+      setConfirmRequirementsSuccess(`Ingredient requirements confirmed for ${selectedPeriod.name}. Stock was deducted from Kitchen.`)
+      toast({ title: "Ingredient requirements confirmed", description: response.shortfalls?.length ? `${response.shortfalls.length} shortfall warning(s) against Kitchen stock.` : `Requirements for ${selectedPeriod.name} were confirmed and deducted from Kitchen stock.` })
     } catch (err) {
       setConfirmRequirementsError(err instanceof Error ? err.message : "Unable to confirm ingredient requirements.")
     } finally {
@@ -577,7 +580,7 @@ export default function DailyPlanningPage() {
             </DialogHeader>
 
             <div className="space-y-4 pt-2">
-              <p className="text-sm text-muted-foreground">Calculated requirements are editable before confirmation. Edited rows are highlighted. Stock shortfalls warn, but do not block confirmation.</p>
+              <p className="text-sm text-muted-foreground">Calculated requirements are editable before confirmation. Edited rows are highlighted. Confirming deducts stock from Kitchen; shortfalls against Kitchen&apos;s stock warn, but do not block confirmation.</p>
 
               {confirmRequirementsSuccess && (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{confirmRequirementsSuccess}</div>
@@ -588,7 +591,7 @@ export default function DailyPlanningPage() {
                   <p className="font-medium">Shortfalls detected after confirmation</p>
                   <div className="mt-2 space-y-1">
                     {requirementShortfalls.map((shortfall) => (
-                      <p key={shortfall.ingredientId}>{shortfall.name} is now {Math.abs(shortfall.resultingStock)} {shortfall.unit} short after allocating {shortfall.finalQuantity} {shortfall.unit}. Consider a GRV before service.</p>
+                      <p key={shortfall.ingredientId}>{shortfall.name} is now {Math.abs(shortfall.resultingStock)} {shortfall.unit} short in Kitchen after allocating {shortfall.finalQuantity} {shortfall.unit}. Consider a GRV or stock transfer into Kitchen before service.</p>
                     ))}
                   </div>
                 </div>
@@ -609,7 +612,7 @@ export default function DailyPlanningPage() {
                       <TableHead>Unit</TableHead>
                       <TableHead>Calculated</TableHead>
                       <TableHead>Final Quantity</TableHead>
-                      <TableHead>Current Stock</TableHead>
+                      <TableHead>Kitchen Stock</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
