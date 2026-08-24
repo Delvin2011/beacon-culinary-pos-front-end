@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useLocations } from "@/hooks/use-locations";
+import { formatZarCurrency } from "@/lib/utils";
 import { IngredientSearchSelect } from "@/components/inventory/ingredient-search-select";
 import type {
   IngredientOption,
@@ -27,6 +28,8 @@ function emptyRow(index: number): LineItemRow {
     reason: "",
     purchaseOrderLineId: null,
     quantityOrdered: null,
+    expectedQuantity: null,
+    expectedQuantityLoading: false,
   };
 }
 
@@ -52,6 +55,9 @@ interface LineItemSheetProps {
     rows: LineItemRow[];
     addRow: (prefill?: Partial<LineItemRow>) => void;
   }) => ReactNode;
+  // expectedActual mode only — fetches the live reference figure for a row the moment an
+  // ingredient is selected, and again whenever the sheet's location changes.
+  fetchExpectedQuantity?: (ingredientId: number, locationId: number) => Promise<number | null>;
 }
 
 export function LineItemSheet({
@@ -67,6 +73,7 @@ export function LineItemSheet({
   submitLabel = "Submit",
   onSubmit,
   renderAboveLines,
+  fetchExpectedQuantity,
 }: LineItemSheetProps) {
   const { locations, loading: locationsLoading } = useLocations();
   const [rows, setRows] = useState<LineItemRow[]>([emptyRow(0)]);
@@ -90,6 +97,15 @@ export function LineItemSheet({
     setLocationsInitialised(true);
   }
 
+  const quantityMode = columnConfig.quantityMode;
+  const isOrderedReceived = quantityMode.kind === "orderedReceived";
+  const isExpectedActual = quantityMode.kind === "expectedActual";
+  const showVarianceColumn = isOrderedReceived && quantityMode.showVariance;
+  // Stock Take's clerk-facing "blind count" mode: Unit Value, Expected Qty, and both Variance
+  // columns are withheld from whoever is entering the count, so they can't just match the
+  // expected figure instead of physically counting. Irrelevant to every other mode.
+  const showReferenceColumns = !isExpectedActual || columnConfig.revealExpectedAndVariance !== false;
+
   const addRow = (prefill?: Partial<LineItemRow>) => {
     setRows((prev) => [...prev, { ...emptyRow(prev.length), ...prefill }]);
   };
@@ -101,6 +117,30 @@ export function LineItemSheet({
   const removeRow = (clientId: string) => {
     setRows((prev) => prev.filter((row) => row.clientId !== clientId));
   };
+
+  const loadExpectedQuantity = async (clientId: string, ingredientId: number, locationId: number) => {
+    if (!fetchExpectedQuantity) return;
+    updateRow(clientId, { expectedQuantityLoading: true, expectedQuantity: null });
+    try {
+      const result = await fetchExpectedQuantity(ingredientId, locationId);
+      updateRow(clientId, { expectedQuantity: result, expectedQuantityLoading: false });
+    } catch {
+      updateRow(clientId, { expectedQuantity: null, expectedQuantityLoading: false });
+    }
+  };
+
+  // Re-fetch every row's Expected Qty when the sheet's location changes, so figures never go
+  // stale relative to whichever location is currently selected.
+  const primaryLocationId = locationIds[0] ?? null;
+  useEffect(() => {
+    if (!isExpectedActual || !fetchExpectedQuantity || primaryLocationId === null) return;
+    rows.forEach((row) => {
+      if (row.ingredientId !== null) {
+        void loadExpectedQuantity(row.clientId, row.ingredientId, primaryLocationId);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [primaryLocationId, isExpectedActual]);
 
   const lineValue = (row: LineItemRow): number | null => {
     const quantity = Number(row.quantity);
@@ -115,6 +155,21 @@ export function LineItemSheet({
       return null;
     }
     return received - row.quantityOrdered;
+  };
+
+  const varianceQuantity = (row: LineItemRow): number | null => {
+    const actual = Number(row.quantity);
+    if (row.expectedQuantity === null || row.expectedQuantity === undefined || !Number.isFinite(actual)) {
+      return null;
+    }
+    return actual - row.expectedQuantity;
+  };
+
+  const varianceValue = (row: LineItemRow): number | null => {
+    const varQty = varianceQuantity(row);
+    const unitValue = row.unitValue.trim() === "" ? null : Number(row.unitValue);
+    if (varQty === null || unitValue === null || !Number.isFinite(unitValue)) return null;
+    return varQty * unitValue;
   };
 
   const totals = useMemo(() => {
@@ -157,7 +212,8 @@ export function LineItemSheet({
 
     for (const row of completeRows) {
       const quantity = Number(row.quantity);
-      if (!Number.isFinite(quantity) || quantity <= 0) {
+      const quantityInvalid = columnConfig.allowZeroQuantity ? quantity < 0 : quantity <= 0;
+      if (!Number.isFinite(quantity) || quantityInvalid) {
         setError(`Enter a valid quantity for ${row.ingredientName}.`);
         return;
       }
@@ -188,16 +244,23 @@ export function LineItemSheet({
     }
   };
 
-  const quantityMode = columnConfig.quantityMode;
-  const isOrderedReceived = quantityMode.kind === "orderedReceived";
-  const showVarianceColumn = isOrderedReceived && quantityMode.showVariance;
-  const receivedLabel = isOrderedReceived ? quantityMode.receivedLabel : quantityMode.kind === "single" ? quantityMode.label : "Qty";
+  const receivedLabel = isOrderedReceived
+    ? quantityMode.receivedLabel
+    : isExpectedActual
+    ? quantityMode.actualLabel
+    : quantityMode.kind === "single"
+    ? quantityMode.label
+    : "Qty";
+  const expectedLabel = isExpectedActual ? quantityMode.expectedLabel : "Expected";
   const unitValueLabel = columnConfig.unitValueLabel ?? "Unit Value";
   const columnCount =
-    3 + // Item, UoM, Unit Value
+    2 + // Item, UoM
+    (showReferenceColumns ? 1 : 0) + // Unit Value
     (isOrderedReceived ? 1 : 0) + // Ordered
-    1 + // Received/Qty
+    (isExpectedActual && showReferenceColumns ? 1 : 0) + // Expected Qty
+    1 + // Received/Actual/Qty
     (showVarianceColumn ? 1 : 0) +
+    (isExpectedActual && showReferenceColumns ? 2 : 0) + // Variance Qty, Variance Value
     (columnConfig.showLineValue ? 1 : 0) +
     (columnConfig.reasonRequirement !== "hidden" ? 1 : 0) +
     1; // Remove
@@ -292,10 +355,17 @@ export function LineItemSheet({
             <TableRow>
               <TableHead>Item</TableHead>
               <TableHead>UoM</TableHead>
-              <TableHead>{unitValueLabel}</TableHead>
+              {showReferenceColumns && <TableHead>{unitValueLabel}</TableHead>}
               {isOrderedReceived && <TableHead>Ordered</TableHead>}
+              {isExpectedActual && showReferenceColumns && <TableHead>{expectedLabel}</TableHead>}
               <TableHead>{receivedLabel}</TableHead>
               {showVarianceColumn && <TableHead>Receipt Variance</TableHead>}
+              {isExpectedActual && showReferenceColumns && (
+                <>
+                  <TableHead>Variance Qty</TableHead>
+                  <TableHead>Variance Value</TableHead>
+                </>
+              )}
               {columnConfig.showLineValue && <TableHead>Line Value</TableHead>}
               {columnConfig.reasonRequirement !== "hidden" && <TableHead>{columnConfig.reasonLabel ?? "Reason"}</TableHead>}
               <TableHead className="w-16" />
@@ -312,39 +382,46 @@ export function LineItemSheet({
               rows.map((row) => {
                 const value = lineValue(row);
                 const rowVariance = variance(row);
+                const rowVarianceQty = isExpectedActual ? varianceQuantity(row) : null;
+                const rowVarianceValue = isExpectedActual ? varianceValue(row) : null;
                 return (
                   <TableRow key={row.clientId}>
                     <TableCell className="min-w-[200px]">
                       <IngredientSearchSelect
                         options={ingredientOptions}
                         value={row.ingredientId}
-                        onSelect={(ingredient) =>
+                        onSelect={(ingredient) => {
                           updateRow(row.clientId, {
                             ingredientId: ingredient.id,
                             ingredientName: ingredient.name,
                             unit: ingredient.unit,
                             unitValue: ingredient.unitValue !== null ? String(ingredient.unitValue) : "",
-                          })
-                        }
+                          });
+                          if (isExpectedActual && fetchExpectedQuantity && primaryLocationId !== null) {
+                            void loadExpectedQuantity(row.clientId, ingredient.id, primaryLocationId);
+                          }
+                        }}
                       />
                     </TableCell>
                     <TableCell>{row.unit ?? "—"}</TableCell>
-                    <TableCell>
-                      {columnConfig.unitValueEditable ? (
-                        <Input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={row.unitValue}
-                          onChange={(event) => updateRow(row.clientId, { unitValue: event.target.value })}
-                          className="w-24"
-                        />
-                      ) : row.unitValue.trim() !== "" ? (
-                        Number(row.unitValue).toFixed(2)
-                      ) : (
-                        "—"
-                      )}
-                    </TableCell>
+                    {showReferenceColumns && (
+                      <TableCell>
+                        {columnConfig.unitValueEditable ? (
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={row.unitValue}
+                            onChange={(event) => updateRow(row.clientId, { unitValue: event.target.value })}
+                            className="w-24"
+                          />
+                        ) : row.unitValue.trim() !== "" ? (
+                          Number(row.unitValue).toFixed(2)
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
+                    )}
                     {isOrderedReceived && (
                       <TableCell>
                         {row.quantityOrdered !== null && row.quantityOrdered !== undefined
@@ -352,10 +429,19 @@ export function LineItemSheet({
                           : "—"}
                       </TableCell>
                     )}
+                    {isExpectedActual && showReferenceColumns && (
+                      <TableCell>
+                        {row.expectedQuantityLoading
+                          ? "Loading…"
+                          : row.expectedQuantity !== null && row.expectedQuantity !== undefined
+                          ? row.expectedQuantity
+                          : "—"}
+                      </TableCell>
+                    )}
                     <TableCell>
                       <Input
                         type="number"
-                        min="0.0001"
+                        min={columnConfig.allowZeroQuantity ? "0" : "0.0001"}
                         step="0.0001"
                         value={row.quantity}
                         onChange={(event) => updateRow(row.clientId, { quantity: event.target.value })}
@@ -373,6 +459,30 @@ export function LineItemSheet({
                           "—"
                         )}
                       </TableCell>
+                    )}
+                    {isExpectedActual && showReferenceColumns && (
+                      <>
+                        <TableCell>
+                          {rowVarianceQty !== null ? (
+                            <span className={varianceClassName(rowVarianceQty)}>
+                              {rowVarianceQty > 0 ? "+" : ""}
+                              {rowVarianceQty}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {rowVarianceValue !== null ? (
+                            <span className={varianceClassName(rowVarianceValue)}>
+                              {rowVarianceValue > 0 ? "+" : ""}
+                              {formatZarCurrency(rowVarianceValue)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </TableCell>
+                      </>
                     )}
                     {columnConfig.showLineValue && (
                       <TableCell>{value !== null ? value.toFixed(2) : "—"}</TableCell>
@@ -400,10 +510,17 @@ export function LineItemSheet({
           {rows.length > 0 && (
             <TableBody>
               <TableRow className="font-medium">
-                <TableCell colSpan={3}>Totals</TableCell>
+                <TableCell colSpan={showReferenceColumns ? 3 : 2}>Totals</TableCell>
                 {isOrderedReceived && <TableCell />}
+                {isExpectedActual && showReferenceColumns && <TableCell />}
                 <TableCell>{totals.quantity.toFixed(4)}</TableCell>
                 {showVarianceColumn && <TableCell />}
+                {isExpectedActual && showReferenceColumns && (
+                  <>
+                    <TableCell />
+                    <TableCell />
+                  </>
+                )}
                 {columnConfig.showLineValue && <TableCell>{totals.value.toFixed(2)}</TableCell>}
                 {columnConfig.reasonRequirement !== "hidden" && <TableCell />}
                 <TableCell />

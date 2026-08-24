@@ -2,7 +2,9 @@ export type IngredientUnit = "KG" | "LITRE" | "EACH";
 
 export type QuantityMode =
   | { kind: "single"; label: string }
-  // Reserved for Stock Take (5.2.5) — not wired up by any sheet type yet.
+  // Stock Take: Expected is fetched live per-row from the sheet's location the moment an
+  // ingredient is selected (never user-typed); Actual is entered; Variance Qty/Value are
+  // computed live and always shown for this mode (no separate toggle, unlike orderedReceived).
   | { kind: "expectedActual"; expectedLabel: string; actualLabel: string }
   // GRV: Ordered is a read-only reference figure (blank unless PO-linked), Received is entered,
   // Variance (received - ordered) is computed live and blank whenever Ordered is blank.
@@ -19,6 +21,15 @@ export interface LineItemColumnConfig {
   unitValueEditable?: boolean;
   unitValueLabel?: string;
   reasonLabel?: string;
+  // Stock Take: a physical count of exactly zero is a legitimate, important result (an
+  // ingredient that's completely out), not an incomplete row. Defaults to false everywhere
+  // else — Issue/Waste/Order/GRV quantities of zero don't make sense.
+  allowZeroQuantity?: boolean;
+  // expectedActual mode only. Defaults to true. Set false so a clerk counts blind — Unit Value,
+  // Expected Qty, Variance Qty, and Variance Value all stay hidden on submission (a clerk who
+  // can see the expected figure while entering their count can just match it, defeating the
+  // point of a physical count); the admin review screen shows all four regardless.
+  revealExpectedAndVariance?: boolean;
 }
 
 export interface LineItemHeaderField {
@@ -49,6 +60,10 @@ export interface LineItemRow {
   // PO-line picker (see LineItemSheet's renderAboveLines) — stays null/undefined for ad-hoc rows.
   purchaseOrderLineId?: number | null;
   quantityOrdered?: number | null;
+  // expectedActual mode only — fetched live from the sheet's location when an ingredient is
+  // selected (see LineItemSheet's fetchExpectedQuantity prop), re-fetched if the location changes.
+  expectedQuantity?: number | null;
+  expectedQuantityLoading?: boolean;
 }
 
 export interface LineItemSubmitLine {

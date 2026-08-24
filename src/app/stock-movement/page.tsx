@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ClipboardList, LogOut, PackagePlus, ShoppingCart, Trash2 } from "lucide-react";
+import { ClipboardCheck, ClipboardList, LogOut, PackagePlus, ShoppingCart, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { isStockAccessRole } from "@/lib/roles";
 
@@ -95,6 +95,20 @@ export default function StockMovementLandingPage() {
           <div>
             <p className="text-base font-semibold text-white">New Waste Request</p>
             <p className="text-sm text-slate-400">Report stock to be written off at a specific location.</p>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => router.push("/stock-movement/stock-take/new")}
+          className="flex items-center gap-4 rounded-2xl border border-slate-800 bg-slate-900 p-6 text-left transition hover:border-blue-500/50 hover:bg-slate-800"
+        >
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-500/15 text-blue-300 ring-1 ring-blue-500/35">
+            <ClipboardCheck className="h-6 w-6" />
+          </div>
+          <div>
+            <p className="text-base font-semibold text-white">New Stock Take</p>
+            <p className="text-sm text-slate-400">Count physical stock at a location against the system record.</p>
           </div>
         </button>
 
