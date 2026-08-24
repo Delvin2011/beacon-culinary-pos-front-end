@@ -64,6 +64,14 @@ const data = {
           url: "/inventory",
         },
         {
+          title: "Stock Requests",
+          url: "/inventory/stock-requests",
+        },
+        {
+          title: "Stock Takes",
+          url: "/inventory/stock-takes",
+        },
+        {
           title: "Accounts",
           url: "/accounts",
         },

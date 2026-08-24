@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "@/hooks/use-auth";
 import { AppSidebar } from "@/components/app-sidebar";
 import {
@@ -44,6 +45,9 @@ import {
 } from "@/components/ui/table";
 import { toast } from "@/hooks/use-toast";
 import { formatZarCurrency } from "@/lib/utils";
+import { LineItemSheet } from "@/components/inventory/line-item-sheet";
+import { useLocations } from "@/hooks/use-locations";
+import type { IngredientOption, LineItemSheetSubmitPayload } from "@/components/inventory/line-item-sheet-types";
 
 type InventoryTab = "ingredients" | "grv" | "waste" | "stockTake" | "purchaseOrders";
 type IngredientUnit = "KG" | "LITRE" | "EACH";
@@ -56,23 +60,41 @@ type IngredientDto = {
   unit: IngredientUnit;
   countSheetCategory: CountSheetCategory;
   active: boolean;
+  itemCode?: string;
+};
+
+type StockByLocationDto = {
+  locationId: number;
+  locationName: string;
+  stock: number;
 };
 
 type IngredientStockDto = {
-  currentStock: number;
+  totalStock: number;
+  byLocation: StockByLocationDto[];
   lastMovementAt?: string;
+};
+
+type GrvLineDto = {
+  id: number;
+  ingredientId: number;
+  ingredientName: string;
+  purchaseOrderLineId?: number;
+  quantityOrdered: number | null;
+  quantityReceived: number;
+  costPerUnit: number;
+  receiptVariance: number | null;
 };
 
 type GrvDto = {
   id: number;
-  ingredientId: number;
-  ingredientName: string;
-  quantity: number;
-  costPerUnit: number;
+  invoiceNumber: string;
+  purchaseOrderId?: number;
   supplierName: string;
   note?: string;
-  receivedById?: number;
+  receivedByName?: string;
   receivedAt: string;
+  lines: GrvLineDto[];
 };
 
 type WasteEntryDto = {
@@ -83,6 +105,7 @@ type WasteEntryDto = {
   reason: string;
   note?: string;
   createdAt: string;
+  locationName?: string;
 };
 
 type WasteEntryListItemDto = {
@@ -94,6 +117,7 @@ type WasteEntryListItemDto = {
   note?: string;
   recordedBy: string;
   createdAt: string;
+  locationName?: string;
 };
 
 type WasteListResponseDto = {
@@ -122,6 +146,7 @@ type StockTakeListResponseDto = {
 };
 
 type PurchaseOrderLineDto = {
+  id: number;
   ingredientId: number;
   ingredientName: string;
   quantity: number;
@@ -158,8 +183,7 @@ const INGREDIENT_UNITS: IngredientUnit[] = ["KG", "LITRE", "EACH"];
 const COUNT_SHEET_CATEGORIES: CountSheetCategory[] = ["PREP", "BULK", "DRYSTOCK", "FVEG"];
 const PURCHASE_ORDER_STATUSES: PurchaseOrderStatus[] = ["DRAFT", "SUBMITTED", "RECEIVED"];
 const BULK_INGREDIENT_HEADERS = ["NAME", "UNIT", "COUNT SHEET"] as const;
-const BULK_GRV_HEADERS = ["INGREDIENT NAME", "QUANTITY", "COST PER UNIT", "SUPPLIER NAME", "NOTE (OPTIONAL)"] as const;
-const BULK_GRV_HEADERS_LEGACY = ["INGREDIENT", "QUANTITY", "COST PER UNIT", "SUPPLIER", "NOTE"] as const;
+const BULK_GRV_HEADERS = ["INGREDIENT NAME", "QUANTITY", "COST PER UNIT", "SUPPLIER NAME", "NOTE (OPTIONAL)", "INVOICE NUMBER"] as const;
 
 function parseError(body: unknown, fallback: string): string {
   if (!body || typeof body !== "object") return fallback;
@@ -228,6 +252,7 @@ function normalizeCsvHeader(header: string): string {
 export default function InventoryPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
+  const { locations } = useLocations();
 
   const [activeTab, setActiveTab] = useState<InventoryTab>("ingredients");
 
@@ -248,6 +273,7 @@ export default function InventoryPage() {
   const [ingredientUnit, setIngredientUnit] = useState<IngredientUnit>("KG");
   const [ingredientCategory, setIngredientCategory] = useState<CountSheetCategory>("PREP");
   const [ingredientActive, setIngredientActive] = useState(true);
+  const [ingredientItemCode, setIngredientItemCode] = useState("");
   const [ingredientSaveError, setIngredientSaveError] = useState<string | null>(null);
   const [ingredientSaving, setIngredientSaving] = useState(false);
 
@@ -259,18 +285,16 @@ export default function InventoryPage() {
   const [grvBulkUploading, setGrvBulkUploading] = useState(false);
   const [grvLoading, setGrvLoading] = useState(false);
   const [grvError, setGrvError] = useState<string | null>(null);
-  const [grvIngredientId, setGrvIngredientId] = useState("");
-  const [grvQuantity, setGrvQuantity] = useState("");
-  const [grvCostPerUnit, setGrvCostPerUnit] = useState("");
-  const [grvSupplierName, setGrvSupplierName] = useState("");
-  const [grvNote, setGrvNote] = useState("");
-  const [grvSaveError, setGrvSaveError] = useState<string | null>(null);
-  const [grvSaving, setGrvSaving] = useState(false);
+  const [grvSelectedPurchaseOrderId, setGrvSelectedPurchaseOrderId] = useState("");
+  const [grvPoReceivedByLine, setGrvPoReceivedByLine] = useState<Record<number, number>>({});
+  const [grvPoReceivedLoading, setGrvPoReceivedLoading] = useState(false);
+  const [grvSheetResetKey, setGrvSheetResetKey] = useState(0);
   const [grvFilterIngredientId, setGrvFilterIngredientId] = useState("all");
   const [grvFilterFrom, setGrvFilterFrom] = useState("");
   const [grvFilterTo, setGrvFilterTo] = useState("");
 
   const [wasteIngredientId, setWasteIngredientId] = useState("");
+  const [wasteLocationId, setWasteLocationId] = useState("");
   const [wasteQuantity, setWasteQuantity] = useState("");
   const [wasteReason, setWasteReason] = useState("");
   const [wasteNote, setWasteNote] = useState("");
@@ -333,7 +357,7 @@ export default function InventoryPage() {
             }
             return [ingredient.id, stockBody as IngredientStockDto] as const;
           } catch {
-            return [ingredient.id, { currentStock: 0 }] as const;
+            return [ingredient.id, { totalStock: 0, byLocation: [], lastMovementAt: undefined }] as const;
           }
         }),
       );
@@ -448,6 +472,60 @@ export default function InventoryPage() {
     [ingredients],
   );
 
+  // GRV never auto-fills cost — unlike Issue, the whole point is recording *this*
+  // delivery's actual cost, so Unit Cost is always left blank for the user to enter.
+  const grvIngredientOptions: IngredientOption[] = useMemo(
+    () =>
+      ingredientOptions.map((ingredient) => ({
+        id: ingredient.id,
+        name: ingredient.name,
+        unit: ingredient.unit,
+        unitValue: null,
+        itemCode: ingredient.itemCode ?? null,
+      })),
+    [ingredientOptions],
+  );
+
+  const selectedGrvPurchaseOrder = useMemo(
+    () => purchaseOrders.find((po) => String(po.id) === grvSelectedPurchaseOrderId) ?? null,
+    [purchaseOrders, grvSelectedPurchaseOrderId],
+  );
+
+  // Client-side reconciliation of two existing calls — no new backend endpoint for
+  // "what's outstanding on this PO": sum quantityReceived per purchaseOrderLineId
+  // across every GRV already recorded against it.
+  useEffect(() => {
+    if (!selectedGrvPurchaseOrder) {
+      setGrvPoReceivedByLine({});
+      return;
+    }
+    let cancelled = false;
+    setGrvPoReceivedLoading(true);
+    (async () => {
+      try {
+        const res = await authFetch(`/admin/grv?purchaseOrderId=${selectedGrvPurchaseOrder.id}`);
+        const body = (await res.json().catch(() => null)) as GrvDto[] | unknown;
+        if (!res.ok || !Array.isArray(body)) throw new Error("Unable to load received quantities.");
+        const receivedByLine: Record<number, number> = {};
+        for (const grv of body as GrvDto[]) {
+          for (const line of grv.lines) {
+            if (line.purchaseOrderLineId === undefined) continue;
+            receivedByLine[line.purchaseOrderLineId] =
+              (receivedByLine[line.purchaseOrderLineId] ?? 0) + line.quantityReceived;
+          }
+        }
+        if (!cancelled) setGrvPoReceivedByLine(receivedByLine);
+      } catch {
+        if (!cancelled) setGrvPoReceivedByLine({});
+      } finally {
+        if (!cancelled) setGrvPoReceivedLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [authFetch, selectedGrvPurchaseOrder]);
+
   const filteredIngredients = useMemo(() => {
     const term = ingredientSearch.trim().toLowerCase();
     if (!term) return ingredients;
@@ -460,6 +538,7 @@ export default function InventoryPage() {
     setIngredientUnit("KG");
     setIngredientCategory("PREP");
     setIngredientActive(true);
+    setIngredientItemCode("");
     setIngredientSaveError(null);
     setIngredientDialogOpen(true);
   };
@@ -477,6 +556,7 @@ export default function InventoryPage() {
     setIngredientUnit(ingredient.unit);
     setIngredientCategory(ingredient.countSheetCategory);
     setIngredientActive(ingredient.active);
+    setIngredientItemCode(ingredient.itemCode ?? "");
     setIngredientSaveError(null);
     setIngredientDialogOpen(true);
   };
@@ -507,6 +587,7 @@ export default function InventoryPage() {
         unit: ingredientUnit,
         countSheetCategory: ingredientCategory,
         active: ingredientActive,
+        itemCode: ingredientItemCode.trim() || undefined,
       };
 
       const res = editingIngredient
@@ -522,6 +603,7 @@ export default function InventoryPage() {
               name: payload.name,
               unit: payload.unit,
               countSheetCategory: payload.countSheetCategory,
+              itemCode: payload.itemCode,
             }),
           });
 
@@ -619,40 +701,36 @@ export default function InventoryPage() {
     }
   };
 
-  const saveGrv = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setGrvSaving(true);
-    setGrvSaveError(null);
-    try {
-      const res = await authFetch("/admin/grv", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ingredientId: Number(grvIngredientId),
-          quantity: Number(grvQuantity),
-          costPerUnit: Number(grvCostPerUnit),
-          supplierName: grvSupplierName.trim(),
-          note: grvNote.trim() || undefined,
-        }),
-      });
-      const body = (await res.json().catch(() => null)) as GrvDto | unknown;
-      if (!res.ok || !body) {
-        throw new Error(parseError(body, "Unable to submit GRV."));
-      }
-
-      setGrvIngredientId("");
-      setGrvQuantity("");
-      setGrvCostPerUnit("");
-      setGrvSupplierName("");
-      setGrvNote("");
-      await refreshStockSensitiveData();
-      const grv = body as GrvDto;
-      toast({ title: "GRV recorded", description: `${grv.ingredientName} stock increased by ${grv.quantity}.` });
-    } catch (err) {
-      setGrvSaveError(err instanceof Error ? err.message : "Unable to submit GRV.");
-    } finally {
-      setGrvSaving(false);
+  const handleGrvSubmit = async (payload: LineItemSheetSubmitPayload) => {
+    const res = await authFetch("/admin/grv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        invoiceNumber: payload.extraFields.invoiceNumber?.trim(),
+        purchaseOrderId: grvSelectedPurchaseOrderId ? Number(grvSelectedPurchaseOrderId) : undefined,
+        supplierName: payload.extraFields.supplierName?.trim(),
+        note: payload.extraFields.note?.trim() || undefined,
+        lines: payload.lines.map((line) => ({
+          ingredientId: line.ingredientId,
+          purchaseOrderLineId: line.purchaseOrderLineId ?? undefined,
+          quantityReceived: line.quantity,
+          costPerUnit: line.unitValue ?? 0,
+        })),
+      }),
+    });
+    const body = (await res.json().catch(() => null)) as GrvDto | unknown;
+    if (!res.ok || !body) {
+      throw new Error(parseError(body, "Unable to submit GRV."));
     }
+
+    const grv = body as GrvDto;
+    setGrvSelectedPurchaseOrderId("");
+    setGrvSheetResetKey((key) => key + 1);
+    await refreshStockSensitiveData();
+    toast({
+      title: "GRV recorded",
+      description: `Invoice ${grv.invoiceNumber} recorded with ${grv.lines.length} line(s).`,
+    });
   };
 
   const saveBulkGrvs = async (event: React.FormEvent) => {
@@ -694,16 +772,11 @@ export default function InventoryPage() {
     const foundHeaders = parseCsvHeaderLine(nonEmptyLine);
     const expectedHeaders = [...BULK_GRV_HEADERS];
     const normalizedFoundHeaders = foundHeaders.map(normalizeCsvHeader);
+    const normalizedExpectedHeaders = expectedHeaders.map(normalizeCsvHeader);
 
-    const headerSets = [BULK_GRV_HEADERS, BULK_GRV_HEADERS_LEGACY].map((headers) =>
-      headers.map(normalizeCsvHeader),
-    );
-
-    const hasValidHeaders = headerSets.some(
-      (headerSet) =>
-        normalizedFoundHeaders.length === headerSet.length &&
-        normalizedFoundHeaders.every((header, index) => header === headerSet[index]),
-    );
+    const hasValidHeaders =
+      normalizedFoundHeaders.length === normalizedExpectedHeaders.length &&
+      normalizedFoundHeaders.every((header, index) => header === normalizedExpectedHeaders[index]);
 
     if (!hasValidHeaders) {
       setGrvBulkError(
@@ -742,6 +815,10 @@ export default function InventoryPage() {
 
   const saveWaste = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (!wasteLocationId) {
+      setWasteError("Location is required.");
+      return;
+    }
     setWasteSaving(true);
     setWasteError(null);
     try {
@@ -750,6 +827,7 @@ export default function InventoryPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ingredientId: Number(wasteIngredientId),
+          locationId: Number(wasteLocationId),
           quantity: Number(wasteQuantity),
           reason: wasteReason.trim(),
           note: wasteNote.trim() || undefined,
@@ -762,6 +840,7 @@ export default function InventoryPage() {
 
       const wasteEntry = body as WasteEntryDto;
       setWasteIngredientId("");
+      setWasteLocationId("");
       setWasteQuantity("");
       setWasteReason("");
       setWasteNote("");
@@ -973,6 +1052,7 @@ export default function InventoryPage() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
+                      <TableHead>Item Code</TableHead>
                       <TableHead>Unit</TableHead>
                       <TableHead>Count Sheet Category</TableHead>
                       <TableHead>Current Stock</TableHead>
@@ -984,7 +1064,7 @@ export default function InventoryPage() {
                   <TableBody>
                     {filteredIngredients.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                        <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
                           No ingredients found.
                         </TableCell>
                       </TableRow>
@@ -994,9 +1074,17 @@ export default function InventoryPage() {
                         return (
                           <TableRow key={ingredient.id}>
                             <TableCell className="font-medium">{ingredient.name}</TableCell>
+                            <TableCell>{ingredient.itemCode || "—"}</TableCell>
                             <TableCell>{ingredient.unit}</TableCell>
                             <TableCell>{ingredient.countSheetCategory}</TableCell>
-                            <TableCell>{stock ? `${stock.currentStock} ${ingredient.unit}` : `0 ${ingredient.unit}`}</TableCell>
+                            <TableCell>
+                              <div>{stock ? stock.totalStock : 0} {ingredient.unit}</div>
+                              {stock && stock.byLocation.length > 0 && (
+                                <div className="text-xs text-muted-foreground">
+                                  {stock.byLocation.map((entry) => `${entry.locationName}: ${entry.stock}`).join(" · ")}
+                                </div>
+                              )}
+                            </TableCell>
                             <TableCell>{formatDateTime(stock?.lastMovementAt)}</TableCell>
                             <TableCell>{ingredient.active ? "Yes" : "No"}</TableCell>
                             <TableCell>
@@ -1015,13 +1103,13 @@ export default function InventoryPage() {
           )}
 
           {activeTab === "grv" && (
-            <div className="grid gap-6 lg:grid-cols-[0.95fr_1.05fr]">
-              <form onSubmit={saveGrv} className="space-y-4 rounded-lg border p-4">
+            <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+              <div className="space-y-4 rounded-lg border p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="text-lg font-semibold">GRV Entry</h2>
                     <p className="text-sm text-muted-foreground">
-                      Receive ingredient stock into the ledger.
+                      Receive ingredient stock into the ledger — one invoice, any number of lines.
                     </p>
                   </div>
                   <Button type="button" size="sm" variant="outline" onClick={openGrvBulkDialog}>
@@ -1029,49 +1117,107 @@ export default function InventoryPage() {
                   </Button>
                 </div>
 
-                <div className="space-y-1">
-                  <Label>Ingredient</Label>
-                  <Select value={grvIngredientId} onValueChange={setGrvIngredientId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select an ingredient…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {ingredientOptions.map((ingredient) => (
-                        <SelectItem key={ingredient.id} value={String(ingredient.id)}>
-                          {ingredient.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+                <LineItemSheet
+                  key={grvSheetResetKey}
+                  title="GRV"
+                  requestType="GRV"
+                  locationCount={0}
+                  extraFieldsConfig={[
+                    { key: "invoiceNumber", label: "Invoice Number", kind: "text-input", required: true },
+                    { key: "supplierName", label: "Supplier Name", kind: "text-input", required: true },
+                    { key: "note", label: "Note (optional)", kind: "text-input" },
+                  ]}
+                  columnConfig={{
+                    reasonRequirement: "hidden",
+                    quantityMode: { kind: "orderedReceived", receivedLabel: "Qty Received", showVariance: true },
+                    showLineValue: true,
+                    unitValueEditable: true,
+                    unitValueLabel: "Unit Cost",
+                  }}
+                  ingredientOptions={grvIngredientOptions}
+                  requestedByName={user?.name ?? "Admin"}
+                  submitLabel="Submit GRV"
+                  onSubmit={handleGrvSubmit}
+                  renderAboveLines={({ rows, addRow }) => (
+                    <div className="space-y-3 rounded-lg border p-4">
+                      <div className="space-y-1">
+                        <Label>Purchase Order (optional)</Label>
+                        <Select value={grvSelectedPurchaseOrderId} onValueChange={setGrvSelectedPurchaseOrderId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Link to a purchase order…" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {purchaseOrders.map((po) => (
+                              <SelectItem key={po.id} value={String(po.id)}>
+                                PO-{po.id} — {po.supplierName}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label htmlFor="grv-qty">Quantity</Label>
-                    <Input id="grv-qty" type="number" min="0.0001" step="0.0001" value={grvQuantity} onChange={(event) => setGrvQuantity(event.target.value)} required />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="grv-cost">Cost Per Unit</Label>
-                    <Input id="grv-cost" type="number" min="0" step="0.01" value={grvCostPerUnit} onChange={(event) => setGrvCostPerUnit(event.target.value)} required />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label htmlFor="grv-supplier">Supplier Name</Label>
-                  <Input id="grv-supplier" value={grvSupplierName} onChange={(event) => setGrvSupplierName(event.target.value)} required />
-                </div>
-
-                <div className="space-y-1">
-                  <Label htmlFor="grv-note">Note (optional)</Label>
-                  <Input id="grv-note" value={grvNote} onChange={(event) => setGrvNote(event.target.value)} />
-                </div>
-
-                {grvSaveError && <p className="text-sm text-destructive">{grvSaveError}</p>}
-
-                <Button type="submit" disabled={grvSaving} className="w-full">
-                  {grvSaving ? "Submitting…" : "Submit GRV"}
-                </Button>
-              </form>
+                      {selectedGrvPurchaseOrder && (
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium">Outstanding lines</p>
+                          {grvPoReceivedLoading ? (
+                            <p className="text-sm text-muted-foreground animate-pulse">Loading received quantities…</p>
+                          ) : (
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Ingredient</TableHead>
+                                  <TableHead>Ordered</TableHead>
+                                  <TableHead>Already Received</TableHead>
+                                  <TableHead>Outstanding</TableHead>
+                                  <TableHead className="w-24" />
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {selectedGrvPurchaseOrder.lines.map((line) => {
+                                  const alreadyReceived = grvPoReceivedByLine[line.id] ?? 0;
+                                  const outstanding = line.quantity - alreadyReceived;
+                                  const alreadyAdded = rows.some((row) => row.purchaseOrderLineId === line.id);
+                                  const lineIngredient = ingredients.find((i) => i.id === line.ingredientId);
+                                  return (
+                                    <TableRow key={line.id}>
+                                      <TableCell className="font-medium">{line.ingredientName}</TableCell>
+                                      <TableCell>{line.quantity}</TableCell>
+                                      <TableCell>{alreadyReceived}</TableCell>
+                                      <TableCell>{outstanding}</TableCell>
+                                      <TableCell>
+                                        {alreadyAdded ? (
+                                          <span className="text-xs text-muted-foreground">Already added</span>
+                                        ) : (
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                              addRow({
+                                                ingredientId: line.ingredientId,
+                                                ingredientName: line.ingredientName,
+                                                unit: lineIngredient?.unit ?? null,
+                                                purchaseOrderLineId: line.id,
+                                                quantityOrdered: line.quantity,
+                                              })
+                                            }
+                                          >
+                                            Add
+                                          </Button>
+                                        )}
+                                      </TableCell>
+                                    </TableRow>
+                                  );
+                                })}
+                              </TableBody>
+                            </Table>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                />
+              </div>
 
               <div className="space-y-4 rounded-lg border p-4">
                 <div>
@@ -1112,8 +1258,11 @@ export default function InventoryPage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
+                        <TableHead>Invoice</TableHead>
                         <TableHead>Ingredient</TableHead>
-                        <TableHead>Quantity</TableHead>
+                        <TableHead>Qty Received</TableHead>
+                        <TableHead>Ordered</TableHead>
+                        <TableHead>Variance</TableHead>
                         <TableHead>Cost / Unit</TableHead>
                         <TableHead>Supplier</TableHead>
                         <TableHead>Received At</TableHead>
@@ -1122,18 +1271,40 @@ export default function InventoryPage() {
                     <TableBody>
                       {grvs.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No GRVs found.</TableCell>
+                          <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">No GRVs found.</TableCell>
                         </TableRow>
                       ) : (
-                        grvs.map((grv) => (
-                          <TableRow key={grv.id}>
-                            <TableCell className="font-medium">{grv.ingredientName}</TableCell>
-                            <TableCell>{grv.quantity}</TableCell>
-                            <TableCell>{formatZarCurrency(grv.costPerUnit)}</TableCell>
-                            <TableCell>{grv.supplierName}</TableCell>
-                            <TableCell>{formatDateTime(grv.receivedAt)}</TableCell>
-                          </TableRow>
-                        ))
+                        grvs.flatMap((grv) =>
+                          grv.lines.map((line) => (
+                            <TableRow key={`${grv.id}-${line.id}`}>
+                              <TableCell className="font-medium">{grv.invoiceNumber}</TableCell>
+                              <TableCell>{line.ingredientName}</TableCell>
+                              <TableCell>{line.quantityReceived}</TableCell>
+                              <TableCell>{line.quantityOrdered ?? "—"}</TableCell>
+                              <TableCell>
+                                {line.receiptVariance !== null ? (
+                                  <span
+                                    className={
+                                      line.receiptVariance < 0
+                                        ? "font-medium text-rose-700"
+                                        : line.receiptVariance > 0
+                                        ? "font-medium text-emerald-700"
+                                        : "font-medium"
+                                    }
+                                  >
+                                    {line.receiptVariance > 0 ? "+" : ""}
+                                    {line.receiptVariance}
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
+                              </TableCell>
+                              <TableCell>{formatZarCurrency(line.costPerUnit)}</TableCell>
+                              <TableCell>{grv.supplierName}</TableCell>
+                              <TableCell>{formatDateTime(grv.receivedAt)}</TableCell>
+                            </TableRow>
+                          )),
+                        )
                       )}
                     </TableBody>
                   </Table>
@@ -1159,6 +1330,20 @@ export default function InventoryPage() {
                     <SelectContent>
                       {ingredientOptions.map((ingredient) => (
                         <SelectItem key={ingredient.id} value={String(ingredient.id)}>{ingredient.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label>Location</Label>
+                  <Select value={wasteLocationId} onValueChange={setWasteLocationId}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a location…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {locations.map((location) => (
+                        <SelectItem key={location.id} value={String(location.id)}>{location.name}</SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -1199,6 +1384,7 @@ export default function InventoryPage() {
                     {wasteEntries.map((entry) => (
                       <div key={entry.id} className="space-y-1 rounded-md bg-muted p-4 text-sm">
                         <p><span className="font-medium">Ingredient:</span> {entry.ingredientName}</p>
+                        {entry.locationName && <p><span className="font-medium">Location:</span> {entry.locationName}</p>}
                         <p><span className="font-medium">Quantity:</span> {entry.quantity}</p>
                         <p><span className="font-medium">Reason:</span> {entry.reason}</p>
                         {entry.note && <p><span className="font-medium">Note:</span> {entry.note}</p>}
@@ -1238,7 +1424,10 @@ export default function InventoryPage() {
 
                 {stockTakeIngredientId && (
                   <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                    Expected stock: {ingredientStocks[Number(stockTakeIngredientId)]?.currentStock ?? 0}
+                    Expected stock (Main Store):{" "}
+                    {ingredientStocks[Number(stockTakeIngredientId)]?.byLocation.find(
+                      (entry) => entry.locationName === "Main Store",
+                    )?.stock ?? 0}
                   </div>
                 )}
 
@@ -1361,6 +1550,9 @@ export default function InventoryPage() {
                           <div>
                             <p className="font-semibold">{purchaseOrder.supplierName}</p>
                             <p className="text-xs text-muted-foreground">Created {formatDateTime(purchaseOrder.createdAt)}</p>
+                            <Link href={`/inventory/purchase-orders/${purchaseOrder.id}`} className="text-xs text-primary hover:underline">
+                              View
+                            </Link>
                           </div>
                           <div className="flex items-center gap-2">
                             <Select
@@ -1407,6 +1599,11 @@ export default function InventoryPage() {
               <div className="space-y-1">
                 <Label htmlFor="ingredient-name">Name</Label>
                 <Input id="ingredient-name" value={ingredientName} onChange={(event) => setIngredientName(event.target.value)} required />
+              </div>
+
+              <div className="space-y-1">
+                <Label htmlFor="ingredient-item-code">Item Code (optional)</Label>
+                <Input id="ingredient-item-code" value={ingredientItemCode} onChange={(event) => setIngredientItemCode(event.target.value)} />
               </div>
 
               <div className="space-y-1">
@@ -1549,16 +1746,16 @@ Paper Straw,EACH,DRYSTOCK`}
 
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="mb-2 font-medium">Required header order:</p>
-                <p className="font-mono text-xs">INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL)</p>
+                <p className="font-mono text-xs">INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL),INVOICE NUMBER</p>
               </div>
 
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="mb-2 font-medium">Sample CSV:</p>
                 <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
-{`INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL)
-Tomato,25,17.50,Fresh Farms,Weekly produce delivery
-Olive Oil,12,89.00,Med Supply,
-Paper Straw,500,0.35,Bar Essentials,Promo weekend restock`}
+{`INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL),INVOICE NUMBER
+Tomato,25,17.50,Fresh Farms,Weekly produce delivery,INV-1001
+Olive Oil,12,89.00,Med Supply,,INV-1002
+Paper Straw,500,0.35,Bar Essentials,Promo weekend restock,INV-1003`}
                 </pre>
               </div>
 

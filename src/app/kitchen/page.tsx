@@ -5,12 +5,7 @@ import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 import { KitchenQueueBoard } from "@/components/kitchen/kitchen-queue-board";
 import { useAuth } from "@/hooks/use-auth";
-
-function isKitchenAccessRole(role?: string): boolean {
-  if (!role) return false;
-  const normalised = role.toUpperCase();
-  return normalised.includes("KITCHEN") || normalised.includes("ADMIN");
-}
+import { isKitchenAccessRole } from "@/lib/roles";
 
 export default function KitchenPage() {
   const router = useRouter();
