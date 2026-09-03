@@ -3,6 +3,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import {
+  type ColumnDef,
+  type ColumnFiltersState,
+  type SortingState,
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
+  useReactTable,
+} from "@tanstack/react-table";
+import { ArrowUpDown } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { AppSidebar } from "@/components/app-sidebar";
 import {
@@ -25,6 +36,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -75,6 +87,19 @@ type IngredientStockDto = {
   lastMovementAt?: string;
 };
 
+type IngredientTableRow = {
+  id: number;
+  name: string;
+  itemCode: string;
+  unit: IngredientUnit;
+  countSheetCategory: CountSheetCategory;
+  totalStock: number;
+  stockByLocation: string;
+  lastMovementAt?: string;
+  active: boolean;
+  ingredient: IngredientDto;
+};
+
 type GrvLineDto = {
   id: number;
   ingredientId: number;
@@ -95,6 +120,26 @@ type GrvDto = {
   receivedByName?: string;
   receivedAt: string;
   lines: GrvLineDto[];
+};
+
+type GrvTableRow = {
+  rowId: string;
+  grvId: number;
+  invoiceNumber: string;
+  ingredientName: string;
+  quantityReceived: number;
+  quantityOrdered: number | null;
+  receiptVariance: number | null;
+  costPerUnit: number;
+  supplierName: string;
+  receivedAt: string;
+};
+
+type GrvEditLineState = {
+  id: number;
+  ingredientName: string;
+  quantityReceived: string;
+  costPerUnit: string;
 };
 
 type WasteEntryDto = {
@@ -209,6 +254,16 @@ function formatDateTime(value?: string): string {
   }
 }
 
+function isSameLocalDay(value: string): boolean {
+  try {
+    const date = new Date(value);
+    const now = new Date();
+    return date.toDateString() === now.toDateString();
+  } catch {
+    return false;
+  }
+}
+
 function dateToApiBoundary(value: string, endOfDay: boolean): string | undefined {
   if (!value) return undefined;
   return `${value}T${endOfDay ? "23:59:59" : "00:00:00"}`;
@@ -261,6 +316,8 @@ export default function InventoryPage() {
   const [ingredientsLoading, setIngredientsLoading] = useState(true);
   const [ingredientsError, setIngredientsError] = useState<string | null>(null);
   const [ingredientSearch, setIngredientSearch] = useState("");
+  const [ingredientTableSorting, setIngredientTableSorting] = useState<SortingState>([]);
+  const [ingredientTableColumnFilters, setIngredientTableColumnFilters] = useState<ColumnFiltersState>([]);
 
   const [ingredientDialogOpen, setIngredientDialogOpen] = useState(false);
   const [bulkIngredientDialogOpen, setBulkIngredientDialogOpen] = useState(false);
@@ -278,6 +335,18 @@ export default function InventoryPage() {
   const [ingredientSaving, setIngredientSaving] = useState(false);
 
   const [grvs, setGrvs] = useState<GrvDto[]>([]);
+  const [grvViewDialogOpen, setGrvViewDialogOpen] = useState(false);
+  const [grvTableSearch, setGrvTableSearch] = useState("");
+  const [grvTableSorting, setGrvTableSorting] = useState<SortingState>([]);
+  const [grvTableColumnFilters, setGrvTableColumnFilters] = useState<ColumnFiltersState>([]);
+  const [grvEditDialogOpen, setGrvEditDialogOpen] = useState(false);
+  const [grvEditTarget, setGrvEditTarget] = useState<GrvDto | null>(null);
+  const [grvEditInvoiceNumber, setGrvEditInvoiceNumber] = useState("");
+  const [grvEditSupplierName, setGrvEditSupplierName] = useState("");
+  const [grvEditNote, setGrvEditNote] = useState("");
+  const [grvEditLines, setGrvEditLines] = useState<GrvEditLineState[]>([]);
+  const [grvEditError, setGrvEditError] = useState<string | null>(null);
+  const [grvEditSaving, setGrvEditSaving] = useState(false);
   const [grvBulkDialogOpen, setGrvBulkDialogOpen] = useState(false);
   const [grvBulkFile, setGrvBulkFile] = useState<File | null>(null);
   const [grvBulkError, setGrvBulkError] = useState<string | null>(null);
@@ -491,6 +560,186 @@ export default function InventoryPage() {
     [purchaseOrders, grvSelectedPurchaseOrderId],
   );
 
+  const grvTableRows: GrvTableRow[] = useMemo(
+    () =>
+      grvs.flatMap((grv) =>
+        grv.lines.map((line) => ({
+          rowId: `${grv.id}-${line.id}`,
+          grvId: grv.id,
+          invoiceNumber: grv.invoiceNumber,
+          ingredientName: line.ingredientName,
+          quantityReceived: line.quantityReceived,
+          quantityOrdered: line.quantityOrdered,
+          receiptVariance: line.receiptVariance,
+          costPerUnit: line.costPerUnit,
+          supplierName: grv.supplierName,
+          receivedAt: grv.receivedAt,
+        })),
+      ),
+    [grvs],
+  );
+
+  const openGrvEditDialog = (grv: GrvDto) => {
+    setGrvEditTarget(grv);
+    setGrvEditInvoiceNumber(grv.invoiceNumber);
+    setGrvEditSupplierName(grv.supplierName);
+    setGrvEditNote(grv.note ?? "");
+    setGrvEditLines(
+      grv.lines.map((line) => ({
+        id: line.id,
+        ingredientName: line.ingredientName,
+        quantityReceived: String(line.quantityReceived),
+        costPerUnit: String(line.costPerUnit),
+      })),
+    );
+    setGrvEditError(null);
+    setGrvEditDialogOpen(true);
+  };
+
+  const grvTableColumns: ColumnDef<GrvTableRow>[] = useMemo(
+    () => [
+      {
+        accessorKey: "invoiceNumber",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Invoice
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="font-medium">{row.getValue("invoiceNumber")}</span>,
+      },
+      {
+        accessorKey: "ingredientName",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Ingredient
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+      },
+      {
+        accessorKey: "quantityReceived",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Qty Received
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+      },
+      {
+        accessorKey: "quantityOrdered",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Ordered
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => row.original.quantityOrdered ?? "—",
+      },
+      {
+        accessorKey: "receiptVariance",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Variance
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => {
+          const variance = row.original.receiptVariance;
+          if (variance === null) return "—";
+          return (
+            <span
+              className={
+                variance < 0
+                  ? "font-medium text-rose-700"
+                  : variance > 0
+                  ? "font-medium text-emerald-700"
+                  : "font-medium"
+              }
+            >
+              {variance > 0 ? "+" : ""}
+              {variance}
+            </span>
+          );
+        },
+      },
+      {
+        accessorKey: "costPerUnit",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Cost / Unit
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => formatZarCurrency(row.original.costPerUnit),
+      },
+      {
+        accessorKey: "supplierName",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Supplier
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        filterFn: "equals",
+      },
+      {
+        accessorKey: "receivedAt",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Received At
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => formatDateTime(row.original.receivedAt),
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => {
+          const editable = isSameLocalDay(row.original.receivedAt);
+          return (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!editable}
+              title={editable ? undefined : "GRVs can only be edited on the day they were received"}
+              onClick={() => {
+                const grv = grvs.find((g) => g.id === row.original.grvId);
+                if (grv) openGrvEditDialog(grv);
+              }}
+            >
+              Edit
+            </Button>
+          );
+        },
+      },
+    ],
+    [grvs],
+  );
+
+  const grvSupplierOptions = useMemo(
+    () => Array.from(new Set(grvs.map((grv) => grv.supplierName))).sort(),
+    [grvs],
+  );
+
+  const grvTable = useReactTable({
+    data: grvTableRows,
+    columns: grvTableColumns,
+    getRowId: (row) => row.rowId,
+    state: {
+      sorting: grvTableSorting,
+      columnFilters: grvTableColumnFilters,
+      globalFilter: grvTableSearch,
+    },
+    onSortingChange: setGrvTableSorting,
+    onColumnFiltersChange: setGrvTableColumnFilters,
+    onGlobalFilterChange: setGrvTableSearch,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+  });
+
   // Client-side reconciliation of two existing calls — no new backend endpoint for
   // "what's outstanding on this PO": sum quantityReceived per purchaseOrderLineId
   // across every GRV already recorded against it.
@@ -526,12 +775,6 @@ export default function InventoryPage() {
     };
   }, [authFetch, selectedGrvPurchaseOrder]);
 
-  const filteredIngredients = useMemo(() => {
-    const term = ingredientSearch.trim().toLowerCase();
-    if (!term) return ingredients;
-    return ingredients.filter((ingredient) => ingredient.name.toLowerCase().includes(term));
-  }, [ingredientSearch, ingredients]);
-
   const openCreateIngredient = () => {
     setEditingIngredient(null);
     setIngredientName("");
@@ -560,6 +803,135 @@ export default function InventoryPage() {
     setIngredientSaveError(null);
     setIngredientDialogOpen(true);
   };
+
+  const ingredientTableRows: IngredientTableRow[] = useMemo(
+    () =>
+      ingredients.map((ingredient) => {
+        const stock = ingredientStocks[ingredient.id];
+        return {
+          id: ingredient.id,
+          name: ingredient.name,
+          itemCode: ingredient.itemCode ?? "",
+          unit: ingredient.unit,
+          countSheetCategory: ingredient.countSheetCategory,
+          totalStock: stock ? stock.totalStock : 0,
+          stockByLocation: stock?.byLocation.map((entry) => `${entry.locationName}: ${entry.stock}`).join(" · ") ?? "",
+          lastMovementAt: stock?.lastMovementAt,
+          active: ingredient.active,
+          ingredient,
+        };
+      }),
+    [ingredients, ingredientStocks],
+  );
+
+  const ingredientTableColumns: ColumnDef<IngredientTableRow>[] = useMemo(
+    () => [
+      {
+        accessorKey: "name",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Name
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      },
+      {
+        accessorKey: "itemCode",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Item Code
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => row.original.itemCode || "—",
+      },
+      {
+        accessorKey: "unit",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Unit
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+      },
+      {
+        accessorKey: "countSheetCategory",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Count Sheet Category
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        filterFn: "equals",
+      },
+      {
+        accessorKey: "totalStock",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Current Stock
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => (
+          <div>
+            <div>{row.original.totalStock} {row.original.unit}</div>
+            {row.original.stockByLocation && (
+              <div className="text-xs text-muted-foreground">{row.original.stockByLocation}</div>
+            )}
+          </div>
+        ),
+      },
+      {
+        accessorKey: "lastMovementAt",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Last Movement
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => formatDateTime(row.original.lastMovementAt),
+      },
+      {
+        accessorKey: "active",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Active
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => (row.original.active ? "Yes" : "No"),
+        filterFn: "equals",
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => (
+          <Button size="sm" variant="outline" onClick={() => openEditIngredient(row.original.ingredient)}>
+            Edit
+          </Button>
+        ),
+      },
+    ],
+    [],
+  );
+
+  const ingredientTable = useReactTable({
+    data: ingredientTableRows,
+    columns: ingredientTableColumns,
+    getRowId: (row) => String(row.id),
+    state: {
+      sorting: ingredientTableSorting,
+      columnFilters: ingredientTableColumnFilters,
+      globalFilter: ingredientSearch,
+    },
+    onSortingChange: setIngredientTableSorting,
+    onColumnFiltersChange: setIngredientTableColumnFilters,
+    onGlobalFilterChange: setIngredientSearch,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+  });
 
   const openGrvBulkDialog = () => {
     setGrvBulkFile(null);
@@ -731,6 +1103,60 @@ export default function InventoryPage() {
       title: "GRV recorded",
       description: `Invoice ${grv.invoiceNumber} recorded with ${grv.lines.length} line(s).`,
     });
+  };
+
+  const saveGrvEdit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!grvEditTarget) return;
+    setGrvEditError(null);
+
+    for (const line of grvEditLines) {
+      const quantity = Number(line.quantityReceived);
+      const cost = Number(line.costPerUnit);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        setGrvEditError(`${line.ingredientName}: quantity received must be greater than 0.`);
+        return;
+      }
+      if (!Number.isFinite(cost) || cost < 0) {
+        setGrvEditError(`${line.ingredientName}: cost per unit must be 0 or more.`);
+        return;
+      }
+    }
+
+    setGrvEditSaving(true);
+    try {
+      const res = await authFetch(`/admin/grv/${grvEditTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          invoiceNumber: grvEditInvoiceNumber.trim(),
+          supplierName: grvEditSupplierName.trim(),
+          note: grvEditNote.trim() || undefined,
+          lines: grvEditLines.map((line) => ({
+            id: line.id,
+            quantityReceived: Number(line.quantityReceived),
+            costPerUnit: Number(line.costPerUnit),
+          })),
+        }),
+      });
+      const body = (await res.json().catch(() => null)) as GrvDto | unknown;
+      if (!res.ok || !body) {
+        throw new Error(parseError(body, "Unable to update GRV. It may only be edited on the day it was received."));
+      }
+
+      const grv = body as GrvDto;
+      setGrvEditDialogOpen(false);
+      setGrvEditTarget(null);
+      await refreshStockSensitiveData();
+      toast({
+        title: "GRV updated",
+        description: `Invoice ${grv.invoiceNumber} updated.`,
+      });
+    } catch (err) {
+      setGrvEditError(err instanceof Error ? err.message : "Unable to update GRV.");
+    } finally {
+      setGrvEditSaving(false);
+    }
   };
 
   const saveBulkGrvs = async (event: React.FormEvent) => {
@@ -1036,74 +1462,105 @@ export default function InventoryPage() {
                 </div>
               </div>
 
-              <Input
-                value={ingredientSearch}
-                onChange={(event) => setIngredientSearch(event.target.value)}
-                placeholder="Search ingredients"
-                className="max-w-sm"
-              />
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1 w-[220px]">
+                  <Label htmlFor="ingredient-search">Search</Label>
+                  <Input
+                    id="ingredient-search"
+                    value={ingredientSearch}
+                    onChange={(event) => setIngredientSearch(event.target.value)}
+                    placeholder="Search ingredients"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Count Sheet Category</Label>
+                  <Select
+                    value={(ingredientTable.getColumn("countSheetCategory")?.getFilterValue() as string) ?? "all"}
+                    onValueChange={(value) =>
+                      ingredientTable.getColumn("countSheetCategory")?.setFilterValue(value === "all" ? undefined : value)
+                    }
+                  >
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue placeholder="All categories" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All categories</SelectItem>
+                      {COUNT_SHEET_CATEGORIES.map((category) => (
+                        <SelectItem key={category} value={category}>{category}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Active</Label>
+                  <Select
+                    value={
+                      ingredientTable.getColumn("active")?.getFilterValue() === undefined
+                        ? "all"
+                        : String(ingredientTable.getColumn("active")?.getFilterValue())
+                    }
+                    onValueChange={(value) =>
+                      ingredientTable.getColumn("active")?.setFilterValue(value === "all" ? undefined : value === "true")
+                    }
+                  >
+                    <SelectTrigger className="w-[140px]">
+                      <SelectValue placeholder="All" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="true">Active</SelectItem>
+                      <SelectItem value="false">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <span className="pb-2 text-sm text-muted-foreground whitespace-nowrap">
+                  {ingredientTable.getFilteredRowModel().rows.length} of {ingredientTableRows.length} ingredients
+                </span>
+              </div>
 
               {ingredientsError && <p className="text-sm text-destructive">{ingredientsError}</p>}
 
               {ingredientsLoading ? (
                 <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Item Code</TableHead>
-                      <TableHead>Unit</TableHead>
-                      <TableHead>Count Sheet Category</TableHead>
-                      <TableHead>Current Stock</TableHead>
-                      <TableHead>Last Movement</TableHead>
-                      <TableHead>Active</TableHead>
-                      <TableHead className="w-16" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredIngredients.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">
-                          No ingredients found.
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      filteredIngredients.map((ingredient) => {
-                        const stock = ingredientStocks[ingredient.id];
-                        return (
-                          <TableRow key={ingredient.id}>
-                            <TableCell className="font-medium">{ingredient.name}</TableCell>
-                            <TableCell>{ingredient.itemCode || "—"}</TableCell>
-                            <TableCell>{ingredient.unit}</TableCell>
-                            <TableCell>{ingredient.countSheetCategory}</TableCell>
-                            <TableCell>
-                              <div>{stock ? stock.totalStock : 0} {ingredient.unit}</div>
-                              {stock && stock.byLocation.length > 0 && (
-                                <div className="text-xs text-muted-foreground">
-                                  {stock.byLocation.map((entry) => `${entry.locationName}: ${entry.stock}`).join(" · ")}
-                                </div>
-                              )}
-                            </TableCell>
-                            <TableCell>{formatDateTime(stock?.lastMovementAt)}</TableCell>
-                            <TableCell>{ingredient.active ? "Yes" : "No"}</TableCell>
-                            <TableCell>
-                              <Button size="sm" variant="outline" onClick={() => openEditIngredient(ingredient)}>
-                                Edit
-                              </Button>
-                            </TableCell>
+                <div className="max-h-[65vh] overflow-y-auto rounded-md border">
+                  <table className="w-full caption-bottom text-sm">
+                    <TableHeader>
+                      {ingredientTable.getHeaderGroups().map((headerGroup) => (
+                        <TableRow key={headerGroup.id} className="sticky top-0 z-10 bg-background">
+                          {headerGroup.headers.map((header) => (
+                            <TableHead key={header.id}>
+                              {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                            </TableHead>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableHeader>
+                    <TableBody>
+                      {ingredientTable.getRowModel().rows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={ingredientTableColumns.length} className="py-8 text-center text-sm text-muted-foreground">
+                            No ingredients found.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        ingredientTable.getRowModel().rows.map((row) => (
+                          <TableRow key={row.id}>
+                            {row.getVisibleCells().map((cell) => (
+                              <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                            ))}
                           </TableRow>
-                        );
-                      })
-                    )}
-                  </TableBody>
-                </Table>
+                        ))
+                      )}
+                    </TableBody>
+                  </table>
+                </div>
               )}
             </div>
           )}
 
           {activeTab === "grv" && (
-            <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+            <div className="space-y-6">
               <div className="space-y-4 rounded-lg border p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -1112,9 +1569,14 @@ export default function InventoryPage() {
                       Receive ingredient stock into the ledger — one invoice, any number of lines.
                     </p>
                   </div>
-                  <Button type="button" size="sm" variant="outline" onClick={openGrvBulkDialog}>
-                    Bulk Upload CSV
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => setGrvViewDialogOpen(true)}>
+                      View GRVs
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={openGrvBulkDialog}>
+                      Bulk Upload CSV
+                    </Button>
+                  </div>
                 </div>
 
                 <LineItemSheet
@@ -1217,98 +1679,6 @@ export default function InventoryPage() {
                     </div>
                   )}
                 />
-              </div>
-
-              <div className="space-y-4 rounded-lg border p-4">
-                <div>
-                  <h2 className="text-lg font-semibold">Recent GRVs</h2>
-                  <p className="text-sm text-muted-foreground">Filter by ingredient and date range.</p>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div className="space-y-1">
-                    <Label>Ingredient</Label>
-                    <Select value={grvFilterIngredientId} onValueChange={setGrvFilterIngredientId}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">All ingredients</SelectItem>
-                        {ingredients.map((ingredient) => (
-                          <SelectItem key={ingredient.id} value={String(ingredient.id)}>{ingredient.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="grv-from">From</Label>
-                    <Input id="grv-from" type="date" value={grvFilterFrom} onChange={(event) => setGrvFilterFrom(event.target.value)} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label htmlFor="grv-to">To</Label>
-                    <Input id="grv-to" type="date" value={grvFilterTo} onChange={(event) => setGrvFilterTo(event.target.value)} />
-                  </div>
-                </div>
-
-                {grvError && <p className="text-sm text-destructive">{grvError}</p>}
-
-                {grvLoading ? (
-                  <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
-                ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Invoice</TableHead>
-                        <TableHead>Ingredient</TableHead>
-                        <TableHead>Qty Received</TableHead>
-                        <TableHead>Ordered</TableHead>
-                        <TableHead>Variance</TableHead>
-                        <TableHead>Cost / Unit</TableHead>
-                        <TableHead>Supplier</TableHead>
-                        <TableHead>Received At</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {grvs.length === 0 ? (
-                        <TableRow>
-                          <TableCell colSpan={8} className="py-8 text-center text-sm text-muted-foreground">No GRVs found.</TableCell>
-                        </TableRow>
-                      ) : (
-                        grvs.flatMap((grv) =>
-                          grv.lines.map((line) => (
-                            <TableRow key={`${grv.id}-${line.id}`}>
-                              <TableCell className="font-medium">{grv.invoiceNumber}</TableCell>
-                              <TableCell>{line.ingredientName}</TableCell>
-                              <TableCell>{line.quantityReceived}</TableCell>
-                              <TableCell>{line.quantityOrdered ?? "—"}</TableCell>
-                              <TableCell>
-                                {line.receiptVariance !== null ? (
-                                  <span
-                                    className={
-                                      line.receiptVariance < 0
-                                        ? "font-medium text-rose-700"
-                                        : line.receiptVariance > 0
-                                        ? "font-medium text-emerald-700"
-                                        : "font-medium"
-                                    }
-                                  >
-                                    {line.receiptVariance > 0 ? "+" : ""}
-                                    {line.receiptVariance}
-                                  </span>
-                                ) : (
-                                  "—"
-                                )}
-                              </TableCell>
-                              <TableCell>{formatZarCurrency(line.costPerUnit)}</TableCell>
-                              <TableCell>{grv.supplierName}</TableCell>
-                              <TableCell>{formatDateTime(grv.receivedAt)}</TableCell>
-                            </TableRow>
-                          )),
-                        )
-                      )}
-                    </TableBody>
-                  </Table>
-                )}
               </div>
             </div>
           )}
@@ -1712,6 +2082,210 @@ Paper Straw,EACH,DRYSTOCK`}
                 </Button>
               </div>
             </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={grvViewDialogOpen} onOpenChange={setGrvViewDialogOpen}>
+          <DialogContent className="flex max-h-[85vh] w-[98vw] flex-col sm:max-w-[90vw]">
+            <DialogHeader>
+              <DialogTitle>Recent GRVs</DialogTitle>
+              <DialogDescription>Filter by ingredient and date range.</DialogDescription>
+            </DialogHeader>
+
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="space-y-1">
+                <Label>Ingredient</Label>
+                <Select value={grvFilterIngredientId} onValueChange={setGrvFilterIngredientId}>
+                  <SelectTrigger className="w-[180px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All ingredients</SelectItem>
+                    {ingredients.map((ingredient) => (
+                      <SelectItem key={ingredient.id} value={String(ingredient.id)}>{ingredient.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="grv-from">From</Label>
+                <Input id="grv-from" type="date" value={grvFilterFrom} onChange={(event) => setGrvFilterFrom(event.target.value)} className="w-[150px]" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="grv-to">To</Label>
+                <Input id="grv-to" type="date" value={grvFilterTo} onChange={(event) => setGrvFilterTo(event.target.value)} className="w-[150px]" />
+              </div>
+              <div className="space-y-1">
+                <Label>Supplier</Label>
+                <Select
+                  value={(grvTable.getColumn("supplierName")?.getFilterValue() as string) ?? "all"}
+                  onValueChange={(value) =>
+                    grvTable.getColumn("supplierName")?.setFilterValue(value === "all" ? undefined : value)
+                  }
+                >
+                  <SelectTrigger className="w-[170px]">
+                    <SelectValue placeholder="All suppliers" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All suppliers</SelectItem>
+                    {grvSupplierOptions.map((supplier) => (
+                      <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1 flex-1 min-w-[200px]">
+                <Label htmlFor="grv-search">Search</Label>
+                <Input
+                  id="grv-search"
+                  placeholder="Invoice, ingredient, supplier…"
+                  value={grvTableSearch}
+                  onChange={(event) => setGrvTableSearch(event.target.value)}
+                />
+              </div>
+              <span className="pb-2 text-sm text-muted-foreground whitespace-nowrap">
+                {grvTable.getFilteredRowModel().rows.length} of {grvTableRows.length} lines
+              </span>
+            </div>
+
+            {grvError && <p className="text-sm text-destructive">{grvError}</p>}
+
+            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
+              {grvLoading ? (
+                <p className="p-4 text-sm text-muted-foreground animate-pulse">Loading…</p>
+              ) : (
+                <table className="w-full caption-bottom text-sm">
+                  <TableHeader>
+                    {grvTable.getHeaderGroups().map((headerGroup) => (
+                      <TableRow key={headerGroup.id} className="sticky top-0 z-10 bg-background">
+                        {headerGroup.headers.map((header) => (
+                          <TableHead key={header.id}>
+                            {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                          </TableHead>
+                        ))}
+                      </TableRow>
+                    ))}
+                  </TableHeader>
+                  <TableBody>
+                    {grvTable.getRowModel().rows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={grvTableColumns.length} className="py-8 text-center text-sm text-muted-foreground">No GRVs found.</TableCell>
+                      </TableRow>
+                    ) : (
+                      grvTable.getRowModel().rows.map((row) => (
+                        <TableRow key={row.id}>
+                          {row.getVisibleCells().map((cell) => (
+                            <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                          ))}
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </table>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={grvEditDialogOpen} onOpenChange={setGrvEditDialogOpen}>
+          <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Edit GRV</DialogTitle>
+              <DialogDescription>
+                Corrections only — GRVs can only be edited on the day they were received.
+              </DialogDescription>
+            </DialogHeader>
+
+            {grvEditTarget && (
+              <form onSubmit={saveGrvEdit} className="flex-1 space-y-4 overflow-y-auto text-sm">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="grv-edit-invoice">Invoice Number</Label>
+                    <Input
+                      id="grv-edit-invoice"
+                      value={grvEditInvoiceNumber}
+                      onChange={(event) => setGrvEditInvoiceNumber(event.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="grv-edit-supplier">Supplier Name</Label>
+                    <Input
+                      id="grv-edit-supplier"
+                      value={grvEditSupplierName}
+                      onChange={(event) => setGrvEditSupplierName(event.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="grv-edit-note">Note (optional)</Label>
+                  <Input id="grv-edit-note" value={grvEditNote} onChange={(event) => setGrvEditNote(event.target.value)} />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Lines</Label>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Ingredient</TableHead>
+                        <TableHead>Qty Received</TableHead>
+                        <TableHead>Cost / Unit</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {grvEditLines.map((line, index) => (
+                        <TableRow key={line.id}>
+                          <TableCell className="font-medium">{line.ingredientName}</TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min="0.0001"
+                              step="0.0001"
+                              value={line.quantityReceived}
+                              onChange={(event) =>
+                                setGrvEditLines((prev) =>
+                                  prev.map((l, i) => (i === index ? { ...l, quantityReceived: event.target.value } : l)),
+                                )
+                              }
+                              className="w-28"
+                              required
+                            />
+                          </TableCell>
+                          <TableCell>
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={line.costPerUnit}
+                              onChange={(event) =>
+                                setGrvEditLines((prev) =>
+                                  prev.map((l, i) => (i === index ? { ...l, costPerUnit: event.target.value } : l)),
+                                )
+                              }
+                              className="w-28"
+                              required
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {grvEditError && <p className="text-sm text-destructive">{grvEditError}</p>}
+
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" onClick={() => setGrvEditDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" disabled={grvEditSaving}>
+                    {grvEditSaving ? "Saving…" : "Save Changes"}
+                  </Button>
+                </div>
+              </form>
+            )}
           </DialogContent>
         </Dialog>
 

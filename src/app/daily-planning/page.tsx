@@ -66,6 +66,7 @@ interface IngredientRequirementDto {
   unit: "KG" | "LITRE" | "EACH"
   calculatedQuantity: number
   currentStock: number
+  kitchenStock: number
 }
 
 interface IngredientRequirementsResponseDto {
@@ -90,7 +91,11 @@ type RequirementRow = IngredientRequirementDto & {
 }
 
 function todayISO(): string {
-  return new Date().toISOString().split("T")[0]
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, "0")
+  const day = String(now.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
 }
 
 function parseError(body: unknown, fallback: string): string {
@@ -347,11 +352,13 @@ export default function DailyPlanningPage() {
       const finalQuantity = Number(row.editedQuantity)
       const isFinalValid = Number.isFinite(finalQuantity) && finalQuantity >= 0
       const isShort = isFinalValid && finalQuantity > row.currentStock
+      const isKitchenLow = isFinalValid && finalQuantity > row.kitchenStock
       return {
         ...row,
         finalQuantity,
         isFinalValid,
         isShort,
+        isKitchenLow,
       }
     })
   }, [requirementsRows])
@@ -574,12 +581,12 @@ export default function DailyPlanningPage() {
         </div>
 
         <Dialog open={requirementsDialogOpen} onOpenChange={setRequirementsDialogOpen}>
-          <DialogContent className="max-w-5xl">
+          <DialogContent className="flex max-h-[85vh] max-w-5xl flex-col">
             <DialogHeader>
               <DialogTitle>Review Ingredient Requirements</DialogTitle>
             </DialogHeader>
 
-            <div className="space-y-4 pt-2">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pt-2 pr-1">
               <p className="text-sm text-muted-foreground">Calculated requirements are editable before confirmation. Edited rows are highlighted. Confirming deducts stock from Kitchen; shortfalls against Kitchen&apos;s stock warn, but do not block confirmation.</p>
 
               {confirmRequirementsSuccess && (
@@ -617,7 +624,7 @@ export default function DailyPlanningPage() {
                   </TableHeader>
                   <TableBody>
                     {requirementRowsWithState.map((row) => (
-                      <TableRow key={row.ingredientId} className={row.isShort ? "bg-amber-50" : row.isEdited ? "bg-blue-50" : ""}>
+                      <TableRow key={row.ingredientId} className={row.isKitchenLow ? "bg-amber-50" : row.isEdited ? "bg-blue-50" : ""}>
                         <TableCell className="font-medium">{row.name}</TableCell>
                         <TableCell>{row.unit}</TableCell>
                         <TableCell>{row.calculatedQuantity}</TableCell>
@@ -625,8 +632,12 @@ export default function DailyPlanningPage() {
                           <Input type="number" min="0" step="0.0001" value={row.editedQuantity} onChange={(event) => updateRequirementQuantity(row.ingredientId, event.target.value)} className={row.isEdited ? "border-blue-400 bg-blue-50" : ""} />
                         </TableCell>
                         <TableCell>
-                          <span className={row.isShort ? "font-medium text-amber-800" : ""}>{row.currentStock}</span>
-                          {row.isShort && <span className="ml-2 text-xs text-amber-700">short</span>}
+                          <span className={row.isKitchenLow ? "font-medium text-amber-800" : ""}>{row.kitchenStock}</span>
+                          {row.isKitchenLow && (
+                            <p className="mt-1 text-xs text-amber-700">
+                              Kitchen stock low — an issue request from Main Store to Kitchen will be raised automatically.
+                            </p>
+                          )}
                         </TableCell>
                       </TableRow>
                     ))}

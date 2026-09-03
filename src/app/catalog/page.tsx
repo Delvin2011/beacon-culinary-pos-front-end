@@ -2,6 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
+import {
+  type ColumnDef,
+  type ColumnFiltersState,
+  type SortingState,
+  flexRender,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
+  useReactTable,
+} from "@tanstack/react-table"
+import { ArrowUpDown } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
@@ -13,7 +24,7 @@ import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { toast } from "@/hooks/use-toast"
 import { formatZarCurrency } from "@/lib/utils"
 
@@ -58,6 +69,25 @@ type RecipeSummary =
   | { status: "none" }
   | { status: "configured"; batchSize: number; lineCount: number }
   | { status: "error" }
+
+type ComponentTableRow = {
+  id: number
+  name: string
+  extraPrice: number
+  recipeLabel: string
+  active: boolean
+  component: ComponentEntry
+}
+
+type MealTableRow = {
+  id: number
+  name: string
+  description: string
+  price: number
+  linkedNames: string
+  active: boolean
+  meal: MealEntry
+}
 
 type RecipeDraftLine = {
   id: string
@@ -138,6 +168,9 @@ export default function CatalogPage() {
   const [componentForm, setComponentForm] = useState({ name: "", extraPrice: "", active: true })
   const [componentSaving, setComponentSaving] = useState(false)
   const [componentError, setComponentError] = useState<string | null>(null)
+  const [componentSearch, setComponentSearch] = useState("")
+  const [componentSorting, setComponentSorting] = useState<SortingState>([])
+  const [componentColumnFilters, setComponentColumnFilters] = useState<ColumnFiltersState>([])
 
   const [ingredients, setIngredients] = useState<IngredientEntry[]>([])
   const [recipeSummaryByComponentId, setRecipeSummaryByComponentId] = useState<Record<number, RecipeSummary>>({})
@@ -162,6 +195,9 @@ export default function CatalogPage() {
   const [mealForm, setMealForm] = useState({ name: "", description: "", price: "", componentIds: [] as number[], active: true })
   const [mealSaving, setMealSaving] = useState(false)
   const [mealError, setMealError] = useState<string | null>(null)
+  const [mealSearch, setMealSearch] = useState("")
+  const [mealSorting, setMealSorting] = useState<SortingState>([])
+  const [mealColumnFilters, setMealColumnFilters] = useState<ColumnFiltersState>([])
 
   useEffect(() => {
     if (authLoading) return
@@ -393,6 +429,103 @@ export default function CatalogPage() {
     }
   }
 
+  const componentTableRows: ComponentTableRow[] = useMemo(
+    () =>
+      components.map((component) => {
+        const recipeSummary = recipeSummaryByComponentId[component.id]
+        const recipeLabel =
+          recipeSummary?.status === "configured"
+            ? `${recipeSummary.lineCount} lines · batch ${recipeSummary.batchSize}`
+            : recipeSummary?.status === "error"
+              ? "Recipe unavailable"
+              : "No recipe"
+        return {
+          id: component.id,
+          name: component.name,
+          extraPrice: component.extraPrice,
+          recipeLabel,
+          active: component.active,
+          component,
+        }
+      }),
+    [components, recipeSummaryByComponentId],
+  )
+
+  const componentTableColumns: ColumnDef<ComponentTableRow>[] = useMemo(
+    () => [
+      {
+        accessorKey: "name",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Name
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      },
+      {
+        accessorKey: "extraPrice",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Extra Price
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => formatZarCurrency(row.original.extraPrice),
+      },
+      {
+        accessorKey: "recipeLabel",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Recipe
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="text-sm">{row.original.recipeLabel}</span>,
+      },
+      {
+        accessorKey: "active",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Active
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => (row.original.active ? "Yes" : "No"),
+        filterFn: "equals",
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => (
+          <div className="flex gap-2">
+            <Button size="sm" variant="outline" onClick={() => openEditComponent(row.original.component)}>Edit</Button>
+            <Button size="sm" variant="outline" onClick={() => void openRecipeDialog(row.original.component)}>Recipe</Button>
+          </div>
+        ),
+      },
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
+
+  const componentTable = useReactTable({
+    data: componentTableRows,
+    columns: componentTableColumns,
+    getRowId: (row) => String(row.id),
+    state: {
+      sorting: componentSorting,
+      columnFilters: componentColumnFilters,
+      globalFilter: componentSearch,
+    },
+    onSortingChange: setComponentSorting,
+    onColumnFiltersChange: setComponentColumnFilters,
+    onGlobalFilterChange: setComponentSearch,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+  })
+
   const addRecipeLine = () => {
     setRecipeLines((prev) => [...prev, makeEmptyRecipeLine(prev.length)])
   }
@@ -490,6 +623,105 @@ export default function CatalogPage() {
     }
   }
 
+  const mealTableRows: MealTableRow[] = useMemo(
+    () =>
+      meals.map((meal) => {
+        const linkedIds = extractComponentIds(meal)
+        const linkedNames = components.filter((component) => linkedIds.includes(component.id)).map((component) => component.name).join(", ")
+        return {
+          id: meal.id,
+          name: meal.name,
+          description: meal.description ?? "",
+          price: meal.price,
+          linkedNames,
+          active: meal.active,
+          meal,
+        }
+      }),
+    [meals, components],
+  )
+
+  const mealTableColumns: ColumnDef<MealTableRow>[] = useMemo(
+    () => [
+      {
+        accessorKey: "name",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Name
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      },
+      {
+        accessorKey: "description",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Description
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="text-sm text-muted-foreground">{row.original.description || "—"}</span>,
+      },
+      {
+        accessorKey: "price",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Price
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => formatZarCurrency(row.original.price),
+      },
+      {
+        accessorKey: "linkedNames",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Components
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="text-sm">{row.original.linkedNames || "—"}</span>,
+      },
+      {
+        accessorKey: "active",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Active
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => (row.original.active ? "Yes" : "No"),
+        filterFn: "equals",
+      },
+      {
+        id: "actions",
+        header: "",
+        cell: ({ row }) => (
+          <Button size="sm" variant="outline" onClick={() => openEditMeal(row.original.meal)}>Edit</Button>
+        ),
+      },
+    ],
+    [],
+  )
+
+  const mealTable = useReactTable({
+    data: mealTableRows,
+    columns: mealTableColumns,
+    getRowId: (row) => String(row.id),
+    state: {
+      sorting: mealSorting,
+      columnFilters: mealColumnFilters,
+      globalFilter: mealSearch,
+    },
+    onSortingChange: setMealSorting,
+    onColumnFiltersChange: setMealColumnFilters,
+    onGlobalFilterChange: setMealSearch,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+  })
+
   if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) return null
 
   return (
@@ -534,51 +766,78 @@ export default function CatalogPage() {
                 </div>
               </div>
 
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1 w-[220px]">
+                  <Label htmlFor="component-search">Search</Label>
+                  <Input
+                    id="component-search"
+                    value={componentSearch}
+                    onChange={(event) => setComponentSearch(event.target.value)}
+                    placeholder="Search components"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Active</Label>
+                  <Select
+                    value={
+                      componentTable.getColumn("active")?.getFilterValue() === undefined
+                        ? "all"
+                        : String(componentTable.getColumn("active")?.getFilterValue())
+                    }
+                    onValueChange={(value) =>
+                      componentTable.getColumn("active")?.setFilterValue(value === "all" ? undefined : value === "true")
+                    }
+                  >
+                    <SelectTrigger className="w-[140px]">
+                      <SelectValue placeholder="All" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="true">Active</SelectItem>
+                      <SelectItem value="false">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <span className="pb-2 text-sm text-muted-foreground whitespace-nowrap">
+                  {componentTable.getFilteredRowModel().rows.length} of {componentTableRows.length} components
+                </span>
+              </div>
+
               {componentsLoading ? (
                 <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Extra Price</TableHead>
-                      <TableHead>Recipe</TableHead>
-                      <TableHead>Active</TableHead>
-                      <TableHead className="w-[170px]" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {components.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={5} className="py-8 text-center text-sm text-muted-foreground">No components yet — add one to get started.</TableCell>
-                      </TableRow>
-                    ) : (
-                      components.map((component) => {
-                        const recipeSummary = recipeSummaryByComponentId[component.id]
-                        return (
-                          <TableRow key={component.id}>
-                            <TableCell className="font-medium">{component.name}</TableCell>
-                            <TableCell>{formatZarCurrency(component.extraPrice)}</TableCell>
-                            <TableCell className="text-sm">
-                              {recipeSummary?.status === "configured"
-                                ? `${recipeSummary.lineCount} lines · batch ${recipeSummary.batchSize}`
-                                : recipeSummary?.status === "error"
-                                  ? "Recipe unavailable"
-                                  : "No recipe"}
-                            </TableCell>
-                            <TableCell>{component.active ? "Yes" : "No"}</TableCell>
-                            <TableCell>
-                              <div className="flex gap-2">
-                                <Button size="sm" variant="outline" onClick={() => openEditComponent(component)}>Edit</Button>
-                                <Button size="sm" variant="outline" onClick={() => void openRecipeDialog(component)}>Recipe</Button>
-                              </div>
-                            </TableCell>
+                <div className="max-h-[65vh] overflow-y-auto rounded-md border">
+                  <table className="w-full caption-bottom text-sm">
+                    <TableHeader>
+                      {componentTable.getHeaderGroups().map((headerGroup) => (
+                        <TableRow key={headerGroup.id} className="sticky top-0 z-10 bg-background">
+                          {headerGroup.headers.map((header) => (
+                            <TableHead key={header.id}>
+                              {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                            </TableHead>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableHeader>
+                    <TableBody>
+                      {componentTable.getRowModel().rows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={componentTableColumns.length} className="py-8 text-center text-sm text-muted-foreground">
+                            No components yet — add one to get started.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        componentTable.getRowModel().rows.map((row) => (
+                          <TableRow key={row.id}>
+                            {row.getVisibleCells().map((cell) => (
+                              <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                            ))}
                           </TableRow>
-                        )
-                      })
-                    )}
-                  </TableBody>
-                </Table>
+                        ))
+                      )}
+                    </TableBody>
+                  </table>
+                </div>
               )}
             </div>
           )}
@@ -597,45 +856,78 @@ export default function CatalogPage() {
                 <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">No components exist yet. Add components before linking them to meals.</div>
               )}
 
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1 w-[220px]">
+                  <Label htmlFor="meal-search">Search</Label>
+                  <Input
+                    id="meal-search"
+                    value={mealSearch}
+                    onChange={(event) => setMealSearch(event.target.value)}
+                    placeholder="Search meals"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Active</Label>
+                  <Select
+                    value={
+                      mealTable.getColumn("active")?.getFilterValue() === undefined
+                        ? "all"
+                        : String(mealTable.getColumn("active")?.getFilterValue())
+                    }
+                    onValueChange={(value) =>
+                      mealTable.getColumn("active")?.setFilterValue(value === "all" ? undefined : value === "true")
+                    }
+                  >
+                    <SelectTrigger className="w-[140px]">
+                      <SelectValue placeholder="All" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="true">Active</SelectItem>
+                      <SelectItem value="false">Inactive</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <span className="pb-2 text-sm text-muted-foreground whitespace-nowrap">
+                  {mealTable.getFilteredRowModel().rows.length} of {mealTableRows.length} meals
+                </span>
+              </div>
+
               {mealsLoading ? (
                 <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Description</TableHead>
-                      <TableHead>Price</TableHead>
-                      <TableHead>Components</TableHead>
-                      <TableHead>Active</TableHead>
-                      <TableHead className="w-16" />
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {meals.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">No meals yet — add one above.</TableCell>
-                      </TableRow>
-                    ) : (
-                      meals.map((meal) => {
-                        const linkedIds = extractComponentIds(meal)
-                        const linkedNames = components.filter((component) => linkedIds.includes(component.id)).map((component) => component.name).join(", ")
-                        return (
-                          <TableRow key={meal.id}>
-                            <TableCell className="font-medium">{meal.name}</TableCell>
-                            <TableCell className="text-sm text-muted-foreground">{meal.description ?? "—"}</TableCell>
-                            <TableCell>{formatZarCurrency(meal.price)}</TableCell>
-                            <TableCell className="text-sm">{linkedNames || "—"}</TableCell>
-                            <TableCell>{meal.active ? "Yes" : "No"}</TableCell>
-                            <TableCell>
-                              <Button size="sm" variant="outline" onClick={() => openEditMeal(meal)}>Edit</Button>
-                            </TableCell>
+                <div className="max-h-[65vh] overflow-y-auto rounded-md border">
+                  <table className="w-full caption-bottom text-sm">
+                    <TableHeader>
+                      {mealTable.getHeaderGroups().map((headerGroup) => (
+                        <TableRow key={headerGroup.id} className="sticky top-0 z-10 bg-background">
+                          {headerGroup.headers.map((header) => (
+                            <TableHead key={header.id}>
+                              {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                            </TableHead>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableHeader>
+                    <TableBody>
+                      {mealTable.getRowModel().rows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={mealTableColumns.length} className="py-8 text-center text-sm text-muted-foreground">
+                            No meals yet — add one above.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        mealTable.getRowModel().rows.map((row) => (
+                          <TableRow key={row.id}>
+                            {row.getVisibleCells().map((cell) => (
+                              <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                            ))}
                           </TableRow>
-                        )
-                      })
-                    )}
-                  </TableBody>
-                </Table>
+                        ))
+                      )}
+                    </TableBody>
+                  </table>
+                </div>
               )}
             </div>
           )}
@@ -757,11 +1049,11 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
         </Dialog>
 
         <Dialog open={recipeDialogOpen} onOpenChange={setRecipeDialogOpen}>
-          <DialogContent className="max-w-3xl">
+          <DialogContent className="flex max-h-[85vh] max-w-3xl flex-col">
             <DialogHeader>
               <DialogTitle>Recipe · {recipeComponent?.name ?? "Component"}</DialogTitle>
             </DialogHeader>
-            <form onSubmit={saveRecipe} className="space-y-4 pt-2">
+            <form onSubmit={saveRecipe} className="min-h-0 flex-1 space-y-4 overflow-y-auto pt-2 pr-1">
               <div className="grid gap-4 md:grid-cols-[220px_1fr]">
                 <div className="space-y-1">
                   <Label htmlFor="recipe-batch-size">Batch Size</Label>

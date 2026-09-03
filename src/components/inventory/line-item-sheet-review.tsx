@@ -1,10 +1,19 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import {
+  type ColumnDef,
+  type SortingState,
+  flexRender,
+  getCoreRowModel,
+  getSortedRowModel,
+  useReactTable,
+} from "@tanstack/react-table";
+import { ArrowUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type {
   ActionedLine,
   LineItemColumnConfig,
@@ -41,6 +50,7 @@ export function LineItemSheetReview({
   const [extraFieldValues, setExtraFieldValues] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sorting, setSorting] = useState<SortingState>([]);
 
   const updateActionedQuantity = (line: ReviewLine, rawValue: string) => {
     const cap = capRule?.(line);
@@ -110,6 +120,105 @@ export function LineItemSheetReview({
   const quantityColumnLabel =
     columnConfig.quantityMode.kind === "single" ? columnConfig.quantityMode.label : "Actioned Qty";
 
+  const sortableHeader = (label: string) =>
+    function SortableHeader({ column }: { column: { toggleSorting: (desc: boolean) => void; getIsSorted: () => false | "asc" | "desc" } }) {
+      return (
+        <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+          {label}
+          <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+        </Button>
+      );
+    };
+
+  const columns: ColumnDef<ReviewLine>[] = useMemo(() => {
+    const cols: ColumnDef<ReviewLine>[] = [
+      {
+        accessorKey: "ingredientName",
+        header: sortableHeader("Item"),
+        cell: ({ row }) => <span className="font-medium">{row.original.ingredientName}</span>,
+      },
+      {
+        accessorKey: "unit",
+        header: sortableHeader("UoM"),
+      },
+      {
+        accessorKey: "unitValue",
+        header: sortableHeader("Unit Value"),
+        cell: ({ row }) => (row.original.unitValue !== null ? row.original.unitValue.toFixed(2) : "—"),
+      },
+      {
+        accessorKey: "requestedQuantity",
+        header: sortableHeader("Requested"),
+      },
+    ];
+
+    if (capLabel) {
+      cols.push({
+        id: "cap",
+        header: sortableHeader(capLabel),
+        accessorFn: (line) => capRule?.(line) ?? null,
+        cell: ({ getValue }) => {
+          const value = getValue<number | null | undefined>();
+          return value !== null && value !== undefined ? value : "—";
+        },
+      });
+    }
+
+    cols.push({
+      id: "actionedQuantity",
+      header: sortableHeader(quantityColumnLabel),
+      accessorFn: (line) => Number(actionedQuantities[line.lineId]),
+      cell: ({ row }) => {
+        const line = row.original;
+        const cap = capRule?.(line);
+        return (
+          <Input
+            type="number"
+            min="0"
+            step="0.0001"
+            max={cap}
+            value={actionedQuantities[line.lineId] ?? ""}
+            onChange={(event) => updateActionedQuantity(line, event.target.value)}
+            className="w-28"
+          />
+        );
+      },
+    });
+
+    if (columnConfig.showLineValue) {
+      cols.push({
+        id: "lineValue",
+        header: sortableHeader("Line Value"),
+        accessorFn: (line) => lineValue(line) ?? null,
+        cell: ({ getValue }) => {
+          const value = getValue<number | null | undefined>();
+          return value !== null && value !== undefined ? value.toFixed(2) : "—";
+        },
+      });
+    }
+
+    if (columnConfig.reasonRequirement !== "hidden") {
+      cols.push({
+        accessorKey: "reason",
+        header: sortableHeader(columnConfig.reasonLabel ?? "Reason"),
+        cell: ({ row }) => row.original.reason || "—",
+      });
+    }
+
+    return cols;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [capLabel, capRule, columnConfig, quantityColumnLabel, actionedQuantities]);
+
+  const table = useReactTable({
+    data: lines,
+    columns,
+    getRowId: (line) => String(line.lineId),
+    state: { sorting },
+    onSortingChange: setSorting,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+  });
+
   return (
     <div className="space-y-6">
       <div>
@@ -140,62 +249,40 @@ export function LineItemSheetReview({
         ))}
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Item</TableHead>
-            <TableHead>UoM</TableHead>
-            <TableHead>Unit Value</TableHead>
-            <TableHead>Requested</TableHead>
-            {capLabel && <TableHead>{capLabel}</TableHead>}
-            <TableHead>{quantityColumnLabel}</TableHead>
-            {columnConfig.showLineValue && <TableHead>Line Value</TableHead>}
-            {columnConfig.reasonRequirement !== "hidden" && (
-              <TableHead>{columnConfig.reasonLabel ?? "Reason"}</TableHead>
-            )}
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {lines.map((line) => {
-            const value = lineValue(line);
-            const cap = capRule?.(line);
-            return (
-              <TableRow key={line.lineId}>
-                <TableCell className="font-medium">{line.ingredientName}</TableCell>
-                <TableCell>{line.unit}</TableCell>
-                <TableCell>{line.unitValue !== null ? line.unitValue.toFixed(2) : "—"}</TableCell>
-                <TableCell>{line.requestedQuantity}</TableCell>
-                {capLabel && <TableCell>{cap !== undefined ? cap : "—"}</TableCell>}
-                <TableCell>
-                  <Input
-                    type="number"
-                    min="0"
-                    step="0.0001"
-                    max={cap}
-                    value={actionedQuantities[line.lineId] ?? ""}
-                    onChange={(event) => updateActionedQuantity(line, event.target.value)}
-                    className="w-28"
-                  />
-                </TableCell>
-                {columnConfig.showLineValue && (
-                  <TableCell>{value !== null ? value.toFixed(2) : "—"}</TableCell>
-                )}
-                {columnConfig.reasonRequirement !== "hidden" && <TableCell>{line.reason || "—"}</TableCell>}
+      <div className="max-h-[50vh] overflow-y-auto rounded-md border">
+        <table className="w-full caption-bottom text-sm">
+          <TableHeader>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <TableRow key={headerGroup.id} className="sticky top-0 z-10 bg-background">
+                {headerGroup.headers.map((header) => (
+                  <TableHead key={header.id}>
+                    {header.isPlaceholder ? null : flexRender(header.column.columnDef.header, header.getContext())}
+                  </TableHead>
+                ))}
               </TableRow>
-            );
-          })}
-        </TableBody>
-        {lines.length > 0 && (
+            ))}
+          </TableHeader>
           <TableBody>
-            <TableRow className="font-medium">
-              <TableCell colSpan={capLabel ? 5 : 4}>Totals</TableCell>
-              <TableCell>{totals.quantity.toFixed(4)}</TableCell>
-              {columnConfig.showLineValue && <TableCell>{totals.value.toFixed(2)}</TableCell>}
-              {columnConfig.reasonRequirement !== "hidden" && <TableCell />}
-            </TableRow>
+            {table.getRowModel().rows.map((row) => (
+              <TableRow key={row.id}>
+                {row.getVisibleCells().map((cell) => (
+                  <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
+                ))}
+              </TableRow>
+            ))}
           </TableBody>
-        )}
-      </Table>
+          {lines.length > 0 && (
+            <TableBody>
+              <TableRow className="font-medium">
+                <TableCell colSpan={capLabel ? 5 : 4}>Totals</TableCell>
+                <TableCell>{totals.quantity.toFixed(4)}</TableCell>
+                {columnConfig.showLineValue && <TableCell>{totals.value.toFixed(2)}</TableCell>}
+                {columnConfig.reasonRequirement !== "hidden" && <TableCell />}
+              </TableRow>
+            </TableBody>
+          )}
+        </table>
+      </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
