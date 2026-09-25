@@ -59,18 +59,19 @@ import { toast } from "@/hooks/use-toast";
 import { formatZarCurrency } from "@/lib/utils";
 import { LineItemSheet } from "@/components/inventory/line-item-sheet";
 import { useLocations } from "@/hooks/use-locations";
+import { useCountSheetCategories, type CountSheetCategoryDto } from "@/hooks/use-count-sheet-categories";
 import type { IngredientOption, LineItemSheetSubmitPayload } from "@/components/inventory/line-item-sheet-types";
 
 type InventoryTab = "ingredients" | "grv" | "waste" | "stockTake" | "purchaseOrders";
 type IngredientUnit = "KG" | "LITRE" | "EACH";
-type CountSheetCategory = "PREP" | "BULK" | "DRYSTOCK" | "FVEG";
 type PurchaseOrderStatus = "DRAFT" | "SUBMITTED" | "RECEIVED";
 
 type IngredientDto = {
   id: number;
   name: string;
   unit: IngredientUnit;
-  countSheetCategory: CountSheetCategory;
+  countSheetCategoryId: number;
+  countSheetCategoryName?: string;
   active: boolean;
   itemCode?: string;
 };
@@ -92,7 +93,7 @@ type IngredientTableRow = {
   name: string;
   itemCode: string;
   unit: IngredientUnit;
-  countSheetCategory: CountSheetCategory;
+  countSheetCategory: string;
   totalStock: number;
   stockByLocation: string;
   lastMovementAt?: string;
@@ -225,7 +226,6 @@ type PurchaseOrderDraftLine = {
 };
 
 const INGREDIENT_UNITS: IngredientUnit[] = ["KG", "LITRE", "EACH"];
-const COUNT_SHEET_CATEGORIES: CountSheetCategory[] = ["PREP", "BULK", "DRYSTOCK", "FVEG"];
 const PURCHASE_ORDER_STATUSES: PurchaseOrderStatus[] = ["DRAFT", "SUBMITTED", "RECEIVED"];
 const BULK_INGREDIENT_HEADERS = ["NAME", "UNIT", "COUNT SHEET"] as const;
 const BULK_GRV_HEADERS = ["INGREDIENT NAME", "QUANTITY", "COST PER UNIT", "SUPPLIER NAME", "NOTE (OPTIONAL)", "INVOICE NUMBER"] as const;
@@ -241,6 +241,28 @@ function parseError(body: unknown, fallback: string): string {
       .map((item) => item.trim())
       .filter(Boolean);
     if (messages.length > 0) return messages.join(" ");
+  }
+  return fallback;
+}
+
+const COUNT_SHEET_CATEGORY_NAME_MAX_LENGTH = 50;
+
+// Mirrors the backend: trimmed, inner spaces collapsed, uppercased.
+function normalizeCategoryName(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toUpperCase();
+}
+
+// Category endpoints return either { error } or field errors like { name: "..." }, { active: "..." }.
+function parseCategoryError(res: Response, body: unknown, fallback: string): string {
+  if (res.status === 403) return "You need the STOCK_ADMIN or ADMIN role to manage categories.";
+  if (res.status === 404) return "This category no longer exists. The list has been refreshed.";
+  const parsed = parseError(body, "");
+  if (parsed) return parsed;
+  if (body && typeof body === "object") {
+    const fieldErrors = Object.values(body as Record<string, unknown>).filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+    if (fieldErrors.length > 0) return fieldErrors.join(" ");
   }
   return fallback;
 }
@@ -308,6 +330,12 @@ export default function InventoryPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
   const { locations } = useLocations();
+  // This page is admin-only, so load inactive categories too: existing ingredients may still use them.
+  const {
+    categories: countSheetCategories,
+    error: countSheetCategoriesError,
+    refetch: refetchCountSheetCategories,
+  } = useCountSheetCategories({ includeInactive: true });
 
   const [activeTab, setActiveTab] = useState<InventoryTab>("ingredients");
 
@@ -328,11 +356,17 @@ export default function InventoryPage() {
   const [editingIngredient, setEditingIngredient] = useState<IngredientDto | null>(null);
   const [ingredientName, setIngredientName] = useState("");
   const [ingredientUnit, setIngredientUnit] = useState<IngredientUnit>("KG");
-  const [ingredientCategory, setIngredientCategory] = useState<CountSheetCategory>("PREP");
+  const [ingredientCategoryId, setIngredientCategoryId] = useState("");
   const [ingredientActive, setIngredientActive] = useState(true);
   const [ingredientItemCode, setIngredientItemCode] = useState("");
   const [ingredientSaveError, setIngredientSaveError] = useState<string | null>(null);
   const [ingredientSaving, setIngredientSaving] = useState(false);
+
+  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [categoryNameDrafts, setCategoryNameDrafts] = useState<Record<number, string>>({});
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+  const [categorySavingId, setCategorySavingId] = useState<number | "new" | null>(null);
 
   const [grvs, setGrvs] = useState<GrvDto[]>([]);
   const [grvViewDialogOpen, setGrvViewDialogOpen] = useState(false);
@@ -775,11 +809,125 @@ export default function InventoryPage() {
     };
   }, [authFetch, selectedGrvPurchaseOrder]);
 
+  const activeCountSheetCategories = useMemo(
+    () => countSheetCategories.filter((category) => category.active),
+    [countSheetCategories],
+  );
+
+  const countSheetCategoryNames = useMemo(
+    () => new Map(countSheetCategories.map((category) => [category.id, category.name])),
+    [countSheetCategories],
+  );
+
+  // Active categories, plus the edited ingredient's current one if it has since been deactivated.
+  const ingredientCategoryOptions = useMemo(() => {
+    const current = countSheetCategories.find((category) => String(category.id) === ingredientCategoryId);
+    if (!current || current.active) return activeCountSheetCategories;
+    return [...activeCountSheetCategories, current].sort((a, b) => a.id - b.id);
+  }, [activeCountSheetCategories, countSheetCategories, ingredientCategoryId]);
+
+  const bulkIngredientSampleCsv = useMemo(() => {
+    const sampleRows: Array<[string, IngredientUnit]> = [["Tomato", "KG"], ["Olive Oil", "LITRE"], ["Paper Straw", "EACH"]];
+    const names = activeCountSheetCategories.map((category) => category.name);
+    const rows = sampleRows.map(([name, unit], index) => `${name},${unit},${names.length > 0 ? names[index % names.length] : "CATEGORY"}`);
+    return [BULK_INGREDIENT_HEADERS.join(","), ...rows].join("\n");
+  }, [activeCountSheetCategories]);
+
+  const openCategoryDialog = () => {
+    setNewCategoryName("");
+    setCategoryNameDrafts({});
+    setCategoryError(null);
+    setCategoryDialogOpen(true);
+  };
+
+  // Client-side copy of the backend rules, for instant feedback. The backend still enforces them.
+  const validateCategoryName = (name: string, ignoreId?: number): string | null => {
+    const normalized = normalizeCategoryName(name);
+    if (!normalized) return "Category name is required.";
+    if (normalized.length > COUNT_SHEET_CATEGORY_NAME_MAX_LENGTH) {
+      return `Category name must be at most ${COUNT_SHEET_CATEGORY_NAME_MAX_LENGTH} characters.`;
+    }
+    const clash = countSheetCategories.find(
+      (category) => category.id !== ignoreId && normalizeCategoryName(category.name) === normalized,
+    );
+    if (clash) return `A count sheet category named '${clash.name}' already exists.`;
+    return null;
+  };
+
+  const createCountSheetCategory = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const name = newCategoryName.trim();
+    const validationError = validateCategoryName(name);
+    if (validationError) {
+      setCategoryError(validationError);
+      return;
+    }
+
+    setCategorySavingId("new");
+    setCategoryError(null);
+    try {
+      const res = await authFetch("/admin/count-sheet-categories", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const body = (await res.json().catch(() => null)) as CountSheetCategoryDto | unknown;
+      if (!res.ok) {
+        throw new Error(parseCategoryError(res, body, "Unable to create category."));
+      }
+      // The backend normalises the name, so show what it saved.
+      const savedName = (body as CountSheetCategoryDto | null)?.name ?? normalizeCategoryName(name);
+      setNewCategoryName("");
+      await refetchCountSheetCategories();
+      toast({ title: "Category created", description: `${savedName} has been added to the end of the count sheet.` });
+    } catch (err) {
+      setCategoryError(err instanceof Error ? err.message : "Unable to create category.");
+    } finally {
+      setCategorySavingId(null);
+    }
+  };
+
+  // PUT replaces the whole record, so name and active are always sent together.
+  const updateCountSheetCategory = async (category: CountSheetCategoryDto, changes: { name?: string; active?: boolean }) => {
+    const name = (changes.name ?? category.name).trim();
+    const active = changes.active ?? category.active;
+    const validationError = validateCategoryName(name, category.id);
+    if (validationError) {
+      setCategoryError(validationError);
+      return;
+    }
+
+    setCategorySavingId(category.id);
+    setCategoryError(null);
+    try {
+      const res = await authFetch(`/admin/count-sheet-categories/${category.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, active }),
+      });
+      const body = (await res.json().catch(() => null)) as unknown;
+      if (!res.ok) {
+        if (res.status === 404) void refetchCountSheetCategories();
+        throw new Error(parseCategoryError(res, body, "Unable to update category."));
+      }
+      setCategoryNameDrafts((current) => {
+        const next = { ...current };
+        delete next[category.id];
+        return next;
+      });
+      await refetchCountSheetCategories();
+    } catch (err) {
+      setCategoryError(err instanceof Error ? err.message : "Unable to update category.");
+    } finally {
+      setCategorySavingId(null);
+    }
+  };
+
   const openCreateIngredient = () => {
     setEditingIngredient(null);
     setIngredientName("");
     setIngredientUnit("KG");
-    setIngredientCategory("PREP");
+    setIngredientCategoryId(activeCountSheetCategories[0] ? String(activeCountSheetCategories[0].id) : "");
     setIngredientActive(true);
     setIngredientItemCode("");
     setIngredientSaveError(null);
@@ -797,7 +945,7 @@ export default function InventoryPage() {
     setEditingIngredient(ingredient);
     setIngredientName(ingredient.name);
     setIngredientUnit(ingredient.unit);
-    setIngredientCategory(ingredient.countSheetCategory);
+    setIngredientCategoryId(String(ingredient.countSheetCategoryId));
     setIngredientActive(ingredient.active);
     setIngredientItemCode(ingredient.itemCode ?? "");
     setIngredientSaveError(null);
@@ -813,7 +961,9 @@ export default function InventoryPage() {
           name: ingredient.name,
           itemCode: ingredient.itemCode ?? "",
           unit: ingredient.unit,
-          countSheetCategory: ingredient.countSheetCategory,
+          // Prefer the categories list so renames show without reloading ingredients.
+          countSheetCategory:
+            countSheetCategoryNames.get(ingredient.countSheetCategoryId) ?? ingredient.countSheetCategoryName ?? "—",
           totalStock: stock ? stock.totalStock : 0,
           stockByLocation: stock?.byLocation.map((entry) => `${entry.locationName}: ${entry.stock}`).join(" · ") ?? "",
           lastMovementAt: stock?.lastMovementAt,
@@ -821,7 +971,7 @@ export default function InventoryPage() {
           ingredient,
         };
       }),
-    [ingredients, ingredientStocks],
+    [countSheetCategoryNames, ingredients, ingredientStocks],
   );
 
   const ingredientTableColumns: ColumnDef<IngredientTableRow>[] = useMemo(
@@ -950,6 +1100,10 @@ export default function InventoryPage() {
       setIngredientSaveError("Ingredient name is required.");
       return;
     }
+    if (!ingredientCategoryId) {
+      setIngredientSaveError("Count sheet category is required.");
+      return;
+    }
 
     setIngredientSaving(true);
     setIngredientSaveError(null);
@@ -957,7 +1111,7 @@ export default function InventoryPage() {
       const payload = {
         name: ingredientName.trim(),
         unit: ingredientUnit,
-        countSheetCategory: ingredientCategory,
+        countSheetCategoryId: Number(ingredientCategoryId),
         active: ingredientActive,
         itemCode: ingredientItemCode.trim() || undefined,
       };
@@ -974,7 +1128,7 @@ export default function InventoryPage() {
             body: JSON.stringify({
               name: payload.name,
               unit: payload.unit,
-              countSheetCategory: payload.countSheetCategory,
+              countSheetCategoryId: payload.countSheetCategoryId,
               itemCode: payload.itemCode,
             }),
           });
@@ -1455,6 +1609,9 @@ export default function InventoryPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <Button size="sm" variant="outline" onClick={openCategoryDialog}>
+                    Manage Categories
+                  </Button>
                   <Button size="sm" variant="outline" onClick={openBulkIngredientDialog}>
                     Bulk Upload CSV
                   </Button>
@@ -1485,8 +1642,10 @@ export default function InventoryPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All categories</SelectItem>
-                      {COUNT_SHEET_CATEGORIES.map((category) => (
-                        <SelectItem key={category} value={category}>{category}</SelectItem>
+                      {countSheetCategories.map((category) => (
+                        <SelectItem key={category.id} value={category.name}>
+                          {category.name}{category.active ? "" : " (inactive)"}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -1992,16 +2151,19 @@ export default function InventoryPage() {
 
               <div className="space-y-1">
                 <Label>Count Sheet Category</Label>
-                <Select value={ingredientCategory} onValueChange={(value: CountSheetCategory) => setIngredientCategory(value)}>
+                <Select value={ingredientCategoryId} onValueChange={setIngredientCategoryId}>
                   <SelectTrigger>
-                    <SelectValue />
+                    <SelectValue placeholder="Select a category" />
                   </SelectTrigger>
                   <SelectContent>
-                    {COUNT_SHEET_CATEGORIES.map((category) => (
-                      <SelectItem key={category} value={category}>{category}</SelectItem>
+                    {ingredientCategoryOptions.map((category) => (
+                      <SelectItem key={category.id} value={String(category.id)}>
+                        {category.name}{category.active ? "" : " (inactive)"}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {countSheetCategoriesError && <p className="text-xs text-destructive">{countSheetCategoriesError}</p>}
               </div>
 
               {editingIngredient && (
@@ -2018,6 +2180,81 @@ export default function InventoryPage() {
                 <Button type="submit" disabled={ingredientSaving}>{ingredientSaving ? "Saving…" : "Save"}</Button>
               </div>
             </form>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={categoryDialogOpen} onOpenChange={setCategoryDialogOpen}>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Count Sheet Categories</DialogTitle>
+              <DialogDescription>
+                Categories appear on the count sheet in the order shown. New categories are added at the end. Deactivate a
+                category to hide it from new ingredients. Existing ingredients keep it.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-2">
+              {countSheetCategories.length === 0 && (
+                <p className="text-sm text-muted-foreground">{countSheetCategoriesError ?? "No categories yet."}</p>
+              )}
+              {countSheetCategories.map((category) => {
+                const draft = categoryNameDrafts[category.id] ?? category.name;
+                const nameChanged = normalizeCategoryName(draft) !== category.name;
+                const saving = categorySavingId === category.id;
+                return (
+                  <div key={category.id} className="flex items-center gap-2">
+                    <Input
+                      value={draft}
+                      onChange={(event) =>
+                        setCategoryNameDrafts((current) => ({ ...current, [category.id]: event.target.value }))
+                      }
+                      maxLength={COUNT_SHEET_CATEGORY_NAME_MAX_LENGTH}
+                      className={category.active ? "" : "text-muted-foreground"}
+                      aria-label={`Name for ${category.name}`}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={!nameChanged || saving}
+                      onClick={() => void updateCountSheetCategory(category, { name: draft })}
+                    >
+                      Rename
+                    </Button>
+                    <div className="flex w-[90px] items-center gap-2">
+                      <Checkbox
+                        id={`category-active-${category.id}`}
+                        checked={category.active}
+                        disabled={saving}
+                        onCheckedChange={(value) => void updateCountSheetCategory(category, { active: Boolean(value) })}
+                      />
+                      <Label htmlFor={`category-active-${category.id}`}>Active</Label>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <form onSubmit={createCountSheetCategory} className="flex items-end gap-2 border-t pt-4">
+              <div className="flex-1 space-y-1">
+                <Label htmlFor="new-category-name">New category</Label>
+                <Input
+                  id="new-category-name"
+                  value={newCategoryName}
+                  onChange={(event) => setNewCategoryName(event.target.value)}
+                  maxLength={COUNT_SHEET_CATEGORY_NAME_MAX_LENGTH}
+                  placeholder="e.g. POULTRY"
+                />
+              </div>
+              <Button type="submit" disabled={categorySavingId === "new" || !newCategoryName.trim()}>
+                {categorySavingId === "new" ? "Adding…" : "Add"}
+              </Button>
+            </form>
+
+            {categoryError && <p className="text-sm text-destructive">{categoryError}</p>}
+            <p className="text-xs text-muted-foreground">
+              Names are saved in uppercase and must be unique. Renaming updates every ingredient straight away, but CSV
+              files that use the old name will fail to import.
+            </p>
           </DialogContent>
         </Dialog>
 
@@ -2058,11 +2295,15 @@ export default function InventoryPage() {
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="mb-2 font-medium">Sample CSV:</p>
                 <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
-{`NAME,UNIT,COUNT SHEET
-Tomato,KG,FVEG
-Olive Oil,LITRE,PREP
-Paper Straw,EACH,DRYSTOCK`}
+{bulkIngredientSampleCsv}
                 </pre>
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Valid COUNT SHEET values (not case-sensitive):</p>
+                <p className="font-mono text-xs">
+                  {activeCountSheetCategories.map((category) => category.name).join(", ") || "—"}
+                </p>
               </div>
 
               {bulkIngredientError && <p className="text-sm text-destructive">{bulkIngredientError}</p>}

@@ -1630,7 +1630,9 @@ export function PosOrderBuilder({
         {isLoadingMenu ? (
           <p className="text-sm text-slate-400">Loading menu...</p>
         ) : periodOptions.length === 0 ? (
-          <p className="text-sm text-slate-400">No options for this period yet.</p>
+          <p className="text-sm text-slate-400">
+            No meals are ready for sale in this period yet. They appear once the kitchen records actual portions on the Daily Planning page.
+          </p>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {periodOptions.map((option) => {
@@ -1714,7 +1716,7 @@ export function PosOrderBuilder({
             <div className="mt-4">
               <p className="mb-2 text-sm font-medium text-slate-200">Extras (shared for this period)</p>
               {periodExtras.length === 0 ? (
-                <p className="text-xs text-slate-400">No extras planned for this period.</p>
+                <p className="text-xs text-slate-400">No extras are ready for sale in this period.</p>
               ) : (
                 <div className="grid gap-2 sm:grid-cols-2">
                   {periodExtras.map((extra) => {

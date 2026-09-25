@@ -37,12 +37,18 @@ interface ComponentCatalogEntry {
   active: boolean
 }
 
+// PLANNED → INGREDIENTS_REVIEWED (ingredient requirements confirmed) → READY (actual recorded, on sale in the POS).
+type PlanItemStatus = "PLANNED" | "INGREDIENTS_REVIEWED" | "READY"
+
 interface DailyMealOption {
   id: number
   name: string
   description?: string
   price: number
+  status: PlanItemStatus
   plannedPortions: number
+  actualPortions: number | null
+  sold: number
   portionsRemaining: number
 }
 
@@ -51,13 +57,27 @@ interface DailyComponentStock {
   componentName?: string
   name?: string
   extraPrice: number
+  status: PlanItemStatus
   bufferQuantity: number
+  actualQuantity: number | null
+  sold: number
   bufferRemaining: number
 }
 
 interface TodayPlan {
   options: DailyMealOption[]
-  availableExtras: DailyComponentStock[]
+  componentStock: DailyComponentStock[]
+}
+
+// Admin view of the plan: every item regardless of status. /menu/today now only returns READY items (for the POS).
+const adminPlanPath = (date: string, periodName: string) => `/admin/daily-planning/${date}?period=${periodName.toUpperCase()}`
+const mealOptionActualPath = (id: number) => `/admin/daily-options/${id}/actual`
+const componentStockActualPath = (id: number) => `/admin/daily-component-stock/${id}/actual`
+
+const STATUS_LABELS: Record<PlanItemStatus, { label: string; className: string }> = {
+  PLANNED: { label: "Planned", className: "border-slate-200 bg-slate-50 text-slate-700" },
+  INGREDIENTS_REVIEWED: { label: "Ingredients reviewed", className: "border-blue-200 bg-blue-50 text-blue-700" },
+  READY: { label: "Ready · on sale", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
 }
 
 interface IngredientRequirementDto {
@@ -98,12 +118,21 @@ function todayISO(): string {
   return `${year}-${month}-${day}`
 }
 
+// Handles { message }, { error } and field errors like { actualPortions: "..." }.
 function parseError(body: unknown, fallback: string): string {
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>
-    if (typeof b.message === "string") return b.message
+    if (typeof b.message === "string" && b.message.trim()) return b.message
+    if (typeof b.error === "string" && b.error.trim()) return b.error
+    const fieldErrors = Object.values(b).filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    if (fieldErrors.length > 0) return fieldErrors.join(" ")
   }
   return fallback
+}
+
+function StatusBadge({ status }: { status: PlanItemStatus }) {
+  const { label, className } = STATUS_LABELS[status] ?? STATUS_LABELS.PLANNED
+  return <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium ${className}`}>{label}</span>
 }
 
 function formatPeriodTime(value: string | null): string {
@@ -123,6 +152,11 @@ export default function DailyPlanningPage() {
 
   const [todayPlan, setTodayPlan] = useState<TodayPlan | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
+  const [planError, setPlanError] = useState<string | null>(null)
+
+  const [actualDrafts, setActualDrafts] = useState<Record<string, string>>({})
+  const [actualErrors, setActualErrors] = useState<Record<string, string | null>>({})
+  const [actualSavingKey, setActualSavingKey] = useState<string | null>(null)
 
   const [selectedMealId, setSelectedMealId] = useState("")
   const [plannedPortions, setPlannedPortions] = useState("")
@@ -176,15 +210,72 @@ export default function DailyPlanningPage() {
 
   const fetchTodayPlan = useCallback(async (period: MealPeriod) => {
     setPlanLoading(true)
+    setPlanError(null)
     try {
-      const res = await authFetch(`/menu/today?period=${period.name.toUpperCase()}`)
-      if (res.ok) setTodayPlan((await res.json()) as TodayPlan)
-    } catch {
-      // no-op
+      const res = await authFetch(adminPlanPath(todayISO(), period.name))
+      const body = (await res.json().catch(() => null)) as Partial<TodayPlan> | unknown
+      if (!res.ok || !body || typeof body !== "object") {
+        throw new Error(parseError(body, "Unable to load today's plan."))
+      }
+      const plan = body as Partial<TodayPlan>
+      setTodayPlan({
+        options: Array.isArray(plan.options) ? plan.options : [],
+        componentStock: Array.isArray(plan.componentStock) ? plan.componentStock : [],
+      })
+      setActualDrafts({})
+      setActualErrors({})
+    } catch (err) {
+      setPlanError(err instanceof Error ? err.message : "Unable to load today's plan.")
+      setTodayPlan(null)
     } finally {
       setPlanLoading(false)
     }
   }, [authFetch])
+
+  // Row keys are prefixed because meal option and component stock ids can overlap.
+  const saveActual = async (key: string, item: { id: number; sold: number }, kind: "option" | "stock") => {
+    const draft = actualDrafts[key]
+    const value = Number(draft)
+    if (draft === undefined || draft.trim() === "" || !Number.isInteger(value) || value < 0) {
+      setActualErrors((prev) => ({ ...prev, [key]: "Enter a whole number, 0 or more." }))
+      return
+    }
+    if (value < item.sold) {
+      setActualErrors((prev) => ({ ...prev, [key]: `Can't be below the ${item.sold} already sold.` }))
+      return
+    }
+
+    setActualSavingKey(key)
+    setActualErrors((prev) => ({ ...prev, [key]: null }))
+    try {
+      const res = await authFetch(kind === "option" ? mealOptionActualPath(item.id) : componentStockActualPath(item.id), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(kind === "option" ? { actualPortions: value } : { actualQuantity: value }),
+      })
+      const body = (await res.json().catch(() => null)) as unknown
+      if (!res.ok || !body || typeof body !== "object") {
+        throw new Error(parseError(body, res.status === 404 ? "This item no longer exists. Refresh the plan." : "Unable to save the actual."))
+      }
+      // The endpoint returns the updated row in the planning-page shape, so patch it in place.
+      setTodayPlan((prev) => {
+        if (!prev) return prev
+        return kind === "option"
+          ? { ...prev, options: prev.options.map((option) => (option.id === item.id ? (body as DailyMealOption) : option)) }
+          : { ...prev, componentStock: prev.componentStock.map((stock) => (stock.id === item.id ? (body as DailyComponentStock) : stock)) }
+      })
+      setActualDrafts((prev) => {
+        const next = { ...prev }
+        delete next[key]
+        return next
+      })
+      toast({ title: "Actual saved", description: value === 0 ? "Recorded as 0. Nothing is available to sell." : `${value} now available in the POS.` })
+    } catch (err) {
+      setActualErrors((prev) => ({ ...prev, [key]: err instanceof Error ? err.message : "Unable to save the actual." }))
+    } finally {
+      setActualSavingKey(null)
+    }
+  }
 
   const loadIngredientRequirements = useCallback(async (period: MealPeriod) => {
     setRequirementsLoading(true)
@@ -226,7 +317,48 @@ export default function DailyPlanningPage() {
   const selectedMeal = mealCatalog.find((meal) => String(meal.id) === selectedMealId)
   const selectedComponent = componentCatalog.find((component) => String(component.id) === selectedComponentId)
 
-  const hasPlannedItems = (todayPlan?.options.length ?? 0) > 0 || (todayPlan?.availableExtras.length ?? 0) > 0
+  const hasPlannedItems = (todayPlan?.options.length ?? 0) > 0 || (todayPlan?.componentStock.length ?? 0) > 0
+  const awaitingReviewCount =
+    (todayPlan?.options.filter((option) => option.status === "PLANNED").length ?? 0) +
+    (todayPlan?.componentStock.filter((stock) => stock.status === "PLANNED").length ?? 0)
+
+  const renderActualCell = (key: string, item: { id: number; status: PlanItemStatus; sold: number }, actual: number | null, planned: number, kind: "option" | "stock") => {
+    if (item.status === "PLANNED") {
+      return <span className="text-xs text-muted-foreground">Review ingredients first</span>
+    }
+    const draft = actualDrafts[key] ?? (actual === null ? "" : String(actual))
+    const draftValue = Number(draft)
+    const changed = draft.trim() !== "" && draft !== (actual === null ? "" : String(actual))
+    const overPlanned = draft.trim() !== "" && Number.isFinite(draftValue) && draftValue > planned
+    const saving = actualSavingKey === key
+    return (
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <Input
+            type="number"
+            min={item.sold}
+            step="1"
+            value={draft}
+            onChange={(event) => {
+              const value = event.target.value
+              setActualDrafts((prev) => ({ ...prev, [key]: value }))
+              setActualErrors((prev) => ({ ...prev, [key]: null }))
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && changed) void saveActual(key, item, kind)
+            }}
+            className="h-8 w-20"
+            aria-label="Actual quantity"
+          />
+          <Button size="sm" variant={actual === null ? "default" : "outline"} className="h-8" disabled={!changed || saving} onClick={() => void saveActual(key, item, kind)}>
+            {saving ? "Saving…" : "Save"}
+          </Button>
+        </div>
+        {overPlanned && !actualErrors[key] && <p className="text-xs text-amber-700">More than the {planned} planned.</p>}
+        {actualErrors[key] && <p className="text-xs text-destructive">{actualErrors[key]}</p>}
+      </div>
+    )
+  }
 
   const handleAddMealOption = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -488,7 +620,13 @@ export default function DailyPlanningPage() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold">Today&apos;s Plan — {selectedPeriod?.name ?? "…"}</h2>
-                <p className="text-sm text-muted-foreground">{todayISO()} · Review ingredient requirements before service prep.</p>
+                <p className="text-sm text-muted-foreground">
+                  {todayISO()} · Review ingredient requirements, then record actuals after prep. Only items marked Ready are sold in the POS.
+                </p>
+                {awaitingReviewCount > 0 && (
+                  <p className="mt-1 text-xs text-amber-700">{awaitingReviewCount} item(s) still need their ingredients reviewed.</p>
+                )}
+                {planError && <p className="mt-1 text-sm text-destructive">{planError}</p>}
               </div>
               <div className="flex gap-2">
                 {selectedPeriod && (
@@ -514,24 +652,36 @@ export default function DailyPlanningPage() {
                     <TableRow>
                       <TableHead>Name</TableHead>
                       <TableHead>Price</TableHead>
+                      <TableHead>Status</TableHead>
                       <TableHead>Planned</TableHead>
+                      <TableHead>Actual</TableHead>
+                      <TableHead>Sold</TableHead>
                       <TableHead>Remaining</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {!todayPlan?.options.length ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">No meal options planned for this period yet.</TableCell>
+                        <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">No meal options planned for this period yet.</TableCell>
                       </TableRow>
                     ) : (
                       todayPlan.options.map((option) => (
                         <TableRow key={option.id}>
                           <TableCell className="font-medium">{option.name}</TableCell>
                           <TableCell>{formatZarCurrency(option.price)}</TableCell>
+                          <TableCell><StatusBadge status={option.status} /></TableCell>
                           <TableCell>{option.plannedPortions}</TableCell>
+                          <TableCell>{renderActualCell(`option-${option.id}`, option, option.actualPortions, option.plannedPortions, "option")}</TableCell>
+                          <TableCell>{option.sold}</TableCell>
                           <TableCell>
-                            <span className={option.portionsRemaining === 0 ? "text-destructive font-medium" : ""}>{option.portionsRemaining}</span>
-                            {option.portionsRemaining === 0 && <span className="ml-2 text-xs text-destructive">sold out</span>}
+                            {option.status !== "READY" ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <>
+                                <span className={option.portionsRemaining === 0 ? "text-destructive font-medium" : ""}>{option.portionsRemaining}</span>
+                                {option.portionsRemaining === 0 && <span className="ml-2 text-xs text-destructive">sold out</span>}
+                              </>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))
@@ -551,24 +701,36 @@ export default function DailyPlanningPage() {
                     <TableRow>
                       <TableHead>Component</TableHead>
                       <TableHead>Extra Price</TableHead>
+                      <TableHead>Status</TableHead>
                       <TableHead>Declared</TableHead>
+                      <TableHead>Actual</TableHead>
+                      <TableHead>Sold</TableHead>
                       <TableHead>Remaining</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {!todayPlan?.availableExtras.length ? (
+                    {!todayPlan?.componentStock.length ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="py-6 text-center text-sm text-muted-foreground">No component stock declared for this period yet.</TableCell>
+                        <TableCell colSpan={7} className="py-6 text-center text-sm text-muted-foreground">No component stock declared for this period yet.</TableCell>
                       </TableRow>
                     ) : (
-                      todayPlan.availableExtras.map((extra) => (
+                      todayPlan.componentStock.map((extra) => (
                         <TableRow key={extra.id}>
                           <TableCell className="font-medium">{extra.componentName ?? extra.name ?? "—"}</TableCell>
                           <TableCell>{formatZarCurrency(extra.extraPrice)}</TableCell>
+                          <TableCell><StatusBadge status={extra.status} /></TableCell>
                           <TableCell>{extra.bufferQuantity}</TableCell>
+                          <TableCell>{renderActualCell(`stock-${extra.id}`, extra, extra.actualQuantity, extra.bufferQuantity, "stock")}</TableCell>
+                          <TableCell>{extra.sold}</TableCell>
                           <TableCell>
-                            <span className={extra.bufferRemaining === 0 ? "text-destructive font-medium" : ""}>{extra.bufferRemaining}</span>
-                            {extra.bufferRemaining === 0 && <span className="ml-2 text-xs text-destructive">sold out</span>}
+                            {extra.status !== "READY" ? (
+                              <span className="text-muted-foreground">—</span>
+                            ) : (
+                              <>
+                                <span className={extra.bufferRemaining === 0 ? "text-destructive font-medium" : ""}>{extra.bufferRemaining}</span>
+                                {extra.bufferRemaining === 0 && <span className="ml-2 text-xs text-destructive">sold out</span>}
+                              </>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))
