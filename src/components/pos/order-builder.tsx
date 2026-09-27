@@ -196,6 +196,22 @@ function toCents(value: number): number {
   return Math.round(value * 100);
 }
 
+type PaymentKeypadField = "amount" | "tendered";
+
+const QUICK_TENDER_NOTES = [20, 50, 100, 200];
+
+// Next banknote totals a customer is likely to hand over for the given amount, e.g. R30 -> R40, R50, R100.
+function getQuickTenderOptions(amountCents: number): number[] {
+  if (amountCents <= 0) return [];
+  const options = new Set<number>();
+  for (const note of QUICK_TENDER_NOTES) {
+    const noteCents = note * 100;
+    const rounded = Math.ceil(amountCents / noteCents) * noteCents;
+    if (rounded > amountCents) options.add(rounded);
+  }
+  return Array.from(options).sort((a, b) => a - b).slice(0, 3);
+}
+
 function fromCentsInput(raw: string): number {
   const parsed = Number(raw || "0");
   if (!Number.isFinite(parsed)) return 0;
@@ -349,6 +365,10 @@ export function PosOrderBuilder({
   const [paymentEntries, setPaymentEntries] = useState<DraftPaymentEntry[]>([]);
   const [paymentAmountInput, setPaymentAmountInput] = useState("");
   const [cashTenderedInput, setCashTenderedInput] = useState("");
+  const [isSplitAmount, setIsSplitAmount] = useState(false);
+  const [activePaymentField, setActivePaymentField] = useState<PaymentKeypadField>("tendered");
+  // When true, the next keypad digit replaces the prefilled value instead of appending to it.
+  const [replaceOnNextKey, setReplaceOnNextKey] = useState(true);
   const [cardReference, setCardReference] = useState("");
   const [cardReferenceError, setCardReferenceError] = useState<string | null>(null);
   const [paymentEntryError, setPaymentEntryError] = useState<string | null>(null);
@@ -514,6 +534,8 @@ export function PosOrderBuilder({
     if (paymentEntries.length > 0 || remainingToPayCents <= 0) return null;
 
     const amount = remainingToPay;
+    // A partial split amount must be added as an entry first.
+    if (paymentMethod !== "ACCOUNT" && toCents(paymentAmount) !== remainingToPayCents) return null;
     if (paymentMethod === "ACCOUNT") {
       if (!selectedAccountId) return null;
       return { method: "ACCOUNT", amount, accountId: selectedAccountId };
@@ -530,6 +552,7 @@ export function PosOrderBuilder({
   }, [
     cardReference,
     cashTenderedAmount,
+    paymentAmount,
     paymentEntries.length,
     paymentMethod,
     remainingToPay,
@@ -668,12 +691,62 @@ export function PosOrderBuilder({
       const amountCents = Math.max(0, nextAmountCents ?? remainingToPayCents);
       setPaymentAmountInput(String(amountCents));
       setCashTenderedInput(String(amountCents));
+      setIsSplitAmount(false);
+      setActivePaymentField("tendered");
+      setReplaceOnNextKey(true);
       setCardReference("");
       setCardReferenceError(null);
       setPaymentEntryError(null);
     },
     [remainingToPayCents],
   );
+
+  // Cash edits tendered unless splitting; card only has an amount to edit.
+  const keypadField: PaymentKeypadField =
+    paymentMethod === "CARD" ? "amount" : isSplitAmount ? activePaymentField : "tendered";
+  const keypadValue = keypadField === "amount" ? paymentAmountInput : cashTenderedInput;
+  const showPaymentKeypad = paymentMethod === "CASH" || (paymentMethod === "CARD" && isSplitAmount);
+  const changeDueCents = toCents(cashTenderedAmount) - toCents(paymentAmount);
+  const quickTenderOptions = useMemo(() => getQuickTenderOptions(toCents(paymentAmount)), [paymentAmount]);
+
+  const handleKeypadChange = (next: string) => {
+    let value = next;
+    if (replaceOnNextKey) {
+      // Typing replaces the prefilled value; backspace clears it.
+      value = next.length > keypadValue.length ? next.slice(keypadValue.length) : "";
+      setReplaceOnNextKey(false);
+    }
+    if (keypadField === "amount") {
+      setPaymentAmountInput(value);
+    } else {
+      setCashTenderedInput(value);
+    }
+    setPaymentEntryError(null);
+  };
+
+  const selectPaymentField = (field: PaymentKeypadField) => {
+    setActivePaymentField(field);
+    setReplaceOnNextKey(true);
+  };
+
+  const toggleSplitAmount = () => {
+    if (isSplitAmount) {
+      setPaymentAmountInput(String(remainingToPayCents));
+      setActivePaymentField("tendered");
+    } else {
+      setActivePaymentField("amount");
+    }
+    setIsSplitAmount(!isSplitAmount);
+    setReplaceOnNextKey(true);
+    setPaymentEntryError(null);
+  };
+
+  const setTenderedCents = (cents: number) => {
+    setCashTenderedInput(String(cents));
+    setActivePaymentField("tendered");
+    setReplaceOnNextKey(true);
+    setPaymentEntryError(null);
+  };
 
   const loadCheckoutAccounts = useCallback(async () => {
     setAccountsLoading(true);
@@ -1961,29 +2034,91 @@ export function PosOrderBuilder({
               <p className="mt-2 text-xs text-rose-200">{paymentEntryError}</p>
             )}
 
-            {(paymentMethod === "CASH" || paymentMethod === "CARD") && (
-              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-900/60 p-4">
-                <p className="text-xs uppercase tracking-wider text-slate-300">Payment Amount</p>
-                <p className="mt-1 text-3xl font-black text-white">{toMoney(paymentAmount)}</p>
-                <p className="text-xs text-slate-400">Set amount for this {paymentMethod.toLowerCase()} entry.</p>
-                <div className="mt-3 flex justify-center">
-                  <NumericKeypad value={paymentAmountInput} onChange={setPaymentAmountInput} />
+            {(paymentMethod === "CASH" || paymentMethod === "CARD") && paymentEntries.length === 0 && (
+              <button
+                type="button"
+                onClick={toggleSplitAmount}
+                className={`mt-3 rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                  isSplitAmount
+                    ? "border-amber-300/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25"
+                    : "border-slate-700 bg-slate-900 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                {isSplitAmount ? "Pay full amount instead" : "Split payment"}
+              </button>
+            )}
+
+            {showPaymentKeypad && (
+              <div className="mt-3 grid items-start gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+                <div className="space-y-2">
+                  {isSplitAmount && (
+                    <button
+                      type="button"
+                      onClick={() => selectPaymentField("amount")}
+                      className={`w-full rounded-lg border p-2 text-left ${
+                        keypadField === "amount"
+                          ? "border-emerald-300 bg-emerald-500/15"
+                          : "border-slate-700 bg-slate-950/60 hover:bg-slate-800"
+                      }`}
+                    >
+                      <p className="text-[11px] uppercase tracking-wider text-slate-300">
+                        {paymentMethod === "CASH" ? "Cash" : "Card"} amount
+                      </p>
+                      <p className="text-2xl font-black text-white">{toMoney(paymentAmount)}</p>
+                    </button>
+                  )}
+
+                  {paymentMethod === "CASH" && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => selectPaymentField("tendered")}
+                        className={`w-full rounded-lg border p-2 text-left ${
+                          keypadField === "tendered"
+                            ? "border-emerald-300 bg-emerald-500/15"
+                            : "border-slate-700 bg-slate-950/60 hover:bg-slate-800"
+                        }`}
+                      >
+                        <p className="text-[11px] uppercase tracking-wider text-slate-300">Cash tendered</p>
+                        <p className="text-2xl font-black text-white">{toMoney(cashTenderedAmount)}</p>
+                      </button>
+
+                      <p className={`text-sm font-semibold ${changeDueCents < 0 ? "text-rose-300" : "text-emerald-200"}`}>
+                        {changeDueCents < 0
+                          ? `Short: ${toMoney(-changeDueCents / 100)}`
+                          : `Change: ${toMoney(changeDueCents / 100)}`}
+                      </p>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setTenderedCents(toCents(paymentAmount))}
+                          className="rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800"
+                        >
+                          Exact
+                        </button>
+                        {quickTenderOptions.map((cents) => (
+                          <button
+                            key={cents}
+                            type="button"
+                            onClick={() => setTenderedCents(cents)}
+                            className="rounded-lg border border-slate-700 bg-slate-950/60 px-2 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800"
+                          >
+                            {toMoney(cents / 100)}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex justify-center">
+                  <NumericKeypad value={keypadValue} onChange={handleKeypadChange} size="compact" />
                 </div>
               </div>
             )}
 
-            {paymentMethod === "CASH" ? (
-              <>
-                <p className="mt-4 text-xs uppercase tracking-wider text-emerald-300">Cash Tendered</p>
-                <p className="mb-3 mt-1 text-3xl font-black text-white">{toMoney(cashTenderedAmount)}</p>
-
-                <NumericKeypad value={cashTenderedInput} onChange={setCashTenderedInput} />
-
-                <p className="mt-3 text-xs text-slate-400">
-                  Tendered cash must be at least the cash amount for this entry.
-                </p>
-              </>
-            ) : paymentMethod === "CARD" ? (
+            {paymentMethod === "CASH" ? null : paymentMethod === "CARD" ? (
               <div className="mt-4 rounded-xl border border-blue-300/25 bg-blue-500/10 p-4">
                 <p className="text-xs uppercase tracking-wider text-blue-100">Card Payment</p>
                 <p className="mt-2 text-3xl font-black text-white">{toMoney(paymentAmount)}</p>

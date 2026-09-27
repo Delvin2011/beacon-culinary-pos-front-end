@@ -7,6 +7,7 @@ interface NumericKeypadProps {
   onChange: (value: string) => void;
   maxLength?: number;
   disabled?: boolean;
+  size?: "default" | "compact";
 }
 
 const KEYS = [
@@ -23,7 +24,10 @@ export function NumericKeypad({
   onChange,
   maxLength,
   disabled = false,
+  size = "default",
 }: NumericKeypadProps) {
+  const compact = size === "compact";
+
   const handleKey = (key: KeyValue) => {
     if (disabled || key === "") return;
 
@@ -37,7 +41,7 @@ export function NumericKeypad({
   };
 
   return (
-    <div className="grid grid-cols-3 gap-3 w-full max-w-xs">
+    <div className={`grid grid-cols-3 w-full ${compact ? "gap-2 max-w-[15rem]" : "gap-3 max-w-xs"}`}>
       {KEYS.map((key, i) => {
         if (key === "") {
           return <div key={i} aria-hidden />;
@@ -49,7 +53,9 @@ export function NumericKeypad({
             type="button"
             disabled={disabled}
             onClick={() => handleKey(key)}
-            className="flex h-[72px] w-full items-center justify-center rounded-2xl bg-white/10 text-2xl font-semibold text-white transition-colors hover:bg-white/20 active:scale-95 active:bg-white/30 disabled:pointer-events-none disabled:opacity-40 select-none"
+            className={`flex w-full items-center justify-center bg-white/10 font-semibold text-white transition-colors hover:bg-white/20 active:scale-95 active:bg-white/30 disabled:pointer-events-none disabled:opacity-40 select-none ${
+              compact ? "h-14 rounded-xl text-xl" : "h-[72px] rounded-2xl text-2xl"
+            }`}
           >
             {key === "backspace" ? <Delete className="h-6 w-6" /> : key}
           </button>
