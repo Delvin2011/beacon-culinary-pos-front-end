@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Clock, LogOut, ShieldCheck } from "lucide-react";
+import { Clock, Lock, LogOut, RefreshCw, ShieldCheck, UserRound } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { useManagementSession } from "@/hooks/use-management-session";
@@ -11,6 +11,7 @@ import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
+import { isAdminRole } from "@/lib/roles";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -108,6 +109,9 @@ function PosMainContent() {
     invalidateManagementSession,
   } = useManagementSession();
 
+  const isAdmin = isAdminRole(user?.role);
+  const sellingOnOthersShift = !!shift && !shift.ownedByCaller;
+  const [confirmOwnerClose, setConfirmOwnerClose] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
   const [closing, setClosing] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
@@ -332,7 +336,17 @@ function PosMainContent() {
     }
   };
 
+  const requestCloseShift = () => {
+    // An admin closing someone else's shift confirms whose drawer it is first.
+    if (sellingOnOthersShift) {
+      setConfirmOwnerClose(true);
+      return;
+    }
+    openCloseFlow();
+  };
+
   const openCloseFlow = () => {
+    setConfirmOwnerClose(false);
     setConfirmClose(true);
     setShowVarianceReview(false);
     setShowPinOverlay(false);
@@ -459,6 +473,41 @@ function PosMainContent() {
     );
   }
 
+  if (shift && !shift.ownedByCaller && !isAdmin && !closeoutRecord) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
+        <div className="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-900 p-6 text-center">
+          <Lock className="mx-auto h-10 w-10 text-amber-300" />
+          <h1 className="mt-4 text-2xl font-bold text-white">Till in use</h1>
+          <p className="mt-2 text-slate-300">
+            Till in use by <span className="font-semibold text-white">{shift.owner.name}</span> since{" "}
+            {formatTime(shift.openedAt)}. Their shift must be closed before you can start.
+          </p>
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                logout();
+                router.replace("/pos/login");
+              }}
+              className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-medium text-slate-300 hover:bg-slate-800"
+            >
+              Log Out
+            </button>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (closeoutRecord) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
@@ -512,6 +561,12 @@ function PosMainContent() {
               Since {formatTime(shift.openedAt)} · {formatDate(shift.openedAt)} · Float {formatZarCurrency(shift.openingFloat)}
             </span>
           )}
+          {sellingOnOthersShift && shift && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-sky-400/30 bg-sky-500/10 px-3 py-1 text-xs font-semibold text-sky-200">
+              <UserRound className="h-3.5 w-3.5" />
+              Shift: {shift.owner.name}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-3">
@@ -541,7 +596,7 @@ function PosMainContent() {
           )}
           <button
             type="button"
-            onClick={openCloseFlow}
+            onClick={requestCloseShift}
             className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 active:bg-rose-500/30"
           >
             <LogOut className="h-3.5 w-3.5" />
@@ -550,6 +605,13 @@ function PosMainContent() {
         </div>
       </header>
 
+      {sellingOnOthersShift && shift && (
+        <div className="border-b border-sky-500/30 bg-sky-500/10 px-6 py-2 text-sm text-sky-100">
+          Selling on <span className="font-semibold">{shift.owner.name}</span>&apos;s shift (opened {formatTime(shift.openedAt)}).
+          Sales count toward their drawer.
+        </div>
+      )}
+
       <PosOrderBuilder
         managementSessionToken={sessionToken}
         managementSessionActive={isManagementActive}
@@ -557,6 +619,34 @@ function PosMainContent() {
         requestManagementSession={runWithManagementSession}
         invalidateManagementSession={invalidateManagementSession}
       />
+
+      {confirmOwnerClose && shift && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
+          <div className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6">
+            <h2 className="text-xl font-bold text-white">Close someone else&apos;s shift?</h2>
+            <p className="mt-2 text-sm text-slate-300">
+              You are closing <span className="font-semibold text-white">{shift.owner.name}</span>&apos;s shift (opened{" "}
+              {formatTime(shift.openedAt)} · {formatDate(shift.openedAt)}). Count the cash in their drawer next.
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmOwnerClose(false)}
+                className="flex-1 rounded-xl border border-slate-700 py-3 text-sm font-medium text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={openCloseFlow}
+                className="flex-1 rounded-xl bg-rose-500 py-3 text-sm font-semibold text-white hover:bg-rose-400"
+              >
+                Continue to Cash Count
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirmClose && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">

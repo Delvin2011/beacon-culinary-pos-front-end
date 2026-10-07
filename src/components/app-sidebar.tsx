@@ -11,6 +11,7 @@ import {
 import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
+import { useAuth } from "@/hooks/use-auth"
 import {
   Sidebar,
   SidebarContent,
@@ -87,19 +88,35 @@ const data = {
           title: "Cashier Login",
           url: "/pos/login",
         },
+        {
+          title: "POS Activity",
+          url: "/pos-activity",
+          adminOnly: true,
+        },
       ],
     },
   ],
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
+  const { user } = useAuth()
+  const isAdmin = !!user?.role?.toUpperCase().includes("ADMIN")
+  const navMain = React.useMemo(
+    () =>
+      data.navMain.map((group) => ({
+        ...group,
+        items: group.items.filter((item) => !("adminOnly" in item && item.adminOnly) || isAdmin),
+      })),
+    [isAdmin],
+  )
+
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
         <TeamSwitcher teams={data.teams} />
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} />
+        <NavMain items={navMain} />
       </SidebarContent>
       <SidebarFooter>
         <NavUser user={data.user} />

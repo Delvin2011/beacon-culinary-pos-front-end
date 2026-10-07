@@ -10,6 +10,13 @@ import {
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
 
+export interface ShiftOwner {
+  id: number;
+  name: string;
+  role?: string;
+}
+
+// The till's open shift, whoever owns it (from GET /shifts/open).
 export interface Shift {
   id: number;
   cashierId: number;
@@ -17,6 +24,8 @@ export interface Shift {
   openingFloat: number;
   openedAt: string;
   closedAt?: string | null;
+  owner: ShiftOwner;
+  ownedByCaller: boolean;
 }
 
 interface ShiftContextValue {
@@ -38,15 +47,24 @@ function extractShift(payload: unknown): Shift | null {
       ? (raw.data as Record<string, unknown>)
       : raw;
 
-  if (typeof src.id !== "number") return null;
+  if (typeof src.shiftId !== "number") return null;
+
+  const rawOwner = (src.owner && typeof src.owner === "object" ? src.owner : {}) as Record<string, unknown>;
+  const owner: ShiftOwner = {
+    id: typeof rawOwner.id === "number" ? rawOwner.id : 0,
+    name: typeof rawOwner.name === "string" ? rawOwner.name : "Unknown cashier",
+    role: typeof rawOwner.role === "string" ? rawOwner.role : undefined,
+  };
 
   return {
-    id: src.id as number,
-    cashierId: src.cashierId as number,
-    status: src.status as "OPEN" | "CLOSED",
-    openingFloat: src.openingFloat as number,
+    id: src.shiftId,
+    cashierId: owner.id,
+    status: "OPEN",
+    openingFloat: typeof src.openingFloat === "number" ? src.openingFloat : 0,
     openedAt: src.openedAt as string,
-    closedAt: typeof src.closedAt === "string" ? src.closedAt : null,
+    closedAt: null,
+    owner,
+    ownedByCaller: src.ownedByCaller === true,
   };
 }
 
@@ -74,7 +92,8 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
     setIsLoading(true);
     setError(null);
     try {
-      const res = await authFetch("/shifts/current");
+      // /shifts/open returns the till's shift whoever owns it; /shifts/current only the caller's own.
+      const res = await authFetch("/shifts/open");
       if (res.status === 404) {
         setShift(null);
         return;
@@ -116,8 +135,8 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
         throw new Error(extractErrorMessage(body, "Failed to open shift."));
       }
 
-      setShift(extractShift(body));
-      setError(null);
+      // The open response is a ShiftDto without the owner, so reload the till's view of it.
+      await fetchCurrentShift();
     },
     [authFetch, fetchCurrentShift],
   );

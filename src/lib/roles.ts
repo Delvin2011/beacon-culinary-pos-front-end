@@ -9,3 +9,8 @@ export function isStockAccessRole(role?: string): boolean {
   const normalised = role.toUpperCase();
   return normalised.includes("STOCK") || normalised.includes("ADMIN");
 }
+
+export function isAdminRole(role?: string): boolean {
+  if (!role) return false;
+  return role.toUpperCase().includes("ADMIN");
+}

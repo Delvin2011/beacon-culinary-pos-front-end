@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { useShift } from "@/hooks/use-shift";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import {
   AdjustmentReasonFields,
@@ -114,6 +115,7 @@ type OrderDto = {
   total: number;
   originalTotal?: number;
   printFailed?: boolean;
+  rungBy?: { id: number; name: string; role?: string };
   lines?: OrderLineDto[];
   adjustments?: OrderAdjustmentDto[];
   payments?: OrderPaymentDto[];
@@ -155,6 +157,7 @@ type OrderLineExtraDto = {
 type ApiErrorPayload = {
   message?: string;
   error?: string;
+  code?: string;
   dailyMealOptionId?: number;
   dailyComponentStockId?: number;
   details?: Array<Record<string, unknown>>;
@@ -195,6 +198,9 @@ function toMoney(value: number): string {
 function toCents(value: number): number {
   return Math.round(value * 100);
 }
+
+// Holds the cart across the open-new-shift detour after NO_OPEN_SHIFT. Tab-scoped on purpose.
+const PENDING_CART_KEY = "pos.pendingCart";
 
 type PaymentKeypadField = "amount" | "tendered";
 
@@ -345,6 +351,8 @@ export function PosOrderBuilder({
   invalidateManagementSession,
 }: PosOrderBuilderProps) {
   const { authFetch } = useAuth();
+  const { shift, refetch: refetchShift } = useShift();
+  const [shiftClosedWhileSelling, setShiftClosedWhileSelling] = useState(false);
 
   const [periods, setPeriods] = useState<MealPeriod[]>([]);
   const [selectedPeriodId, setSelectedPeriodId] = useState<number | null>(null);
@@ -359,6 +367,45 @@ export function PosOrderBuilder({
 
   const [draftLines, setDraftLines] = useState<DraftLine[]>([]);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
+
+  // Restore a cart saved when the shift closed mid-order.
+  useEffect(() => {
+    try {
+      const saved = window.sessionStorage.getItem(PENDING_CART_KEY);
+      if (!saved) return;
+      window.sessionStorage.removeItem(PENDING_CART_KEY);
+      const lines = JSON.parse(saved) as DraftLine[];
+      if (Array.isArray(lines) && lines.length > 0) setDraftLines(lines);
+    } catch {
+      // Storage unavailable or corrupt: start with an empty cart.
+    }
+  }, []);
+
+  // "Admin" marks a sale rung up by someone other than the shift owner.
+  const renderAdminChip = (order: OrderDto) =>
+    order.rungBy && shift && order.rungBy.id !== shift.owner.id ? (
+      <span className="ml-1.5 rounded border border-sky-400/40 bg-sky-500/15 px-1 text-[10px] font-semibold uppercase text-sky-200">
+        Admin
+      </span>
+    ) : null;
+
+  const renderRungBy = (order: OrderDto) =>
+    order.rungBy ? (
+      <>
+        {` · Rung by ${order.rungBy.name}`}
+        {renderAdminChip(order)}
+      </>
+    ) : null;
+
+  const openNewShiftKeepingCart = async () => {
+    try {
+      window.sessionStorage.setItem(PENDING_CART_KEY, JSON.stringify(draftLines));
+    } catch {
+      // Without storage the cart is lost, but the new shift can still open.
+    }
+    // Reloading the shift finds none, and the POS page redirects to the open-shift screen.
+    await refetchShift();
+  };
 
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
@@ -1015,6 +1062,19 @@ export function PosOrderBuilder({
       const body = (await res.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
 
       if (!res.ok) {
+        // Shift errors share 409 with stock conflicts, so branch on code first.
+        const errorCode = (body as ApiErrorPayload | null)?.code;
+        if (errorCode === "NO_OPEN_SHIFT") {
+          // Keep the cart so the order can be completed on a new shift.
+          setShiftClosedWhileSelling(true);
+          return;
+        }
+        if (errorCode === "TILL_IN_USE") {
+          // Reloading the shift shows the "Till in use" screen.
+          await refetchShift();
+          return;
+        }
+
         if (res.status === 409) {
           applyConflictFeedback(body);
           await loadMenuForPeriod(selectedPeriod?.name ?? "");
@@ -1116,6 +1176,12 @@ export function PosOrderBuilder({
                 submitLabel: "Re-authorize",
               },
             );
+            return;
+          }
+
+          if ((adjustmentBody as ApiErrorPayload | null)?.code === "NO_OPEN_SHIFT") {
+            setShowAdjustmentForm(false);
+            setAdjustmentError("The shift was closed. Open a new one to continue.");
             return;
           }
 
@@ -1342,6 +1408,7 @@ export function PosOrderBuilder({
                 </div>
               </div>
             )}
+            {shownOrder.rungBy && <p>Rung by: {shownOrder.rungBy.name}{renderAdminChip(shownOrder)}</p>}
             {typeof shownOrder.printFailed === "boolean" && (
               <p>Print Failed: {shownOrder.printFailed ? "Yes" : "No"}</p>
             )}
@@ -1638,6 +1705,7 @@ export function PosOrderBuilder({
                   <p className="mt-1 text-xs text-slate-400">
                     {order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "Time unavailable"}
                     {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
+                    {renderRungBy(order)}
                   </p>
                 </button>
               ))}
@@ -1866,6 +1934,22 @@ export function PosOrderBuilder({
             </button>
           )}
         </div>
+
+        {shiftClosedWhileSelling && (
+          <div className="mb-4 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+            <p className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              The shift was closed. Open a new one to continue. Your cart has been kept.
+            </p>
+            <button
+              type="button"
+              onClick={() => void openNewShiftKeepingCart()}
+              className="mt-2 rounded-lg bg-amber-400 px-3 py-1.5 text-xs font-semibold text-slate-900 hover:bg-amber-300"
+            >
+              Open New Shift
+            </button>
+          </div>
+        )}
 
         {submissionError && (
           <div className="mb-4 flex items-start gap-2 rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-300">
@@ -2295,6 +2379,7 @@ export function PosOrderBuilder({
                     <p className="mt-1 text-xs text-slate-400">
                       {order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "Time unavailable"}
                       {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
+                      {renderRungBy(order)}
                     </p>
                   </button>
                 ))}
