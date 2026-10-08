@@ -3,6 +3,7 @@
 import * as React from "react"
 import {
   ChartNoAxesCombined,
+  FileBarChart,
   Fuel,
   Monitor,
   ShieldCheck,
@@ -79,6 +80,19 @@ const data = {
       ],
     },
     {
+      title: "Reports",
+      url: "/reports",
+      icon: FileBarChart,
+      isActive: true,
+      adminOnly: true,
+      items: [
+        {
+          title: "All Reports",
+          url: "/reports",
+        },
+      ],
+    },
+    {
       title: "POS Terminal",
       url: "/pos/login",
       icon: Monitor,
@@ -103,10 +117,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const isAdmin = !!user?.role?.toUpperCase().includes("ADMIN")
   const navMain = React.useMemo(
     () =>
-      data.navMain.map((group) => ({
-        ...group,
-        items: group.items.filter((item) => !("adminOnly" in item && item.adminOnly) || isAdmin),
-      })),
+      data.navMain
+        .filter((group) => !("adminOnly" in group && group.adminOnly) || isAdmin)
+        .map((group) => ({
+          ...group,
+          items: group.items.filter((item) => !("adminOnly" in item && item.adminOnly) || isAdmin),
+        })),
     [isAdmin],
   )
 

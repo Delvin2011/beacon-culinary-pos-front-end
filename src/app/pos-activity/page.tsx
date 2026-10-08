@@ -17,6 +17,7 @@ import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/compon
 import { AdminChip, ShiftStatusBadge, VarianceText } from "@/components/pos-activity/shift-badges"
 import { ShiftActivityDialog } from "@/components/pos-activity/shift-activity-dialog"
 import { isAdminRole } from "@/lib/roles"
+import { toShiftOwnerOptions } from "@/lib/users"
 import {
   formatJhbDateTime,
   formatJhbTime,
@@ -47,27 +48,6 @@ const POLL_INTERVAL_MS = 30_000
 function presetRange(preset: Exclude<DatePreset, "custom">): { from: string; to: string } {
   const days = preset === "today" ? 0 : preset === "7d" ? 6 : 29
   return { from: jhbIsoDate(days), to: jhbIsoDate() }
-}
-
-const SHIFT_OWNER_ROLES = new Set(["CASHIER", "ADMIN"])
-
-// Accepts a plain array or a paged { content } body from GET /users.
-function toShiftOwnerOptions(body: unknown): PersonRef[] {
-  const list = Array.isArray(body)
-    ? body
-    : body && typeof body === "object" && Array.isArray((body as { content?: unknown }).content)
-      ? ((body as { content: unknown[] }).content)
-      : []
-  const people: PersonRef[] = []
-  for (const item of list) {
-    if (!item || typeof item !== "object") continue
-    const user = item as Record<string, unknown>
-    const role = typeof user.role === "string" ? user.role.toUpperCase().replace(/^ROLE_/, "") : ""
-    const name = [user.name, user.fullName, user.username].find((v): v is string => typeof v === "string" && v.trim() !== "")
-    if (typeof user.id !== "number" || !name || !SHIFT_OWNER_ROLES.has(role)) continue
-    people.push({ id: user.id, name, role })
-  }
-  return people
 }
 
 export default function PosActivityPage() {
