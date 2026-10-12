@@ -62,8 +62,11 @@ export interface ShiftActivityTotals {
   salesByMethod: Record<PaymentMethodCode, number>
   voids: CountAmount
   refunds: CountAmount
+  // Discounts given at sale on orders sold in this shift.
   discounts: CountAmount
   extrasRemoved: CountAmount
+  // Old after-payment discounts processed in this shift. Present only when non-zero.
+  legacyDiscountsAfterPayment?: CountAmount
 }
 
 export interface ShiftActivityOrder {
@@ -74,7 +77,9 @@ export interface ShiftActivityOrder {
   status: string
   originalTotal: number
   total: number
+  saleDiscount?: number
   payments: { method: PaymentMethodCode; amount: number }[]
+  // True for a discount at sale or an old after-payment discount.
   discounted: boolean
   extrasRemoved: boolean
 }
@@ -179,7 +184,8 @@ export const SHIFT_STATUS_LABELS: Record<ShiftDisplayStatus, string> = {
 export const ADJUSTMENT_TYPE_LABELS: Record<AdjustmentType, string> = {
   VOID: "Void",
   REFUND: "Refund",
-  DISCOUNT: "Discount",
+  // A discount at sale is never an adjustment, so any DISCOUNT row is an old after-payment one.
+  DISCOUNT: "Discount (legacy)",
   EXTRAS_REMOVED: "Extras removed",
 }
 

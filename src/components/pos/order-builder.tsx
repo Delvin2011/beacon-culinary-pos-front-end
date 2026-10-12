@@ -75,9 +75,49 @@ type OrderAdjustmentScope = "WHOLE_ORDER" | "EXTRAS_ONLY";
 
 type OrderAdjustmentAction = "VOID" | "REFUND" | "DISCOUNT";
 
-type AdjustmentRequestAction = "CANCEL" | "DISCOUNT";
+// Discounts are given at checkout now; the after-payment DISCOUNT request is retired.
+type AdjustmentRequestAction = "CANCEL";
 
 type DiscountType = "PERCENTAGE" | "FIXED_AMOUNT";
+
+type SaleDiscountReasonCode = "STAFF" | "PROMOTION" | "MANAGER_GOODWILL" | "PRICING_CORRECTION" | "OTHER";
+
+const SALE_DISCOUNT_REASONS: Array<{ value: SaleDiscountReasonCode; label: string }> = [
+  { value: "STAFF", label: "Staff" },
+  { value: "PROMOTION", label: "Promotion" },
+  { value: "MANAGER_GOODWILL", label: "Manager goodwill" },
+  { value: "PRICING_CORRECTION", label: "Pricing correction" },
+  { value: "OTHER", label: "Other" },
+];
+
+type SaleDiscount = {
+  type: DiscountType;
+  value: number;
+  reasonCode: SaleDiscountReasonCode;
+  note: string;
+};
+
+// Discount given at checkout, as returned on the order.
+type OrderSaleDiscountDto = {
+  type: DiscountType;
+  value: number;
+  amount: number;
+  reasonCode: string;
+  note?: string | null;
+  authorizedBy?: { id: number; name: string } | null;
+};
+
+// Matches the server: percentages round half-up to the cent (R33.33 at 15% = R5.00).
+function saleDiscountCents(type: DiscountType, value: number, totalCents: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  if (type === "FIXED_AMOUNT") return Math.round(value * 100);
+  const basisPoints = Math.round(value * 100);
+  return Math.floor((totalCents * basisPoints + 5000) / 10000);
+}
+
+function saleDiscountReasonLabel(code: string): string {
+  return SALE_DISCOUNT_REASONS.find((reason) => reason.value === code)?.label ?? code.replaceAll("_", " ").toLowerCase();
+}
 
 type OrderAdjustmentDto = {
   id: number;
@@ -114,6 +154,9 @@ type OrderDto = {
   subtotal: number;
   total: number;
   originalTotal?: number;
+  preDiscountTotal?: number;
+  saleDiscount?: number;
+  discount?: OrderSaleDiscountDto | null;
   printFailed?: boolean;
   rungBy?: { id: number; name: string; role?: string };
   lines?: OrderLineDto[];
@@ -425,6 +468,14 @@ export function PosOrderBuilder({
   const [accountSearch, setAccountSearch] = useState("");
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Discount at checkout: the draft being edited, and the one a manager approved.
+  const [saleDiscount, setSaleDiscount] = useState<SaleDiscount | null>(null);
+  const [showSaleDiscountForm, setShowSaleDiscountForm] = useState(false);
+  const [saleDiscountDraftType, setSaleDiscountDraftType] = useState<DiscountType>("PERCENTAGE");
+  const [saleDiscountDraftValue, setSaleDiscountDraftValue] = useState("");
+  const [saleDiscountDraftReason, setSaleDiscountDraftReason] = useState<SaleDiscountReasonCode>("PROMOTION");
+  const [saleDiscountDraftNote, setSaleDiscountDraftNote] = useState("");
+  const [saleDiscountError, setSaleDiscountError] = useState<string | null>(null);
 
   const [completedOrder, setCompletedOrder] = useState<OrderDto | null>(null);
   const [completedOrderId, setCompletedOrderId] = useState<number | null>(null);
@@ -444,9 +495,6 @@ export function PosOrderBuilder({
   const [adjustmentFormError, setAdjustmentFormError] = useState<string | null>(null);
   const [isApplyingAdjustment, setIsApplyingAdjustment] = useState(false);
   const [adjustmentSuccess, setAdjustmentSuccess] = useState<string | null>(null);
-  const [discountType, setDiscountType] = useState<DiscountType>("PERCENTAGE");
-  const [discountValueInput, setDiscountValueInput] = useState("");
-  const [discountValueError, setDiscountValueError] = useState<string | null>(null);
 
   const selectedPeriod = useMemo(
     () => periods.find((p) => p.id === selectedPeriodId) ?? null,
@@ -555,7 +603,15 @@ export function PosOrderBuilder({
     [paymentEntries],
   );
 
-  const remainingToPayCents = Math.max(0, draftTotalCents - totalPaidCents);
+  const appliedDiscountCents = saleDiscount
+    ? saleDiscountCents(saleDiscount.type, saleDiscount.value, draftTotalCents)
+    : 0;
+  // Payments must add up to the discounted total.
+  const payableCents = Math.max(0, draftTotalCents - appliedDiscountCents);
+  const draftDiscountValue = Number.parseFloat(saleDiscountDraftValue);
+  const draftDiscountCents = saleDiscountCents(saleDiscountDraftType, draftDiscountValue, draftTotalCents);
+
+  const remainingToPayCents = Math.max(0, payableCents - totalPaidCents);
   const remainingToPay = remainingToPayCents / 100;
 
   const hasAccountEntry = paymentEntries.some((entry) => entry.method === "ACCOUNT");
@@ -606,30 +662,6 @@ export function PosOrderBuilder({
     remainingToPayCents,
     selectedAccountId,
   ]);
-
-  const discountValue = useMemo(() => {
-    const parsed = Number.parseFloat(discountValueInput);
-    return Number.isFinite(parsed) ? parsed : 0;
-  }, [discountValueInput]);
-
-  const discountPreview = useMemo(() => {
-    const targetOrder = receiptOrder ?? completedOrder;
-    if (!targetOrder) return { amount: 0, newTotal: 0 };
-
-    const currentTotal = targetOrder.total ?? 0;
-    if (discountType === "PERCENTAGE") {
-      const amount = Math.round(((currentTotal * discountValue) / 100) * 100) / 100;
-      return {
-        amount,
-        newTotal: Math.max(0, currentTotal - amount),
-      };
-    }
-
-    return {
-      amount: discountValue,
-      newTotal: Math.max(0, currentTotal - discountValue),
-    };
-  }, [completedOrder, discountType, discountValue, receiptOrder]);
 
   const canConfirmPayment =
     draftLines.length > 0 &&
@@ -717,7 +749,55 @@ export function PosOrderBuilder({
     );
   };
 
+  const resetSaleDiscount = () => {
+    setSaleDiscount(null);
+    setShowSaleDiscountForm(false);
+    setSaleDiscountDraftType("PERCENTAGE");
+    setSaleDiscountDraftValue("");
+    setSaleDiscountDraftReason("PROMOTION");
+    setSaleDiscountDraftNote("");
+    setSaleDiscountError(null);
+  };
+
+  // Client-side checks mirror the server rules; the server still decides.
+  const validateSaleDiscountDraft = (): string | null => {
+    if (!Number.isFinite(draftDiscountValue) || draftDiscountValue <= 0) return "Enter a discount greater than zero.";
+    if (saleDiscountDraftType === "PERCENTAGE" && draftDiscountValue >= 100) return "A percentage discount must be below 100%.";
+    if (draftDiscountCents <= 0) return "This discount works out to R0,00. Increase it.";
+    if (draftDiscountCents >= draftTotalCents) return "A discount can't make the order free. It must be less than the order total.";
+    if (saleDiscountDraftReason === "OTHER" && !saleDiscountDraftNote.trim()) return "A note is required when the reason is Other.";
+    return null;
+  };
+
+  const applySaleDiscount = () => {
+    const error = validateSaleDiscountDraft();
+    if (error) {
+      setSaleDiscountError(error);
+      return;
+    }
+    const approved: SaleDiscount = {
+      type: saleDiscountDraftType,
+      value: draftDiscountValue,
+      reasonCode: saleDiscountDraftReason,
+      note: saleDiscountDraftNote.trim(),
+    };
+    // Every discount needs a manager PIN, even for an admin at the till.
+    requestManagementSession(
+      () => {
+        setSaleDiscount(approved);
+        setShowSaleDiscountForm(false);
+        setSaleDiscountError(null);
+      },
+      {
+        title: "Manager PIN Required",
+        description: "Enter a manager PIN to approve this discount.",
+        submitLabel: "Approve Discount",
+      },
+    );
+  };
+
   const clearDraft = () => {
+    resetSaleDiscount();
     setDraftLines([]);
     setSubmissionError(null);
     setShowPayment(false);
@@ -1018,8 +1098,23 @@ export function PosOrderBuilder({
     [authFetch],
   );
 
-  const submitOrder = async () => {
+  // discountSessionToken: the manager session approving a discount at sale.
+  const submitOrder = async (discountSessionToken?: string) => {
     if (!canConfirmPayment) return;
+
+    if (saleDiscount && !discountSessionToken) {
+      if (appliedDiscountCents <= 0 || appliedDiscountCents >= draftTotalCents) {
+        setSaleDiscountError("A discount can't make the order free. It must be less than the order total.");
+        return;
+      }
+      // Reuses an active management session, or asks for the PIN if it has expired.
+      requestManagementSession((token) => void submitOrder(token), {
+        title: "Manager PIN Required",
+        description: "Management mode has expired. Enter a manager PIN to approve this discount.",
+        submitLabel: "Approve & Charge",
+      });
+      return;
+    }
 
     setIsSubmitting(true);
     setSubmissionError(null);
@@ -1050,6 +1145,16 @@ export function PosOrderBuilder({
       })),
     };
 
+    if (saleDiscount && discountSessionToken) {
+      payload.discount = {
+        type: saleDiscount.type,
+        value: saleDiscount.value,
+        reasonCode: saleDiscount.reasonCode,
+        note: saleDiscount.note || null,
+        authorization: { sessionToken: discountSessionToken },
+      };
+    }
+
     try {
       const res = await authFetch("/orders", {
         method: "POST",
@@ -1074,6 +1179,21 @@ export function PosOrderBuilder({
           await refetchShift();
           return;
         }
+        if (errorCode === "AUTHORIZATION_INVALID") {
+          // No order was created. Ask for the PIN again and resubmit the same cart.
+          invalidateManagementSession();
+          setSubmissionError("The manager approval was rejected or has expired. Enter the PIN again to charge.");
+          requestManagementSession((token) => void submitOrder(token), {
+            title: "Manager PIN Required",
+            description: "Enter a manager PIN to approve this discount.",
+            submitLabel: "Approve & Charge",
+          });
+          return;
+        }
+        if (errorCode === "DISCOUNT_INVALID" || errorCode === "DISCOUNT_TOO_LARGE") {
+          setSaleDiscountError(parseMessage(body, "This discount isn't allowed. Change or remove it."));
+          throw new Error("The discount was refused. Change or remove it, then charge again.");
+        }
 
         if (res.status === 409) {
           applyConflictFeedback(body);
@@ -1089,6 +1209,7 @@ export function PosOrderBuilder({
       setCompletedOrder(order);
       setReceiptOrder(null);
       setReceiptError(null);
+      resetSaleDiscount();
       setDraftLines([]);
       setShowPayment(false);
       setPaymentMethod("CASH");
@@ -1116,17 +1237,6 @@ export function PosOrderBuilder({
     setAdjustmentFormError(null);
     setAdjustmentError(null);
     setAdjustmentSuccess(null);
-    setDiscountValueError(null);
-  };
-
-  const beginDiscount = () => {
-    setRequestedAction("DISCOUNT");
-    setAdjustmentScope(null);
-    setShowAdjustmentForm(true);
-    setAdjustmentFormError(null);
-    setAdjustmentError(null);
-    setAdjustmentSuccess(null);
-    setDiscountValueError(null);
   };
 
   const submitOrderAdjustment = useCallback(
@@ -1135,7 +1245,6 @@ export function PosOrderBuilder({
 
       setIsApplyingAdjustment(true);
       setAdjustmentError(null);
-      setDiscountValueError(null);
 
       try {
         const payload: Record<string, unknown> = {
@@ -1143,14 +1252,8 @@ export function PosOrderBuilder({
           reasonCode: adjustmentReasonCode,
           note: adjustmentNote.trim() || undefined,
           sessionToken,
+          scope: adjustmentScope,
         };
-
-        if (requestedAction === "CANCEL") {
-          payload.scope = adjustmentScope;
-        } else {
-          payload.discountType = discountType;
-          payload.discountValue = discountValue;
-        }
 
         const adjustmentRes = await authFetch(`/orders/${order.id}/adjustments`, {
           method: "POST",
@@ -1164,7 +1267,15 @@ export function PosOrderBuilder({
 
         if (!adjustmentRes.ok) {
           const parsedMessage = parseMessage(adjustmentBody, "Unable to apply management action.");
+          const errorCode = (adjustmentBody as ApiErrorPayload | null)?.code;
 
+          if (errorCode === "DISCOUNTED_ORDER_NOT_REFUNDABLE") {
+            setShowAdjustmentForm(false);
+            setAdjustmentError("This order was discounted at sale, so it can't be refunded or have extras removed.");
+            return;
+          }
+
+          // AUTHORIZATION_INVALID (or an older 401): the management session is no good; ask for the PIN again.
           if (adjustmentRes.status === 401) {
             invalidateManagementSession();
             requestManagementSession(
@@ -1179,7 +1290,7 @@ export function PosOrderBuilder({
             return;
           }
 
-          if ((adjustmentBody as ApiErrorPayload | null)?.code === "NO_OPEN_SHIFT") {
+          if (errorCode === "NO_OPEN_SHIFT") {
             setShowAdjustmentForm(false);
             setAdjustmentError("The shift was closed. Open a new one to continue.");
             return;
@@ -1195,11 +1306,7 @@ export function PosOrderBuilder({
 
           if (adjustmentRes.status === 400) {
             await loadOrderReceipt(order.id);
-            if (requestedAction === "DISCOUNT") {
-              setDiscountValueError(parsedMessage);
-            } else {
-              setAdjustmentError(parsedMessage);
-            }
+            setAdjustmentError(parsedMessage);
             return;
           }
 
@@ -1213,41 +1320,34 @@ export function PosOrderBuilder({
         setReceiptOrder(updatedOrder);
         await loadTodayOrders();
 
-        if (requestedAction === "DISCOUNT") {
-          const discountAmount = recent?.amount ?? discountPreview.amount;
-          setAdjustmentSuccess(
-            `Discount applied: ${toMoney(discountAmount)}. New total ${toMoney(updatedOrder.total)}.`,
-          );
-        } else {
-          const amount = recent?.amount ?? Math.max(0, (order.total ?? 0) - (updatedOrder.total ?? 0));
-          const action = recent?.action ?? (updatedOrder.status === "VOIDED" ? "VOID" : "REFUND");
-          const scope = recent?.scope ?? adjustmentScope;
-          const usesCard = (order.payments ?? []).some((payment) => payment.method === "CARD");
+        const amount = recent?.amount ?? Math.max(0, (order.total ?? 0) - (updatedOrder.total ?? 0));
+        const action = recent?.action ?? (updatedOrder.status === "VOIDED" ? "VOID" : "REFUND");
+        const scope = recent?.scope ?? adjustmentScope;
+        const usesCard = (order.payments ?? []).some((payment) => payment.method === "CARD");
 
-          const payoutInstruction =
-            recent?.refundMethod === "ACCOUNT_BALANCE"
-              ? `Credited to ${getAccountName(recent.accountId) ?? "linked account"} - no cash or card action needed.`
-              : `Hand back ${toMoney(amount)} in cash.${usesCard ? " Originally paid by card - refund is cash." : ""}`;
+        const payoutInstruction =
+          recent?.refundMethod === "ACCOUNT_BALANCE"
+            ? `Credited to ${getAccountName(recent.accountId) ?? "linked account"} - no cash or card action needed.`
+            : `Hand back ${toMoney(amount)} in cash.${usesCard ? " Originally paid by card - refund is cash." : ""}`;
 
-          if (action === "VOID") {
-            if (scope === "WHOLE_ORDER") {
-              const portionsReturned = getTotalMealPortions(order);
-              const extraUnitsReturned = getUnadjustedExtraUnits(order);
-              const extraSuffix = extraUnitsReturned > 0 ? ` and ${extraUnitsReturned} extra units` : "";
-              setAdjustmentSuccess(
-                `${adjustmentActionLabel(action)} ${toMoney(amount)}. ${portionsReturned} portions${extraSuffix} returned to today's stock. ${payoutInstruction}`,
-              );
-            } else {
-              const extraUnitsReturned = getUnadjustedExtraUnits(order);
-              const detail =
-                extraUnitsReturned > 0
-                  ? `${extraUnitsReturned} extra units returned to today's stock.`
-                  : "Extras were removed and today's stock was restored.";
-              setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. ${detail} ${payoutInstruction}`);
-            }
+        if (action === "VOID") {
+          if (scope === "WHOLE_ORDER") {
+            const portionsReturned = getTotalMealPortions(order);
+            const extraUnitsReturned = getUnadjustedExtraUnits(order);
+            const extraSuffix = extraUnitsReturned > 0 ? ` and ${extraUnitsReturned} extra units` : "";
+            setAdjustmentSuccess(
+              `${adjustmentActionLabel(action)} ${toMoney(amount)}. ${portionsReturned} portions${extraSuffix} returned to today's stock. ${payoutInstruction}`,
+            );
           } else {
-            setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. No stock was restored. ${payoutInstruction}`);
+            const extraUnitsReturned = getUnadjustedExtraUnits(order);
+            const detail =
+              extraUnitsReturned > 0
+                ? `${extraUnitsReturned} extra units returned to today's stock.`
+                : "Extras were removed and today's stock was restored.";
+            setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. ${detail} ${payoutInstruction}`);
           }
+        } else {
+          setAdjustmentSuccess(`${adjustmentActionLabel(action)} ${toMoney(amount)}. No stock was restored. ${payoutInstruction}`);
         }
 
         setShowAdjustmentForm(false);
@@ -1262,9 +1362,6 @@ export function PosOrderBuilder({
       adjustmentReasonCode,
       adjustmentScope,
       authFetch,
-      discountPreview.amount,
-      discountType,
-      discountValue,
       invalidateManagementSession,
       loadOrderReceipt,
       loadTodayOrders,
@@ -1287,30 +1384,7 @@ export function PosOrderBuilder({
         return;
       }
 
-      if (requestedAction === "DISCOUNT") {
-        if (discountValue <= 0) {
-          setDiscountValueError("Enter a discount value greater than zero.");
-          return;
-        }
-
-        if (discountType === "PERCENTAGE" && (discountValue <= 0 || discountValue > 100)) {
-          setDiscountValueError("Percentage discounts must be greater than 0 and no more than 100.");
-          return;
-        }
-
-        if (discountType === "FIXED_AMOUNT" && discountValue > order.total) {
-          setDiscountValueError("Discount cannot exceed the current order total.");
-          return;
-        }
-
-        if (discountPreview.amount > order.total) {
-          setDiscountValueError("Discount cannot exceed the current order total.");
-          return;
-        }
-      }
-
       setAdjustmentFormError(null);
-      setDiscountValueError(null);
 
       requestManagementSession(
         async (token) => {
@@ -1326,9 +1400,6 @@ export function PosOrderBuilder({
       adjustmentNote,
       adjustmentReasonCode,
       adjustmentScope,
-      discountPreview.amount,
-      discountType,
-      discountValue,
       requestManagementSession,
       requestedAction,
       submitOrderAdjustment,
@@ -1352,14 +1423,12 @@ export function PosOrderBuilder({
       .reduce((sum, payment) => sum + (payment.changeDue ?? 0), 0);
     const recentAdjustment = latestAdjustment(shownOrder);
     const terminalOrder = isTerminalOrderStatus(shownOrder.status);
-    const canRemoveExtras = hasAnyUnadjustedExtras(shownOrder);
+    // A discounted sale can only be voided while PENDING; refunds and removing extras are refused.
+    const discountedAtSale = (shownOrder.saleDiscount ?? 0) > 0;
+    const canCancelOrder = !discountedAtSale || shownOrder.status === "PENDING";
+    const canRemoveExtras = !discountedAtSale && hasAnyUnadjustedExtras(shownOrder);
     const managementReady = managementSessionActive && Boolean(managementSessionToken);
-    const selectedActionLabel =
-      requestedAction === "DISCOUNT"
-        ? "Apply Discount"
-        : adjustmentScope === "WHOLE_ORDER"
-          ? "Cancel Order"
-          : "Remove Extras";
+    const selectedActionLabel = adjustmentScope === "WHOLE_ORDER" ? "Cancel Order" : "Remove Extras";
     return (
       <>
       <main className="grid flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[1.2fr_0.8fr]">
@@ -1387,8 +1456,29 @@ export function PosOrderBuilder({
           <div className="mt-8 grid gap-2 text-sm text-emerald-100">
             {shownOrder.status && <p>Status: {shownOrder.status.replace("_", " ")}</p>}
             <p>Subtotal: {toMoney(shownOrder.subtotal)}</p>
-            <p>Total: {toMoney(shownOrder.total)}</p>
-            {typeof shownOrder.originalTotal === "number" && <p>Original Total: {toMoney(shownOrder.originalTotal)}</p>}
+            {(shownOrder.saleDiscount ?? 0) > 0 ? (
+              <>
+                {typeof shownOrder.preDiscountTotal === "number" && (
+                  <p>Total before discount: {toMoney(shownOrder.preDiscountTotal)}</p>
+                )}
+                <p>
+                  Discount
+                  {shownOrder.discount
+                    ? ` (${shownOrder.discount.type === "PERCENTAGE" ? `${shownOrder.discount.value}%` : "fixed"} · ${saleDiscountReasonLabel(shownOrder.discount.reasonCode)})`
+                    : ""}
+                  : −{toMoney(shownOrder.saleDiscount ?? 0)}
+                </p>
+                {shownOrder.discount?.authorizedBy && <p>Discount approved by: {shownOrder.discount.authorizedBy.name}</p>}
+                {typeof shownOrder.originalTotal === "number" && (
+                  <p className="font-semibold">Amount paid: {toMoney(shownOrder.originalTotal)}</p>
+                )}
+              </>
+            ) : (
+              typeof shownOrder.originalTotal === "number" && <p>Amount paid: {toMoney(shownOrder.originalTotal)}</p>
+            )}
+            {(typeof shownOrder.originalTotal !== "number" || toCents(shownOrder.originalTotal) !== toCents(shownOrder.total)) && (
+              <p>Total after adjustments: {toMoney(shownOrder.total)}</p>
+            )}
             {shownPayments.length > 0 && (
               <div className="rounded-lg border border-emerald-200/20 bg-emerald-500/10 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wider text-emerald-200">Payments</p>
@@ -1529,8 +1619,9 @@ export function PosOrderBuilder({
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
+                  disabled={!canCancelOrder}
                   onClick={() => beginAdjustment("WHOLE_ORDER")}
-                  className="rounded-lg border border-rose-300/40 bg-rose-500/20 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/30"
+                  className="rounded-lg border border-rose-300/40 bg-rose-500/20 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Cancel Order
                 </button>
@@ -1542,78 +1633,24 @@ export function PosOrderBuilder({
                 >
                   Remove Extras
                 </button>
-                <button
-                  type="button"
-                  onClick={beginDiscount}
-                  className="rounded-lg border border-blue-300/40 bg-blue-500/20 px-3 py-2 text-sm font-semibold text-blue-50 hover:bg-blue-500/30"
-                >
-                  Apply Discount
-                </button>
               </div>
 
-              {!canRemoveExtras && (
+              {discountedAtSale ? (
                 <p className="mt-2 text-xs text-amber-100/80">
-                  Remove Extras is unavailable because this order has no removable extras.
+                  This order was discounted at sale, so it can&apos;t be refunded or have extras removed.
+                  {canCancelOrder ? " It can still be cancelled while pending." : ""}
                 </p>
+              ) : (
+                !canRemoveExtras && (
+                  <p className="mt-2 text-xs text-amber-100/80">
+                    Remove Extras is unavailable because this order has no removable extras.
+                  </p>
+                )
               )}
 
               {showAdjustmentForm && (
                 <div className="mt-4 rounded-xl border border-amber-300/30 bg-slate-950/50 p-4">
                   <p className="text-sm font-semibold text-white">{selectedActionLabel}</p>
-
-                  {requestedAction === "DISCOUNT" && (
-                    <div className="mt-3 space-y-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-                      <div className="flex flex-wrap gap-2">
-                        {(["PERCENTAGE", "FIXED_AMOUNT"] as const).map((type) => {
-                          const active = discountType === type;
-                          return (
-                            <button
-                              key={type}
-                              type="button"
-                              onClick={() => {
-                                setDiscountType(type);
-                                setDiscountValueError(null);
-                              }}
-                              className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
-                                active
-                                  ? "border-blue-300 bg-blue-500/25 text-blue-50"
-                                  : "border-slate-700 bg-slate-950 text-slate-200 hover:bg-slate-800"
-                              }`}
-                            >
-                              {type === "PERCENTAGE" ? "Percentage" : "Fixed Amount"}
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      <div>
-                        <label htmlFor="discount-value" className="text-xs font-medium text-slate-200">
-                          {discountType === "PERCENTAGE" ? "Discount Percentage" : "Discount Amount"}
-                        </label>
-                        <Input
-                          id="discount-value"
-                          type="number"
-                          min="0"
-                          step={discountType === "PERCENTAGE" ? "0.01" : "0.01"}
-                          value={discountValueInput}
-                          onChange={(event) => {
-                            setDiscountValueInput(event.target.value);
-                            setDiscountValueError(null);
-                          }}
-                          className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
-                          placeholder={discountType === "PERCENTAGE" ? "e.g. 10" : "e.g. 25.00"}
-                        />
-                        {discountValueError && (
-                          <p className="mt-2 text-xs text-rose-200">{discountValueError}</p>
-                        )}
-                      </div>
-
-                      <div className="rounded-lg border border-blue-300/20 bg-blue-500/10 p-3 text-sm text-blue-100">
-                        <p>Discount Preview: {toMoney(discountPreview.amount)}</p>
-                        <p className="mt-1 font-semibold">New Total: {toMoney(discountPreview.newTotal)}</p>
-                      </div>
-                    </div>
-                  )}
 
                   <AdjustmentReasonFields
                     reasonCode={adjustmentReasonCode}
@@ -1641,7 +1678,6 @@ export function PosOrderBuilder({
                       onClick={() => {
                         setShowAdjustmentForm(false);
                         setAdjustmentFormError(null);
-                        setDiscountValueError(null);
                       }}
                       className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
                     >
@@ -2032,10 +2068,30 @@ export function PosOrderBuilder({
             <span>Extras</span>
             <span>{toMoney(draftExtrasTotal)}</span>
           </div>
-          <div className="flex justify-between text-lg font-bold text-white">
-            <span>Total</span>
-            <span>{toMoney(draftTotal)}</span>
-          </div>
+          {saleDiscount ? (
+            <>
+              <div className="flex justify-between text-slate-300">
+                <span>Total before discount</span>
+                <span>{toMoney(draftTotal)}</span>
+              </div>
+              <div className="flex justify-between text-amber-200">
+                <span>
+                  Discount ({saleDiscount.type === "PERCENTAGE" ? `${saleDiscount.value}%` : "fixed"} ·{" "}
+                  {saleDiscountReasonLabel(saleDiscount.reasonCode)})
+                </span>
+                <span>−{toMoney(appliedDiscountCents / 100)}</span>
+              </div>
+              <div className="flex justify-between text-lg font-bold text-white">
+                <span>To pay</span>
+                <span>{toMoney(payableCents / 100)}</span>
+              </div>
+            </>
+          ) : (
+            <div className="flex justify-between text-lg font-bold text-white">
+              <span>Total</span>
+              <span>{toMoney(draftTotal)}</span>
+            </div>
+          )}
         </div>
 
         {!showPayment ? (
@@ -2047,7 +2103,7 @@ export function PosOrderBuilder({
               setSubmissionError(null);
               setCardReferenceError(null);
               setPaymentEntryError(null);
-              resetPaymentEditor(draftTotalCents);
+              resetPaymentEditor(payableCents);
             }}
             className="mt-4 w-full rounded-xl bg-emerald-500 px-4 py-3 text-base font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
           >
@@ -2059,6 +2115,145 @@ export function PosOrderBuilder({
               <p className="font-semibold">Remaining to pay: {toMoney(remainingToPay)}</p>
               <p className="text-xs text-emerald-100/80">Confirm payment is enabled only when this reaches zero.</p>
             </div>
+
+            {saleDiscount ? (
+              <div className="mb-3 flex items-start justify-between gap-3 rounded-lg border border-amber-300/30 bg-amber-500/10 p-3 text-sm text-amber-100">
+                <div>
+                  <p className="font-semibold">Discount approved: −{toMoney(appliedDiscountCents / 100)}</p>
+                  <p className="text-xs text-amber-100/80">
+                    {saleDiscount.type === "PERCENTAGE" ? `${saleDiscount.value}%` : "Fixed amount"} ·{" "}
+                    {saleDiscountReasonLabel(saleDiscount.reasonCode)}
+                    {saleDiscount.note ? ` · ${saleDiscount.note}` : ""}
+                  </p>
+                  {saleDiscountError && <p className="mt-1 text-xs text-rose-200">{saleDiscountError}</p>}
+                </div>
+                {paymentEntries.length === 0 && (
+                  <button
+                    type="button"
+                    onClick={resetSaleDiscount}
+                    className="shrink-0 rounded border border-rose-400/40 px-2 py-1 text-xs text-rose-200 hover:bg-rose-500/10"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ) : showSaleDiscountForm ? (
+              <div className="mb-3 space-y-3 rounded-lg border border-amber-300/30 bg-slate-900/70 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-amber-200">Discount (manager PIN required)</p>
+                <div className="flex gap-2">
+                  {(["PERCENTAGE", "FIXED_AMOUNT"] as const).map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      aria-pressed={saleDiscountDraftType === type}
+                      onClick={() => {
+                        setSaleDiscountDraftType(type);
+                        setSaleDiscountError(null);
+                      }}
+                      className={`rounded-lg border px-3 py-1.5 text-sm font-semibold ${
+                        saleDiscountDraftType === type
+                          ? "border-amber-300 bg-amber-500/20 text-amber-50"
+                          : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800"
+                      }`}
+                    >
+                      {type === "PERCENTAGE" ? "Percentage" : "Fixed amount"}
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <label htmlFor="sale-discount-value" className="text-xs font-medium text-slate-200">
+                    {saleDiscountDraftType === "PERCENTAGE" ? "Discount %" : "Discount amount (R)"}
+                  </label>
+                  <Input
+                    id="sale-discount-value"
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    value={saleDiscountDraftValue}
+                    onChange={(event) => {
+                      setSaleDiscountDraftValue(event.target.value);
+                      setSaleDiscountError(null);
+                    }}
+                    className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
+                    placeholder={saleDiscountDraftType === "PERCENTAGE" ? "e.g. 10" : "e.g. 10.00"}
+                  />
+                </div>
+                <div>
+                  <p className="text-xs font-medium text-slate-200">Reason</p>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {SALE_DISCOUNT_REASONS.map((reason) => (
+                      <button
+                        key={reason.value}
+                        type="button"
+                        aria-pressed={saleDiscountDraftReason === reason.value}
+                        onClick={() => {
+                          setSaleDiscountDraftReason(reason.value);
+                          setSaleDiscountError(null);
+                        }}
+                        className={`rounded-lg border px-2.5 py-1 text-xs font-semibold ${
+                          saleDiscountDraftReason === reason.value
+                            ? "border-amber-300 bg-amber-500/20 text-amber-50"
+                            : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800"
+                        }`}
+                      >
+                        {reason.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label htmlFor="sale-discount-note" className="text-xs font-medium text-slate-200">
+                    Note {saleDiscountDraftReason === "OTHER" ? "(required)" : "(optional)"}
+                  </label>
+                  <Input
+                    id="sale-discount-note"
+                    value={saleDiscountDraftNote}
+                    onChange={(event) => {
+                      setSaleDiscountDraftNote(event.target.value);
+                      setSaleDiscountError(null);
+                    }}
+                    className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
+                  />
+                </div>
+                <div className="rounded-md border border-slate-700 bg-slate-950/60 p-2 text-sm text-slate-200">
+                  <p>Discount: −{toMoney(draftDiscountCents / 100)}</p>
+                  <p className="font-semibold text-white">
+                    To pay: {toMoney(Math.max(0, draftTotalCents - draftDiscountCents) / 100)}
+                  </p>
+                </div>
+                {saleDiscountError && <p className="text-xs text-rose-200">{saleDiscountError}</p>}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSaleDiscountForm(false);
+                      setSaleDiscountError(null);
+                    }}
+                    className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={applySaleDiscount}
+                    className="rounded-lg bg-amber-400 px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300"
+                  >
+                    Approve with PIN
+                  </button>
+                </div>
+              </div>
+            ) : (
+              paymentEntries.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowSaleDiscountForm(true)}
+                  className="mb-3 rounded-lg border border-amber-300/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/20"
+                >
+                  Add Discount
+                </button>
+              )
+            )}
 
             {paymentEntries.length > 0 && (
               <div className="mb-3 space-y-2 rounded-lg border border-slate-800 bg-slate-900/70 p-3">
@@ -2295,6 +2490,7 @@ export function PosOrderBuilder({
               <button
                 type="button"
                 onClick={() => {
+                  resetSaleDiscount();
                   setShowPayment(false);
                   setPaymentEntries([]);
                   setPaymentAmountInput("");

@@ -288,12 +288,23 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
                 <SummaryTile label="Account sales" amount={activity.totals.salesByMethod.ACCOUNT} />
                 <SummaryTile label="Voids" count={activity.totals.voids.count} amount={activity.totals.voids.amount} />
                 <SummaryTile label="Refunds" count={activity.totals.refunds.count} amount={activity.totals.refunds.amount} />
-                <SummaryTile label="Discounts" count={activity.totals.discounts.count} amount={activity.totals.discounts.amount} />
+                <SummaryTile
+                  label="Discounts at sale"
+                  count={activity.totals.discounts.count}
+                  amount={activity.totals.discounts.amount}
+                />
                 <SummaryTile
                   label="Extras removed"
                   count={activity.totals.extrasRemoved.count}
                   amount={activity.totals.extrasRemoved.amount}
                 />
+                {activity.totals.legacyDiscountsAfterPayment && (
+                  <SummaryTile
+                    label="Discounts after payment (legacy)"
+                    count={activity.totals.legacyDiscountsAfterPayment.count}
+                    amount={activity.totals.legacyDiscountsAfterPayment.amount}
+                  />
+                )}
               </div>
 
               <div className="flex gap-1 border-b" role="tablist">
@@ -388,7 +399,14 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
                                 {humaniseCode(order.status)}
                               </TableCell>
                               <TableCell className="text-xs text-muted-foreground">
-                                {[order.discounted && "Discounted", order.extrasRemoved && "Extras removed"].filter(Boolean).join(", ") || "—"}
+                                {[
+                                  (order.saleDiscount ?? 0) > 0
+                                    ? `Discount at sale −${formatMoney(order.saleDiscount)}`
+                                    : order.discounted && "Discounted after payment (legacy)",
+                                  order.extrasRemoved && "Extras removed",
+                                ]
+                                  .filter(Boolean)
+                                  .join(", ") || "—"}
                               </TableCell>
                             </TableRow>
                           ))

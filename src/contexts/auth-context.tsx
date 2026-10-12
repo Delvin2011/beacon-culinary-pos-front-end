@@ -394,6 +394,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return initialResponse;
       }
 
+      // A 401 with a `code` (e.g. AUTHORIZATION_INVALID for a manager PIN) is a business error,
+      // not an expired login: refreshing can't fix it, and a second 401 would log the user out.
+      const errorBody = (await initialResponse.clone().json().catch(() => null)) as { code?: unknown } | null;
+      if (errorBody && typeof errorBody.code === "string") {
+        return initialResponse;
+      }
+
       const refreshedToken = await refreshToken();
       if (!refreshedToken) {
         return initialResponse;
