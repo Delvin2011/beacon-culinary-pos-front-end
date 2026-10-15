@@ -1,3 +1,5 @@
+import type { VatCode } from "@/lib/grv-vat";
+
 export type IngredientUnit = "KG" | "LITRE" | "EACH";
 
 export type QuantityMode =
@@ -46,6 +48,8 @@ export interface IngredientOption {
   unit: IngredientUnit;
   unitValue: number | null;
   itemCode: string | null;
+  // GRV only: pre-selects the line's VAT code.
+  defaultVatCode?: VatCode;
 }
 
 export interface LineItemRow {
@@ -64,6 +68,8 @@ export interface LineItemRow {
   // selected (see LineItemSheet's fetchExpectedQuantity prop), re-fetched if the location changes.
   expectedQuantity?: number | null;
   expectedQuantityLoading?: boolean;
+  // VAT mode (GRV) only.
+  vatCode?: VatCode;
 }
 
 export interface LineItemSubmitLine {
@@ -72,6 +78,7 @@ export interface LineItemSubmitLine {
   reason: string;
   unitValue: number | null;
   purchaseOrderLineId?: number | null;
+  vatCode?: VatCode;
 }
 
 export interface LineItemSheetSubmitPayload {
@@ -79,6 +86,8 @@ export interface LineItemSheetSubmitPayload {
   locationIds: number[];
   extraFields: Record<string, string>;
   lines: LineItemSubmitLine[];
+  // VAT mode (GRV) only: how the invoice was written, and its printed total.
+  vat?: { pricesIncludeVat: boolean; invoiceTotalInclVat: number | null };
 }
 
 export interface ReviewLine {

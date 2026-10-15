@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/hooks/use-auth";
+import { canManageStockTakes } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -49,7 +50,7 @@ export default function StockTakesQueuePage() {
       router.replace("/login");
       return;
     }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) {
+    if (!canManageStockTakes(user?.role)) {
       router.replace("/dashboard");
     }
   }, [authLoading, isAuthenticated, router, user]);
@@ -73,12 +74,12 @@ export default function StockTakesQueuePage() {
   }, [authFetch]);
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && canManageStockTakes(user?.role)) {
       void fetchQueue();
     }
   }, [fetchQueue, isAuthenticated, user]);
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) {
+  if (authLoading || !isAuthenticated || !canManageStockTakes(user?.role)) {
     return null;
   }
 

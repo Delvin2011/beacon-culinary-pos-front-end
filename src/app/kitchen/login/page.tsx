@@ -1,25 +1,38 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ShieldCheck } from "lucide-react";
+import { ChevronLeft, ShieldCheck } from "lucide-react";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { useAuth } from "@/hooks/use-auth";
 import { isKitchenAccessRole } from "@/lib/roles";
 
-const PIN_MAX_LENGTH = 6;
-const PIN_MIN_LENGTH = 4;
+// Shape returned by GET /users/login-tiles?screen=KITCHEN: kitchen staff and the Head Chef with a PIN set.
+interface LoginTile {
+  id: number;
+  name: string;
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
+const PIN_LENGTH = 6;
+
+function getInitials(name: string): string {
+  return name
+    .split(" ")
+    .map((word) => word[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
 
 export default function KitchenLoginPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading, user, pinLogin, error, clearError, logout } = useAuth();
 
-  const kitchenCashierId = useMemo(() => {
-    const raw = process.env.NEXT_PUBLIC_KITCHEN_CASHIER_ID ?? "4";
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 4;
-  }, []);
-
+  const [tiles, setTiles] = useState<LoginTile[]>([]);
+  const [tilesLoading, setTilesLoading] = useState(true);
+  const [tilesError, setTilesError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<LoginTile | null>(null);
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
@@ -37,11 +50,36 @@ export default function KitchenLoginPage() {
     logout();
   }, [isAuthenticated, isLoading, logout, router, user?.role]);
 
-  const submit = async () => {
-    if (submitting) return;
+  // Public, before login.
+  useEffect(() => {
+    setTilesLoading(true);
+    setTilesError(null);
+    fetch(`${API_BASE}/users/login-tiles?screen=KITCHEN`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const data = (await res.json()) as unknown;
+        if (!Array.isArray(data)) throw new Error("Unexpected response format");
+        setTiles(
+          (data as Record<string, unknown>[])
+            .filter((item) => typeof item.id === "number" && typeof item.name === "string")
+            .map((item) => ({ id: item.id as number, name: item.name as string })),
+        );
+      })
+      .catch(() => setTilesError("Could not load the kitchen staff list. Check the connection or contact an admin."))
+      .finally(() => setTilesLoading(false));
+  }, []);
 
-    if (pin.length < PIN_MIN_LENGTH || pin.length > PIN_MAX_LENGTH) {
-      setPinError("PIN must be 4 to 6 digits.");
+  const resetPin = () => {
+    setPin("");
+    setPinError(null);
+    if (error) clearError();
+  };
+
+  const submit = async () => {
+    if (submitting || !selected) return;
+
+    if (pin.length !== PIN_LENGTH) {
+      setPinError("PIN must be 6 digits.");
       return;
     }
 
@@ -50,7 +88,7 @@ export default function KitchenLoginPage() {
     if (error) clearError();
 
     try {
-      await pinLogin({ cashierId: kitchenCashierId, pin });
+      await pinLogin({ cashierId: selected.id, pin });
       router.replace("/kitchen");
     } catch {
       setPinError("Incorrect PIN.");
@@ -61,7 +99,7 @@ export default function KitchenLoginPage() {
   };
 
   useEffect(() => {
-    if (pin.length === PIN_MAX_LENGTH && !submitting) {
+    if (pin.length === PIN_LENGTH && !submitting) {
       void submit();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -83,46 +121,100 @@ export default function KitchenLoginPage() {
             <ShieldCheck className="h-7 w-7" />
           </div>
           <h1 className="text-2xl font-bold text-white">Kitchen Station</h1>
-          <p className="mt-1 text-sm text-slate-400">Enter PIN to open the live kitchen queue.</p>
-        </div>
-
-        <div className="mb-4 flex justify-center gap-3">
-          {Array.from({ length: PIN_MAX_LENGTH }).map((_, index) => (
-            <div
-              key={index}
-              className={[
-                "h-3.5 w-3.5 rounded-full border-2 transition-colors",
-                index < pin.length ? "border-white bg-white" : "border-slate-600 bg-transparent",
-              ].join(" ")}
-            />
-          ))}
-        </div>
-
-        {(pinError || error) && (
-          <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-center text-sm text-rose-200">
-            {pinError ?? error}
+          <p className="mt-1 text-sm text-slate-400">
+            {selected ? `Hi ${selected.name}. Enter your PIN to open the kitchen queue.` : "Tap your name to sign in."}
           </p>
+        </div>
+
+        {!selected ? (
+          <>
+            {tilesLoading && <p className="text-center text-sm text-slate-400 animate-pulse">Loading kitchen staff…</p>}
+            {tilesError && (
+              <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-center text-sm text-rose-200">
+                {tilesError}
+              </p>
+            )}
+            {!tilesLoading && !tilesError && tiles.length === 0 && (
+              <p className="rounded-xl border border-slate-700 bg-slate-800 px-4 py-3 text-center text-sm text-slate-400">
+                No kitchen staff with a PIN. An admin can set one on the Staff page.
+              </p>
+            )}
+            {tiles.length > 0 && (
+              <div className="grid grid-cols-2 gap-3">
+                {tiles.map((tile) => (
+                  <button
+                    key={tile.id}
+                    type="button"
+                    onClick={() => {
+                      setSelected(tile);
+                      resetPin();
+                    }}
+                    className="flex flex-col items-center gap-2 rounded-2xl bg-slate-800 p-4 transition-colors select-none hover:bg-slate-700 active:scale-95 active:bg-slate-600"
+                  >
+                    <span className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-lg font-bold text-white">
+                      {getInitials(tile.name)}
+                    </span>
+                    <span className="text-center text-sm font-medium leading-tight text-white">{tile.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setSelected(null);
+                resetPin();
+              }}
+              className="mb-4 flex items-center gap-1 text-sm text-slate-400 transition-colors hover:text-white"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Back
+            </button>
+
+            <div className="mb-4 flex justify-center gap-3">
+              {Array.from({ length: PIN_LENGTH }).map((_, index) => (
+                <div
+                  key={index}
+                  className={[
+                    "h-3.5 w-3.5 rounded-full border-2 transition-colors",
+                    index < pin.length ? "border-white bg-white" : "border-slate-600 bg-transparent",
+                  ].join(" ")}
+                />
+              ))}
+            </div>
+
+            {(pinError || error) && (
+              <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-center text-sm text-rose-200">
+                {pinError ?? error}
+              </p>
+            )}
+
+            <div className="flex justify-center">
+              <NumericKeypad
+                value={pin}
+                onChange={(value) => {
+                  setPin(value);
+                  if (pinError) setPinError(null);
+                  if (error) clearError();
+                }}
+                maxLength={PIN_LENGTH}
+                disabled={submitting}
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void submit()}
+              disabled={submitting || pin.length < PIN_LENGTH}
+              className="mt-4 w-full rounded-2xl bg-blue-500 py-3.5 text-base font-semibold text-white transition hover:bg-blue-400 active:bg-blue-600 disabled:pointer-events-none disabled:opacity-50"
+            >
+              {submitting ? "Signing in..." : "Open Kitchen Queue"}
+            </button>
+          </>
         )}
-
-        <NumericKeypad
-          value={pin}
-          onChange={(value) => {
-            setPin(value);
-            if (pinError) setPinError(null);
-            if (error) clearError();
-          }}
-          maxLength={PIN_MAX_LENGTH}
-          disabled={submitting}
-        />
-
-        <button
-          type="button"
-          onClick={() => void submit()}
-          disabled={submitting || pin.length < PIN_MIN_LENGTH}
-          className="mt-4 w-full rounded-2xl bg-blue-500 py-3.5 text-base font-semibold text-white transition hover:bg-blue-400 active:bg-blue-600 disabled:pointer-events-none disabled:opacity-50"
-        >
-          {submitting ? "Signing in..." : "Open Kitchen Queue"}
-        </button>
       </div>
     </div>
   );

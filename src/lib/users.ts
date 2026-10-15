@@ -8,7 +8,7 @@ export interface UserOption {
 // Exact match on purpose: STOCK_ADMIN also contains "ADMIN".
 const SHIFT_OWNER_ROLES = new Set(["CASHIER", "ADMIN"])
 
-// Parses GET /users (admin-only), accepting a plain array or a paged { content } body.
+// Parses GET /admin/staff (admin-only), accepting a plain array or a paged { content } body.
 export function toShiftOwnerOptions(body: unknown): UserOption[] {
   const list = Array.isArray(body)
     ? body

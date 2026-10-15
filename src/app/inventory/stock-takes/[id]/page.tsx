@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { canManageStockTakes } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -99,7 +100,7 @@ export default function StockTakeReviewPage() {
       router.replace("/login");
       return;
     }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) {
+    if (!canManageStockTakes(user?.role)) {
       router.replace("/dashboard");
     }
   }, [authLoading, isAuthenticated, router, user]);
@@ -132,7 +133,7 @@ export default function StockTakeReviewPage() {
   }, [authFetch, params.id]);
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && canManageStockTakes(user?.role)) {
       void fetchStockTake();
     }
   }, [fetchStockTake, isAuthenticated, user]);
@@ -179,7 +180,7 @@ export default function StockTakeReviewPage() {
     }
   };
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) {
+  if (authLoading || !isAuthenticated || !canManageStockTakes(user?.role)) {
     return null;
   }
 
@@ -260,7 +261,7 @@ export default function StockTakeReviewPage() {
                     <TableHead>Expected Qty</TableHead>
                     <TableHead>Actual Qty</TableHead>
                     <TableHead>Variance Qty</TableHead>
-                    <TableHead>Variance Value</TableHead>
+                    <TableHead>Variance Value (incl. VAT)</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>

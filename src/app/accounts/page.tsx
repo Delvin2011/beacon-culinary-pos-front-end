@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
+import { isAdminRole } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -77,7 +78,7 @@ export default function AccountsPage() {
       router.replace("/login");
       return;
     }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) {
+    if (!isAdminRole(user?.role)) {
       router.replace("/dashboard");
     }
   }, [authLoading, isAuthenticated, router, user]);
@@ -127,7 +128,7 @@ export default function AccountsPage() {
   );
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && isAdminRole(user?.role)) {
       void loadAccounts();
     }
   }, [isAuthenticated, loadAccounts, user]);
@@ -257,7 +258,7 @@ export default function AccountsPage() {
     }
   };
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) {
+  if (authLoading || !isAuthenticated || !isAdminRole(user?.role)) {
     return null;
   }
 

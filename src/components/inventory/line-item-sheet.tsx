@@ -9,6 +9,18 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useLocations } from "@/hooks/use-locations";
 import { formatZarCurrency } from "@/lib/utils";
 import { IngredientSearchSelect } from "@/components/inventory/ingredient-search-select";
+import {
+  InvoiceCheckChip,
+  PricesIncludeVatToggle,
+  VatCodeSelect,
+} from "@/components/inventory/grv-vat-controls";
+import {
+  computeVatLine,
+  parseOptionalAmount,
+  previewInvoiceCheck,
+  sumVatLines,
+  type VatLineFigures,
+} from "@/lib/grv-vat";
 import type {
   IngredientOption,
   LineItemColumnConfig,
@@ -58,6 +70,9 @@ interface LineItemSheetProps {
   // expectedActual mode only — fetches the live reference figure for a row the moment an
   // ingredient is selected, and again whenever the sheet's location changes.
   fetchExpectedQuantity?: (ingredientId: number, locationId: number) => Promise<number | null>;
+  // GRV: capture the invoice as written (incl./excl. VAT) with a VAT code per line and a live
+  // VAT preview. standardRate is null until GET /admin/settings/vat answers.
+  vat?: { standardRate: number | null };
 }
 
 export function LineItemSheet({
@@ -74,7 +89,12 @@ export function LineItemSheet({
   onSubmit,
   renderAboveLines,
   fetchExpectedQuantity,
+  vat,
 }: LineItemSheetProps) {
+  const isVat = vat !== undefined;
+  const standardRate = vat?.standardRate ?? null;
+  const [pricesIncludeVat, setPricesIncludeVat] = useState<boolean | null>(null);
+  const [invoiceTotalInput, setInvoiceTotalInput] = useState("");
   const { locations, loading: locationsLoading } = useLocations();
   const [rows, setRows] = useState<LineItemRow[]>([emptyRow(0)]);
   const [locationIds, setLocationIds] = useState<(number | null)[]>(
@@ -106,8 +126,12 @@ export function LineItemSheet({
   // expected figure instead of physically counting. Irrelevant to every other mode.
   const showReferenceColumns = !isExpectedActual || columnConfig.revealExpectedAndVariance !== false;
 
+  const defaultVatCodeFor = (ingredientId: number | null | undefined) =>
+    ingredientOptions.find((option) => option.id === ingredientId)?.defaultVatCode ?? "STANDARD";
+
   const addRow = (prefill?: Partial<LineItemRow>) => {
-    setRows((prev) => [...prev, { ...emptyRow(prev.length), ...prefill }]);
+    const vatPrefill = isVat && prefill?.vatCode === undefined ? { vatCode: defaultVatCodeFor(prefill?.ingredientId) } : {};
+    setRows((prev) => [...prev, { ...emptyRow(prev.length), ...prefill, ...vatPrefill }]);
   };
 
   const updateRow = (clientId: string, patch: Partial<LineItemRow>) => {
@@ -172,6 +196,18 @@ export function LineItemSheet({
     return varQty * unitValue;
   };
 
+  // Live VAT preview, using the backend's rules. Null until the basis and rate are known.
+  const vatFigures = (row: LineItemRow): VatLineFigures | null => {
+    if (!isVat || standardRate === null || pricesIncludeVat === null || row.ingredientId === null) return null;
+    if (row.unitValue.trim() === "" || row.quantity.trim() === "") return null;
+    return computeVatLine(Number(row.quantity), Number(row.unitValue), pricesIncludeVat, row.vatCode ?? "STANDARD", standardRate);
+  };
+  const vatTotals = isVat ? sumVatLines(rows.map(vatFigures)) : null;
+  const vatPreviewReady = isVat && standardRate !== null && pricesIncludeVat !== null;
+  const printedInvoiceTotal = parseOptionalAmount(invoiceTotalInput);
+  const invoiceCheck =
+    vatPreviewReady && vatTotals ? previewInvoiceCheck(printedInvoiceTotal, vatTotals.totalInclVat) : null;
+
   const totals = useMemo(() => {
     return rows.reduce(
       (acc, row) => {
@@ -203,6 +239,15 @@ export function LineItemSheet({
       }
     }
 
+    if (isVat && pricesIncludeVat === null) {
+      setError("Choose whether the prices on this invoice include or exclude VAT.");
+      return;
+    }
+    if (isVat && invoiceTotalInput.trim() !== "" && (printedInvoiceTotal === null || printedInvoiceTotal < 0)) {
+      setError("Enter the invoice total as a number, or leave it blank.");
+      return;
+    }
+
     const completeRows = rows.filter((row) => row.ingredientId !== null && row.quantity.trim() !== "");
 
     if (completeRows.length === 0) {
@@ -221,6 +266,13 @@ export function LineItemSheet({
         setError(`Reason is required for ${row.ingredientName}.`);
         return;
       }
+      if (isVat) {
+        const price = Number(row.unitValue);
+        if (row.unitValue.trim() === "" || !Number.isFinite(price) || price < 0) {
+          setError(`Enter the unit price for ${row.ingredientName} as written on the invoice.`);
+          return;
+        }
+      }
     }
 
     setSubmitting(true);
@@ -235,7 +287,12 @@ export function LineItemSheet({
           reason: row.reason.trim(),
           unitValue: row.unitValue.trim() === "" ? null : Number(row.unitValue),
           purchaseOrderLineId: row.purchaseOrderLineId ?? null,
+          vatCode: isVat ? row.vatCode ?? "STANDARD" : undefined,
         })),
+        vat:
+          isVat && pricesIncludeVat !== null
+            ? { pricesIncludeVat, invoiceTotalInclVat: printedInvoiceTotal }
+            : undefined,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to submit.");
@@ -252,8 +309,10 @@ export function LineItemSheet({
     ? quantityMode.label
     : "Qty";
   const expectedLabel = isExpectedActual ? quantityMode.expectedLabel : "Expected";
-  const unitValueLabel = columnConfig.unitValueLabel ?? "Unit Value";
+  // Stock values are VAT-inclusive, so the default labels say so.
+  const unitValueLabel = columnConfig.unitValueLabel ?? "Unit Value (incl. VAT)";
   const columnCount =
+    (isVat ? 4 : 0) + // VAT code, Line excl., VAT, Line incl.
     2 + // Item, UoM
     (showReferenceColumns ? 1 : 0) + // Unit Value
     (isOrderedReceived ? 1 : 0) + // Ordered
@@ -340,6 +399,46 @@ export function LineItemSheet({
         ))}
       </div>
 
+      {isVat && (
+        <div className="grid gap-4 rounded-lg border p-4 md:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label id="grv-prices-basis-label">
+              Prices on this invoice <span className="text-destructive">*</span>
+            </Label>
+            <div>
+              <PricesIncludeVatToggle value={pricesIncludeVat} onChange={setPricesIncludeVat} labelId="grv-prices-basis-label" />
+            </div>
+            {pricesIncludeVat === null && (
+              <p className="text-xs text-muted-foreground">Required. Check the invoice: a wrong choice misstates cost by the VAT rate.</p>
+            )}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="grv-invoice-total">Invoice total incl. VAT (as printed, optional)</Label>
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                id="grv-invoice-total"
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={invoiceTotalInput}
+                onChange={(event) => setInvoiceTotalInput(event.target.value)}
+                className="w-36"
+              />
+              {printedInvoiceTotal !== null && vatPreviewReady && vatTotals && (
+                <>
+                  <span className="text-sm text-muted-foreground">Computed {formatZarCurrency(vatTotals.totalInclVat)}</span>
+                  <InvoiceCheckChip check={invoiceCheck} />
+                </>
+              )}
+            </div>
+            {standardRate === null && (
+              <p className="text-xs text-muted-foreground">VAT rate unavailable: the preview is hidden, but VAT is still worked out on save.</p>
+            )}
+          </div>
+        </div>
+      )}
+
       {renderAboveLines?.({ rows, addRow })}
 
       <div className="space-y-3">
@@ -350,6 +449,9 @@ export function LineItemSheet({
           </Button>
         </div>
 
+        {isVat && pricesIncludeVat === null && (
+          <p className="text-xs text-muted-foreground">Choose how the invoice prices are written to see the VAT breakdown.</p>
+        )}
         <Table>
           <TableHeader>
             <TableRow>
@@ -363,10 +465,18 @@ export function LineItemSheet({
               {isExpectedActual && showReferenceColumns && (
                 <>
                   <TableHead>Variance Qty</TableHead>
-                  <TableHead>Variance Value</TableHead>
+                  <TableHead>Variance Value (incl. VAT)</TableHead>
                 </>
               )}
-              {columnConfig.showLineValue && <TableHead>Line Value</TableHead>}
+              {isVat && (
+                <>
+                  <TableHead>VAT</TableHead>
+                  <TableHead className="text-right">Line excl. VAT</TableHead>
+                  <TableHead className="text-right">VAT amount</TableHead>
+                  <TableHead className="text-right">Line incl. VAT</TableHead>
+                </>
+              )}
+              {columnConfig.showLineValue && <TableHead>Line Value (incl. VAT)</TableHead>}
               {columnConfig.reasonRequirement !== "hidden" && <TableHead>{columnConfig.reasonLabel ?? "Reason"}</TableHead>}
               <TableHead className="w-16" />
             </TableRow>
@@ -384,6 +494,7 @@ export function LineItemSheet({
                 const rowVariance = variance(row);
                 const rowVarianceQty = isExpectedActual ? varianceQuantity(row) : null;
                 const rowVarianceValue = isExpectedActual ? varianceValue(row) : null;
+                const rowVat = vatFigures(row);
                 return (
                   <TableRow key={row.clientId}>
                     <TableCell className="min-w-[200px]">
@@ -396,6 +507,7 @@ export function LineItemSheet({
                             ingredientName: ingredient.name,
                             unit: ingredient.unit,
                             unitValue: ingredient.unitValue !== null ? String(ingredient.unitValue) : "",
+                            ...(isVat ? { vatCode: ingredient.defaultVatCode ?? "STANDARD" } : {}),
                           });
                           if (isExpectedActual && fetchExpectedQuantity && primaryLocationId !== null) {
                             void loadExpectedQuantity(row.clientId, ingredient.id, primaryLocationId);
@@ -484,6 +596,20 @@ export function LineItemSheet({
                         </TableCell>
                       </>
                     )}
+                    {isVat && (
+                      <>
+                        <TableCell>
+                          <VatCodeSelect
+                            value={row.vatCode ?? "STANDARD"}
+                            onChange={(vatCode) => updateRow(row.clientId, { vatCode })}
+                            standardRate={standardRate}
+                          />
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">{rowVat ? formatZarCurrency(rowVat.lineExclVat) : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums">{rowVat ? formatZarCurrency(rowVat.lineVat) : "—"}</TableCell>
+                        <TableCell className="text-right tabular-nums">{rowVat ? formatZarCurrency(rowVat.lineInclVat) : "—"}</TableCell>
+                      </>
+                    )}
                     {columnConfig.showLineValue && (
                       <TableCell>{value !== null ? value.toFixed(2) : "—"}</TableCell>
                     )}
@@ -519,6 +645,20 @@ export function LineItemSheet({
                   <>
                     <TableCell />
                     <TableCell />
+                  </>
+                )}
+                {isVat && (
+                  <>
+                    <TableCell />
+                    <TableCell className="text-right tabular-nums">
+                      {vatPreviewReady && vatTotals ? formatZarCurrency(vatTotals.totalExclVat) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {vatPreviewReady && vatTotals ? formatZarCurrency(vatTotals.totalVat) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {vatPreviewReady && vatTotals ? formatZarCurrency(vatTotals.totalInclVat) : "—"}
+                    </TableCell>
                   </>
                 )}
                 {columnConfig.showLineValue && <TableCell>{totals.value.toFixed(2)}</TableCell>}

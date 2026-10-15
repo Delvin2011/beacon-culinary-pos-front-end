@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { canManageInventory } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -69,7 +70,7 @@ export default function PurchaseOrderDetailPage() {
       router.replace("/login");
       return;
     }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) {
+    if (!canManageInventory(user?.role)) {
       router.replace("/dashboard");
     }
   }, [authLoading, isAuthenticated, router, user]);
@@ -93,12 +94,12 @@ export default function PurchaseOrderDetailPage() {
   }, [authFetch, params.id]);
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && canManageInventory(user?.role)) {
       void fetchPurchaseOrder();
     }
   }, [fetchPurchaseOrder, isAuthenticated, user]);
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) {
+  if (authLoading || !isAuthenticated || !canManageInventory(user?.role)) {
     return null;
   }
 

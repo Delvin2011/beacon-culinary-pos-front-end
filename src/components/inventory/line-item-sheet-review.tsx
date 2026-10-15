@@ -143,7 +143,7 @@ export function LineItemSheetReview({
       },
       {
         accessorKey: "unitValue",
-        header: sortableHeader("Unit Value"),
+        header: sortableHeader("Unit Value (incl. VAT)"),
         cell: ({ row }) => (row.original.unitValue !== null ? row.original.unitValue.toFixed(2) : "—"),
       },
       {
@@ -188,7 +188,7 @@ export function LineItemSheetReview({
     if (columnConfig.showLineValue) {
       cols.push({
         id: "lineValue",
-        header: sortableHeader("Line Value"),
+        header: sortableHeader("Line Value (incl. VAT)"),
         accessorFn: (line) => lineValue(line) ?? null,
         cell: ({ getValue }) => {
           const value = getValue<number | null | undefined>();

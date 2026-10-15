@@ -150,8 +150,8 @@ export default function PosActivityPage() {
 
   useEffect(() => {
     if (!isAuthenticated || !isAdmin) return
-    // Admin-only user list; shift owners are cashiers or admins. (/users/cashiers excludes admins.)
-    authFetch("/users")
+    // Shift owners are cashiers or admins; /admin/staff lists every staff member, inactive ones included.
+    authFetch("/admin/staff")
       .then(async (res) => (res.ok ? ((await res.json()) as unknown) : []))
       .then((body) => setCashiers(toShiftOwnerOptions(body)))
       .catch(() => setCashiers([]))

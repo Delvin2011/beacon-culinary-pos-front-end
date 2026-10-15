@@ -56,7 +56,7 @@ type VarianceDecision = {
   direction: "OVER" | "SHORT" | "EVEN";
 };
 
-const MAX_CASH_DIGITS = 7;
+const MAX_CASH_DIGITS = 9; // cents, up to R9,999,999.99
 
 const VARIANCE_REASON_OPTIONS: Array<{ value: VarianceReasonCode; label: string }> = [
   { value: "CASH_COUNTING_ERROR", label: "Cash Counting Error" },
@@ -151,15 +151,17 @@ function PosMainContent() {
     return fallback;
   }, []);
 
+  // Keypad digits are cents, as on the payment keypad: "12345" -> R123.45.
   const toUnits = (raw: string): number => {
     if (!raw) return 0;
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed)) return 0;
-    return Math.max(0, parsed);
+    return Math.max(0, parsed) / 100;
   };
 
   const evaluateVariance = (expectedCash: number, countedCash: number): VarianceDecision => {
-    const variance = countedCash - expectedCash;
+    // Round to cents so float noise doesn't register as a variance.
+    const variance = Math.round((countedCash - expectedCash) * 100) / 100;
     if (Math.abs(variance) < 0.000001) {
       return { variance: 0, isZero: true, direction: "EVEN" };
     }

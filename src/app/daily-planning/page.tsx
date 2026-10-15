@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useAuth } from "@/hooks/use-auth"
+import { canManageMenu } from "@/lib/roles"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
@@ -180,7 +181,7 @@ export default function DailyPlanningPage() {
   useEffect(() => {
     if (authLoading) return
     if (!isAuthenticated) { router.replace("/login"); return }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) router.replace("/dashboard")
+    if (!canManageMenu(user?.role)) router.replace("/dashboard")
   }, [authLoading, isAuthenticated, user, router])
 
   const fetchPeriods = useCallback(async () => {
@@ -304,7 +305,7 @@ export default function DailyPlanningPage() {
   }, [authFetch])
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && canManageMenu(user?.role)) {
       void fetchPeriods()
       void fetchCatalogs()
     }
@@ -495,7 +496,7 @@ export default function DailyPlanningPage() {
     })
   }, [requirementsRows])
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) return null
+  if (authLoading || !isAuthenticated || !canManageMenu(user?.role)) return null
 
   return (
     <SidebarProvider>

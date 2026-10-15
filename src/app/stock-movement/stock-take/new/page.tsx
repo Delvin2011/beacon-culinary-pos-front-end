@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
-import { isStockAccessRole } from "@/lib/roles";
+import { canCountStock } from "@/lib/roles";
 import { LineItemSheet } from "@/components/inventory/line-item-sheet";
 import { toast } from "@/hooks/use-toast";
 import type { IngredientOption, LineItemSheetSubmitPayload } from "@/components/inventory/line-item-sheet-types";
@@ -31,7 +31,7 @@ export default function StockMovementNewStockTakePage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
 
-  const hasStockAccess = isStockAccessRole(user?.role);
+  const hasStockAccess = canCountStock(user?.role);
 
   const [ingredientOptions, setIngredientOptions] = useState<IngredientOption[]>([]);
   const [loadingIngredients, setLoadingIngredients] = useState(true);
@@ -43,7 +43,8 @@ export default function StockMovementNewStockTakePage() {
       return;
     }
     if (!hasStockAccess) {
-      router.replace("/stock-movement/login");
+      // Signed in but not allowed to count (e.g. a Head Chef): back to the station home.
+      router.replace("/stock-movement");
     }
   }, [authLoading, hasStockAccess, isAuthenticated, router]);
 

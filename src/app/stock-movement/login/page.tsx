@@ -1,28 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PackageSearch } from "lucide-react";
-import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { useAuth } from "@/hooks/use-auth";
 import { isStockAccessRole } from "@/lib/roles";
 
-const PIN_MAX_LENGTH = 6;
-const PIN_MIN_LENGTH = 4;
-
+// Stock Admin and Stock Clerk accounts log in by email and password; they don't have a PIN.
 export default function StockMovementLoginPage() {
   const router = useRouter();
-  const { isAuthenticated, isLoading, user, pinLogin, error, clearError, logout } = useAuth();
+  const { isAuthenticated, isLoading, user, login, error, clearError, logout } = useAuth();
 
-  const stockMovementCashierId = useMemo(() => {
-    const raw = process.env.NEXT_PUBLIC_STOCK_MOVEMENT_CASHIER_ID ?? "5";
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) ? parsed : 5;
-  }, []);
-
-  const [pin, setPin] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [pinError, setPinError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
     if (isLoading) return;
@@ -34,46 +26,34 @@ export default function StockMovementLoginPage() {
       return;
     }
 
+    // Signed in, but not with a stock role (e.g. a cashier session left in this browser).
     logout();
+    setFormError("This account doesn't have stock access. Sign in with a stock or admin account.");
   }, [isAuthenticated, isLoading, logout, router, user?.role]);
 
   const submit = async () => {
     if (submitting) return;
 
-    if (pin.length < PIN_MIN_LENGTH || pin.length > PIN_MAX_LENGTH) {
-      setPinError("PIN must be 4 to 6 digits.");
+    if (!email.trim() || !password) {
+      setFormError("Enter your email and password.");
       return;
     }
 
     setSubmitting(true);
-    setPinError(null);
+    setFormError(null);
     if (error) clearError();
 
     try {
-      await pinLogin({ cashierId: stockMovementCashierId, pin });
-      router.replace("/stock-movement");
+      await login({ email: email.trim().toLowerCase(), password });
+      // The effect above routes stock roles in and signs anyone else out.
     } catch {
-      setPinError("Incorrect PIN.");
-      setPin("");
+      setPassword("");
     } finally {
       setSubmitting(false);
     }
   };
 
-  useEffect(() => {
-    if (pin.length === PIN_MAX_LENGTH && !submitting) {
-      void submit();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin]);
-
-  if (isLoading) {
-    return (
-      <div className="flex h-screen items-center justify-center bg-slate-950">
-        <span className="text-lg text-slate-400 animate-pulse">Loading...</span>
-      </div>
-    );
-  }
+  const message = formError ?? error;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
@@ -83,46 +63,66 @@ export default function StockMovementLoginPage() {
             <PackageSearch className="h-7 w-7" />
           </div>
           <h1 className="text-2xl font-bold text-white">Stock Movement Station</h1>
-          <p className="mt-1 text-sm text-slate-400">Enter PIN to submit or track stock requests.</p>
+          <p className="mt-1 text-sm text-slate-400">Sign in with your email to submit or track stock requests.</p>
         </div>
 
-        <div className="mb-4 flex justify-center gap-3">
-          {Array.from({ length: PIN_MAX_LENGTH }).map((_, index) => (
-            <div
-              key={index}
-              className={[
-                "h-3.5 w-3.5 rounded-full border-2 transition-colors",
-                index < pin.length ? "border-white bg-white" : "border-slate-600 bg-transparent",
-              ].join(" ")}
-            />
-          ))}
-        </div>
-
-        {(pinError || error) && (
-          <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-center text-sm text-rose-200">
-            {pinError ?? error}
+        {message && (
+          <p role="alert" className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-center text-sm text-rose-200">
+            {message}
           </p>
         )}
 
-        <NumericKeypad
-          value={pin}
-          onChange={(value) => {
-            setPin(value);
-            if (pinError) setPinError(null);
-            if (error) clearError();
+        <form
+          className="space-y-4"
+          noValidate
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
           }}
-          maxLength={PIN_MAX_LENGTH}
-          disabled={submitting}
-        />
-
-        <button
-          type="button"
-          onClick={() => void submit()}
-          disabled={submitting || pin.length < PIN_MIN_LENGTH}
-          className="mt-4 w-full rounded-2xl bg-blue-500 py-3.5 text-base font-semibold text-white transition hover:bg-blue-400 active:bg-blue-600 disabled:pointer-events-none disabled:opacity-50"
         >
-          {submitting ? "Signing in..." : "Open Stock Requests"}
-        </button>
+          <div className="space-y-1.5">
+            <label htmlFor="stock-email" className="text-sm font-medium text-slate-200">
+              Email
+            </label>
+            <input
+              id="stock-email"
+              type="email"
+              autoComplete="username"
+              value={email}
+              onChange={(event) => {
+                setEmail(event.target.value);
+                setFormError(null);
+                if (error) clearError();
+              }}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="stock-password" className="text-sm font-medium text-slate-200">
+              Password
+            </label>
+            <input
+              id="stock-password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => {
+                setPassword(event.target.value);
+                setFormError(null);
+                if (error) clearError();
+              }}
+              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-base text-white outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-500/30"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={submitting || isLoading}
+            className="w-full rounded-2xl bg-blue-500 py-3.5 text-base font-semibold text-white transition hover:bg-blue-400 active:bg-blue-600 disabled:pointer-events-none disabled:opacity-50"
+          >
+            {submitting || isLoading ? "Signing in..." : "Open Stock Requests"}
+          </button>
+        </form>
       </div>
     </div>
   );

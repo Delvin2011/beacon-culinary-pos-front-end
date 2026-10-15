@@ -14,6 +14,7 @@ import {
 } from "@tanstack/react-table"
 import { ArrowUpDown } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
+import { canEditCatalog, canManageMenu } from "@/lib/roles"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
@@ -158,6 +159,8 @@ function normalizeCsvHeader(header: string): string {
 export default function CatalogPage() {
   const router = useRouter()
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth()
+  // Head Chefs can view the catalog and recipes but not change them.
+  const readOnly = !canEditCatalog(user?.role)
 
   const [activeTab, setActiveTab] = useState<Tab>("components")
 
@@ -202,7 +205,7 @@ export default function CatalogPage() {
   useEffect(() => {
     if (authLoading) return
     if (!isAuthenticated) { router.replace("/login"); return }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) router.replace("/dashboard")
+    if (!canManageMenu(user?.role)) router.replace("/dashboard")
   }, [authLoading, isAuthenticated, user, router])
 
   const fetchIngredients = useCallback(async () => {
@@ -261,7 +264,7 @@ export default function CatalogPage() {
   }, [authFetch])
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && canManageMenu(user?.role)) {
       void fetchComponents()
       void fetchMeals()
       void fetchIngredients()
@@ -499,14 +502,18 @@ export default function CatalogPage() {
         header: "",
         cell: ({ row }) => (
           <div className="flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => openEditComponent(row.original.component)}>Edit</Button>
-            <Button size="sm" variant="outline" onClick={() => void openRecipeDialog(row.original.component)}>Recipe</Button>
+            {!readOnly && (
+              <Button size="sm" variant="outline" onClick={() => openEditComponent(row.original.component)}>Edit</Button>
+            )}
+            <Button size="sm" variant="outline" onClick={() => void openRecipeDialog(row.original.component)}>
+              {readOnly ? "View Recipe" : "Recipe"}
+            </Button>
           </div>
         ),
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [readOnly],
   )
 
   const componentTable = useReactTable({
@@ -697,12 +704,14 @@ export default function CatalogPage() {
       {
         id: "actions",
         header: "",
-        cell: ({ row }) => (
-          <Button size="sm" variant="outline" onClick={() => openEditMeal(row.original.meal)}>Edit</Button>
-        ),
+        cell: ({ row }) =>
+          readOnly ? null : (
+            <Button size="sm" variant="outline" onClick={() => openEditMeal(row.original.meal)}>Edit</Button>
+          ),
       },
     ],
-    [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [readOnly],
   )
 
   const mealTable = useReactTable({
@@ -722,7 +731,7 @@ export default function CatalogPage() {
     getFilteredRowModel: getFilteredRowModel(),
   })
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) return null
+  if (authLoading || !isAuthenticated || !canManageMenu(user?.role)) return null
 
   return (
     <SidebarProvider>
@@ -760,10 +769,14 @@ export default function CatalogPage() {
                   <h2 className="text-lg font-semibold">Component Catalog</h2>
                   <p className="text-sm text-muted-foreground">Extra-portion items with agreed prices. Recipe setup is managed per component.</p>
                 </div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" onClick={openBulkImportDialog}>Bulk Upload CSV</Button>
-                  <Button size="sm" onClick={openNewComponent}>+ Add Component</Button>
-                </div>
+                {readOnly ? (
+                  <span className="text-xs text-muted-foreground">View only</span>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={openBulkImportDialog}>Bulk Upload CSV</Button>
+                    <Button size="sm" onClick={openNewComponent}>+ Add Component</Button>
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap items-end gap-3">
@@ -849,7 +862,11 @@ export default function CatalogPage() {
                   <h2 className="text-lg font-semibold">Meal Catalog</h2>
                   <p className="text-sm text-muted-foreground">Predefined meals with agreed prices. Price here is the source of truth.</p>
                 </div>
-                <Button size="sm" onClick={openNewMeal}>+ Add Meal</Button>
+                {readOnly ? (
+                  <span className="text-xs text-muted-foreground">View only</span>
+                ) : (
+                  <Button size="sm" onClick={openNewMeal}>+ Add Meal</Button>
+                )}
               </div>
 
               {components.length === 0 && (
@@ -1054,6 +1071,8 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
               <DialogTitle>Recipe · {recipeComponent?.name ?? "Component"}</DialogTitle>
             </DialogHeader>
             <form onSubmit={saveRecipe} className="min-h-0 flex-1 space-y-4 overflow-y-auto pt-2 pr-1">
+              {readOnly && <p className="text-xs text-muted-foreground">View only. An admin can change recipes.</p>}
+              <fieldset disabled={readOnly} className="space-y-4">
               <div className="grid gap-4 md:grid-cols-[220px_1fr]">
                 <div className="space-y-1">
                   <Label htmlFor="recipe-batch-size">Batch Size</Label>
@@ -1094,10 +1113,14 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
                 </div>
               )}
 
+              </fieldset>
+
               {recipeError && <p className="text-sm text-destructive">{recipeError}</p>}
               <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={() => setRecipeDialogOpen(false)}>Cancel</Button>
-                <Button type="submit" disabled={recipeSaving || recipeLoading}>{recipeSaving ? "Saving…" : "Save Recipe"}</Button>
+                <Button type="button" variant="outline" onClick={() => setRecipeDialogOpen(false)}>{readOnly ? "Close" : "Cancel"}</Button>
+                {!readOnly && (
+                  <Button type="submit" disabled={recipeSaving || recipeLoading}>{recipeSaving ? "Saving…" : "Save Recipe"}</Button>
+                )}
               </div>
             </form>
           </DialogContent>

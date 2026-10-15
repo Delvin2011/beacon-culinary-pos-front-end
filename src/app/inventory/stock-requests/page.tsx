@@ -15,6 +15,7 @@ import {
 } from "@tanstack/react-table";
 import { ArrowUpDown } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { canManageInventory } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import {
@@ -79,7 +80,7 @@ export default function StockRequestsQueuePage() {
       router.replace("/login");
       return;
     }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) {
+    if (!canManageInventory(user?.role)) {
       router.replace("/dashboard");
     }
   }, [authLoading, isAuthenticated, router, user]);
@@ -103,7 +104,7 @@ export default function StockRequestsQueuePage() {
   }, [authFetch]);
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && canManageInventory(user?.role)) {
       void fetchQueue();
     }
   }, [fetchQueue, isAuthenticated, user]);
@@ -211,7 +212,7 @@ export default function StockRequestsQueuePage() {
     getFilteredRowModel: getFilteredRowModel(),
   });
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) {
+  if (authLoading || !isAuthenticated || !canManageInventory(user?.role)) {
     return null;
   }
 

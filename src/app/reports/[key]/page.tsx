@@ -159,7 +159,7 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
   const hasUserParam = definition.params.some((param) => param.type === "USER")
   useEffect(() => {
     if (!hasUserParam) return
-    authFetch("/users")
+    authFetch("/admin/staff")
       .then(async (res) => (res.ok ? ((await res.json()) as unknown) : []))
       .then((body) => setUsers(toShiftOwnerOptions(body)))
       .catch(() => setUsers([]))

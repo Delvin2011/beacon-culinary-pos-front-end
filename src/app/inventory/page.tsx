@@ -15,6 +15,7 @@ import {
 } from "@tanstack/react-table";
 import { ArrowUpDown } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { canEditInventoryRecords, canManageInventory, canManageStockTakes } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import {
   SidebarInset,
@@ -56,7 +57,24 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "@/hooks/use-toast";
-import { formatZarCurrency } from "@/lib/utils";
+import { useVatRate } from "@/hooks/use-vat-rate";
+import {
+  InvoiceBasisChip,
+  InvoiceCheckChip,
+  PricesIncludeVatToggle,
+  VatCodeSelect,
+  moneyOrDash,
+} from "@/components/inventory/grv-vat-controls";
+import {
+  VAT_CODES,
+  computeVatLine,
+  parseOptionalAmount,
+  previewInvoiceCheck,
+  sumVatLines,
+  vatCodeLabel,
+  type InvoiceCheck,
+  type VatCode,
+} from "@/lib/grv-vat";
 import { LineItemSheet } from "@/components/inventory/line-item-sheet";
 import { useLocations } from "@/hooks/use-locations";
 import { useCountSheetCategories, type CountSheetCategoryDto } from "@/hooks/use-count-sheet-categories";
@@ -74,6 +92,7 @@ type IngredientDto = {
   countSheetCategoryName?: string;
   active: boolean;
   itemCode?: string;
+  defaultVatCode?: VatCode;
 };
 
 type StockByLocationDto = {
@@ -94,6 +113,7 @@ type IngredientTableRow = {
   itemCode: string;
   unit: IngredientUnit;
   countSheetCategory: string;
+  defaultVatCode: VatCode;
   totalStock: number;
   stockByLocation: string;
   lastMovementAt?: string;
@@ -108,6 +128,17 @@ type GrvLineDto = {
   purchaseOrderLineId?: number;
   quantityOrdered: number | null;
   quantityReceived: number;
+  // Price exactly as written on the invoice.
+  unitPrice: number | null;
+  // Legacy GRVs (before VAT capture) have null VAT fields.
+  vatCode: VatCode | null;
+  vatRate: number | null;
+  unitCostExclVat: number | null;
+  unitCostInclVat: number | null;
+  lineExclVat: number | null;
+  lineVat: number | null;
+  lineInclVat: number | null;
+  // Stock (ledger) cost: always VAT-inclusive, 4 decimals.
   costPerUnit: number;
   receiptVariance: number | null;
 };
@@ -120,6 +151,12 @@ type GrvDto = {
   note?: string;
   receivedByName?: string;
   receivedAt: string;
+  pricesIncludeVat: boolean;
+  invoiceTotalInclVat: number | null;
+  totalExclVat: number | null;
+  totalVat: number | null;
+  totalInclVat: number | null;
+  invoiceCheck: InvoiceCheck | null;
   lines: GrvLineDto[];
 };
 
@@ -127,10 +164,16 @@ type GrvTableRow = {
   rowId: string;
   grvId: number;
   invoiceNumber: string;
+  pricesIncludeVat: boolean;
   ingredientName: string;
   quantityReceived: number;
   quantityOrdered: number | null;
   receiptVariance: number | null;
+  unitPrice: number | null;
+  vatCode: VatCode | null;
+  lineExclVat: number | null;
+  lineVat: number | null;
+  lineInclVat: number | null;
   costPerUnit: number;
   supplierName: string;
   receivedAt: string;
@@ -140,8 +183,11 @@ type GrvEditLineState = {
   id: number;
   ingredientName: string;
   quantityReceived: string;
-  costPerUnit: string;
+  unitPrice: string;
+  vatCode: VatCode;
 };
+
+type GrvViewMode = "invoices" | "lines";
 
 type WasteEntryDto = {
   id: number;
@@ -213,9 +259,20 @@ type BulkIngredientImportResultDto = {
   ingredients: IngredientDto[];
 };
 
+type BulkGrvInvoiceSummaryDto = {
+  invoiceNumber: string;
+  lineCount: number;
+  pricesIncludeVat: boolean;
+  totalExclVat: number | null;
+  totalVat: number | null;
+  totalInclVat: number | null;
+  invoiceCheck: InvoiceCheck | null;
+};
+
 type BulkGrvImportResultDto = {
   created: number;
   grvs: GrvDto[];
+  invoices?: BulkGrvInvoiceSummaryDto[];
 };
 
 type PurchaseOrderDraftLine = {
@@ -228,7 +285,48 @@ type PurchaseOrderDraftLine = {
 const INGREDIENT_UNITS: IngredientUnit[] = ["KG", "LITRE", "EACH"];
 const PURCHASE_ORDER_STATUSES: PurchaseOrderStatus[] = ["DRAFT", "SUBMITTED", "RECEIVED"];
 const BULK_INGREDIENT_HEADERS = ["NAME", "UNIT", "COUNT SHEET"] as const;
-const BULK_GRV_HEADERS = ["INGREDIENT NAME", "QUANTITY", "COST PER UNIT", "SUPPLIER NAME", "NOTE (OPTIONAL)", "INVOICE NUMBER"] as const;
+const BULK_INGREDIENT_OPTIONAL_HEADER = "DEFAULT VAT CODE";
+// GRV upload: header order doesn't matter; these must be present.
+const BULK_GRV_REQUIRED_HEADERS = [
+  "INVOICE NUMBER",
+  "SUPPLIER NAME",
+  "INGREDIENT NAME",
+  "QUANTITY",
+  "UNIT PRICE",
+  "PRICES INCLUDE VAT",
+] as const;
+const BULK_GRV_OPTIONAL_HEADERS = ["VAT CODE", "INVOICE TOTAL", "NOTE"] as const;
+
+// Served as downloads; mirror metadatafiles/templates in the backend repo.
+const GRV_UPLOAD_TEMPLATE = `Invoice Number,Supplier Name,Ingredient Name,Quantity,Unit Price,Prices Include VAT,VAT Code,Invoice Total,Note
+INV-88231,Acme Foods,Beef Mince,10,100.00,N,STANDARD,1650.00,Exclusive invoice - VAT is added automatically
+INV-88231,Acme Foods,Rice,10,50.00,N,ZERO_RATED,1650.00,
+INV-88232,Fresh Farms,Chicken Portions,50,18.00,Y,,900.00,Inclusive invoice - blank VAT Code uses the ingredient default
+`;
+
+const INGREDIENT_UPLOAD_TEMPLATE = `Name,Unit,Count Sheet,Default VAT Code
+Beef Mince,KG,MEAT,STANDARD
+Chicken Portions,KG,POULTRY,STANDARD
+Rice,KG,DRYSTOCK,ZERO_RATED
+Eggs,EACH,DAIRY,ZERO_RATED
+Salt,KG,DRYSTOCK,
+`;
+
+function downloadTextFile(filename: string, content: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function formatStockCost(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return `R ${value.toFixed(4).replace(".", ",")}`;
+}
 
 function parseError(body: unknown, fallback: string): string {
   if (!body || typeof body !== "object") return fallback;
@@ -242,6 +340,11 @@ function parseError(body: unknown, fallback: string): string {
       .filter(Boolean);
     if (messages.length > 0) return messages.join(" ");
   }
+  // Field-map errors, e.g. { "lines[0].unitPrice": "unitPrice is required" }.
+  const fieldMessages = Object.values(record).filter(
+    (value): value is string => typeof value === "string" && value.trim().length > 0,
+  );
+  if (fieldMessages.length > 0) return fieldMessages.join(" ");
   return fallback;
 }
 
@@ -329,6 +432,8 @@ function normalizeCsvHeader(header: string): string {
 export default function InventoryPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
+  // Head Chefs can view inventory, but GRVs, direct waste and ingredient edits are Admin/Stock Admin only.
+  const canEditRecords = canEditInventoryRecords(user?.role);
   const { locations } = useLocations();
   // This page is admin-only, so load inactive categories too: existing ingredients may still use them.
   const {
@@ -359,6 +464,7 @@ export default function InventoryPage() {
   const [ingredientCategoryId, setIngredientCategoryId] = useState("");
   const [ingredientActive, setIngredientActive] = useState(true);
   const [ingredientItemCode, setIngredientItemCode] = useState("");
+  const [ingredientDefaultVatCode, setIngredientDefaultVatCode] = useState<VatCode>("STANDARD");
   const [ingredientSaveError, setIngredientSaveError] = useState<string | null>(null);
   const [ingredientSaving, setIngredientSaving] = useState(false);
 
@@ -378,12 +484,19 @@ export default function InventoryPage() {
   const [grvEditInvoiceNumber, setGrvEditInvoiceNumber] = useState("");
   const [grvEditSupplierName, setGrvEditSupplierName] = useState("");
   const [grvEditNote, setGrvEditNote] = useState("");
+  const [grvEditPricesIncludeVat, setGrvEditPricesIncludeVat] = useState<boolean | null>(null);
+  const [grvEditInvoiceTotal, setGrvEditInvoiceTotal] = useState("");
+  const [grvViewMode, setGrvViewMode] = useState<GrvViewMode>("invoices");
+  // The server's figures for the GRV just captured: final, so shown after save.
+  const [lastSavedGrv, setLastSavedGrv] = useState<GrvDto | null>(null);
+  const vatRate = useVatRate();
   const [grvEditLines, setGrvEditLines] = useState<GrvEditLineState[]>([]);
   const [grvEditError, setGrvEditError] = useState<string | null>(null);
   const [grvEditSaving, setGrvEditSaving] = useState(false);
   const [grvBulkDialogOpen, setGrvBulkDialogOpen] = useState(false);
   const [grvBulkFile, setGrvBulkFile] = useState<File | null>(null);
   const [grvBulkError, setGrvBulkError] = useState<string | null>(null);
+  const [grvBulkRowErrors, setGrvBulkRowErrors] = useState<string[]>([]);
   const [grvBulkResult, setGrvBulkResult] = useState<BulkGrvImportResultDto | null>(null);
   const [grvBulkUploading, setGrvBulkUploading] = useState(false);
   const [grvLoading, setGrvLoading] = useState(false);
@@ -433,7 +546,7 @@ export default function InventoryPage() {
       router.replace("/login");
       return;
     }
-    if (!user?.role?.toUpperCase().includes("ADMIN")) {
+    if (!canManageInventory(user?.role)) {
       router.replace("/dashboard");
     }
   }, [authLoading, isAuthenticated, router, user]);
@@ -556,17 +669,17 @@ export default function InventoryPage() {
   }, [authFetch]);
 
   useEffect(() => {
-    if (isAuthenticated && user?.role?.toUpperCase().includes("ADMIN")) {
+    if (isAuthenticated && canManageInventory(user?.role)) {
       void fetchIngredients();
       void fetchGrvs();
       void fetchPurchaseOrders();
       void fetchWasteEntries();
-      void fetchStockTakes();
+      if (canManageStockTakes(user?.role)) void fetchStockTakes();
     }
   }, [fetchGrvs, fetchIngredients, fetchPurchaseOrders, fetchWasteEntries, fetchStockTakes, isAuthenticated, user]);
 
   useEffect(() => {
-    if (!isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) return;
+    if (!isAuthenticated || !canManageInventory(user?.role)) return;
     void fetchGrvs();
   }, [fetchGrvs, isAuthenticated, user]);
 
@@ -575,8 +688,8 @@ export default function InventoryPage() {
     [ingredients],
   );
 
-  // GRV never auto-fills cost — unlike Issue, the whole point is recording *this*
-  // delivery's actual cost, so Unit Cost is always left blank for the user to enter.
+  // GRV never auto-fills the price — unlike Issue, the whole point is recording *this*
+  // invoice's price as written, so it's always left blank for the user to enter.
   const grvIngredientOptions: IngredientOption[] = useMemo(
     () =>
       ingredientOptions.map((ingredient) => ({
@@ -585,6 +698,7 @@ export default function InventoryPage() {
         unit: ingredient.unit,
         unitValue: null,
         itemCode: ingredient.itemCode ?? null,
+        defaultVatCode: ingredient.defaultVatCode ?? "STANDARD",
       })),
     [ingredientOptions],
   );
@@ -601,10 +715,16 @@ export default function InventoryPage() {
           rowId: `${grv.id}-${line.id}`,
           grvId: grv.id,
           invoiceNumber: grv.invoiceNumber,
+          pricesIncludeVat: grv.pricesIncludeVat,
           ingredientName: line.ingredientName,
           quantityReceived: line.quantityReceived,
           quantityOrdered: line.quantityOrdered,
           receiptVariance: line.receiptVariance,
+          unitPrice: line.unitPrice,
+          vatCode: line.vatCode,
+          lineExclVat: line.lineExclVat,
+          lineVat: line.lineVat,
+          lineInclVat: line.lineInclVat,
           costPerUnit: line.costPerUnit,
           supplierName: grv.supplierName,
           receivedAt: grv.receivedAt,
@@ -613,22 +733,28 @@ export default function InventoryPage() {
     [grvs],
   );
 
-  const openGrvEditDialog = (grv: GrvDto) => {
+  const openGrvEditDialog = useCallback((grv: GrvDto) => {
     setGrvEditTarget(grv);
     setGrvEditInvoiceNumber(grv.invoiceNumber);
     setGrvEditSupplierName(grv.supplierName);
     setGrvEditNote(grv.note ?? "");
+    setGrvEditPricesIncludeVat(grv.pricesIncludeVat);
+    setGrvEditInvoiceTotal(grv.invoiceTotalInclVat !== null && grv.invoiceTotalInclVat !== undefined ? String(grv.invoiceTotalInclVat) : "");
     setGrvEditLines(
       grv.lines.map((line) => ({
         id: line.id,
         ingredientName: line.ingredientName,
         quantityReceived: String(line.quantityReceived),
-        costPerUnit: String(line.costPerUnit),
+        // Legacy lines: the old cost was the inclusive price as invoiced.
+        unitPrice: String(line.unitPrice ?? line.costPerUnit),
+        // A legacy line has no code yet; it falls back to the ingredient's default.
+        vatCode:
+          line.vatCode ?? ingredients.find((ingredient) => ingredient.id === line.ingredientId)?.defaultVatCode ?? "STANDARD",
       })),
     );
     setGrvEditError(null);
     setGrvEditDialogOpen(true);
-  };
+  }, [ingredients]);
 
   const grvTableColumns: ColumnDef<GrvTableRow>[] = useMemo(
     () => [
@@ -698,14 +824,49 @@ export default function InventoryPage() {
         },
       },
       {
-        accessorKey: "costPerUnit",
+        accessorKey: "unitPrice",
         header: ({ column }) => (
           <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
-            Cost / Unit
+            Unit Price (invoiced)
             <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
           </Button>
         ),
-        cell: ({ row }) => formatZarCurrency(row.original.costPerUnit),
+        cell: ({ row }) => (
+          <span className="flex flex-col items-start gap-0.5">
+            <span>{moneyOrDash(row.original.unitPrice)}</span>
+            <InvoiceBasisChip pricesIncludeVat={row.original.pricesIncludeVat} />
+          </span>
+        ),
+      },
+      {
+        accessorKey: "vatCode",
+        header: "VAT",
+        cell: ({ row }) => vatCodeLabel(row.original.vatCode, vatRate),
+      },
+      {
+        accessorKey: "lineExclVat",
+        header: "Line excl. VAT",
+        cell: ({ row }) => moneyOrDash(row.original.lineExclVat),
+      },
+      {
+        accessorKey: "lineVat",
+        header: "VAT amount",
+        cell: ({ row }) => moneyOrDash(row.original.lineVat),
+      },
+      {
+        accessorKey: "lineInclVat",
+        header: "Line incl. VAT",
+        cell: ({ row }) => moneyOrDash(row.original.lineInclVat),
+      },
+      {
+        accessorKey: "costPerUnit",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Stock Cost (incl. VAT)
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => formatStockCost(row.original.costPerUnit),
       },
       {
         accessorKey: "supplierName",
@@ -731,6 +892,7 @@ export default function InventoryPage() {
         id: "actions",
         header: "",
         cell: ({ row }) => {
+          if (!canEditRecords) return null;
           const editable = isSameLocalDay(row.original.receivedAt);
           return (
             <Button
@@ -749,8 +911,20 @@ export default function InventoryPage() {
         },
       },
     ],
-    [grvs],
+    [canEditRecords, grvs, openGrvEditDialog, vatRate],
   );
+
+  const grvEditable = (grv: GrvDto) => isSameLocalDay(grv.receivedAt);
+
+  // Live recalculation in the edit dialog; null until the basis and rate are known.
+  const grvEditVatPreview = useMemo(() => {
+    if (vatRate === null || grvEditPricesIncludeVat === null) return null;
+    const lines = grvEditLines.map((line) =>
+      computeVatLine(Number(line.quantityReceived), Number(line.unitPrice), grvEditPricesIncludeVat, line.vatCode, vatRate),
+    );
+    const totals = sumVatLines(lines);
+    return { lines, totals, check: previewInvoiceCheck(parseOptionalAmount(grvEditInvoiceTotal), totals.totalInclVat) };
+  }, [grvEditInvoiceTotal, grvEditLines, grvEditPricesIncludeVat, vatRate]);
 
   const grvSupplierOptions = useMemo(
     () => Array.from(new Set(grvs.map((grv) => grv.supplierName))).sort(),
@@ -773,6 +947,21 @@ export default function InventoryPage() {
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
   });
+
+  // The invoice view honours the same supplier filter and search as the line view.
+  const grvSupplierFilter = grvTable.getColumn("supplierName")?.getFilterValue() as string | undefined;
+  const filteredGrvInvoices = useMemo(() => {
+    const search = grvTableSearch.trim().toLowerCase();
+    return grvs.filter((grv) => {
+      if (grvSupplierFilter && grv.supplierName !== grvSupplierFilter) return false;
+      if (!search) return true;
+      return (
+        grv.invoiceNumber.toLowerCase().includes(search) ||
+        grv.supplierName.toLowerCase().includes(search) ||
+        grv.lines.some((line) => line.ingredientName.toLowerCase().includes(search))
+      );
+    });
+  }, [grvSupplierFilter, grvTableSearch, grvs]);
 
   // Client-side reconciliation of two existing calls — no new backend endpoint for
   // "what's outstanding on this PO": sum quantityReceived per purchaseOrderLineId
@@ -827,10 +1016,16 @@ export default function InventoryPage() {
   }, [activeCountSheetCategories, countSheetCategories, ingredientCategoryId]);
 
   const bulkIngredientSampleCsv = useMemo(() => {
-    const sampleRows: Array<[string, IngredientUnit]> = [["Tomato", "KG"], ["Olive Oil", "LITRE"], ["Paper Straw", "EACH"]];
+    const sampleRows: Array<[string, IngredientUnit, string]> = [
+      ["Tomato", "KG", "ZERO_RATED"],
+      ["Olive Oil", "LITRE", "STANDARD"],
+      ["Paper Straw", "EACH", ""],
+    ];
     const names = activeCountSheetCategories.map((category) => category.name);
-    const rows = sampleRows.map(([name, unit], index) => `${name},${unit},${names.length > 0 ? names[index % names.length] : "CATEGORY"}`);
-    return [BULK_INGREDIENT_HEADERS.join(","), ...rows].join("\n");
+    const rows = sampleRows.map(
+      ([name, unit, vatCode], index) => `${name},${unit},${names.length > 0 ? names[index % names.length] : "CATEGORY"},${vatCode}`,
+    );
+    return [[...BULK_INGREDIENT_HEADERS, BULK_INGREDIENT_OPTIONAL_HEADER].join(","), ...rows].join("\n");
   }, [activeCountSheetCategories]);
 
   const openCategoryDialog = () => {
@@ -930,6 +1125,7 @@ export default function InventoryPage() {
     setIngredientCategoryId(activeCountSheetCategories[0] ? String(activeCountSheetCategories[0].id) : "");
     setIngredientActive(true);
     setIngredientItemCode("");
+    setIngredientDefaultVatCode("STANDARD");
     setIngredientSaveError(null);
     setIngredientDialogOpen(true);
   };
@@ -948,6 +1144,7 @@ export default function InventoryPage() {
     setIngredientCategoryId(String(ingredient.countSheetCategoryId));
     setIngredientActive(ingredient.active);
     setIngredientItemCode(ingredient.itemCode ?? "");
+    setIngredientDefaultVatCode(ingredient.defaultVatCode ?? "STANDARD");
     setIngredientSaveError(null);
     setIngredientDialogOpen(true);
   };
@@ -967,6 +1164,7 @@ export default function InventoryPage() {
           totalStock: stock ? stock.totalStock : 0,
           stockByLocation: stock?.byLocation.map((entry) => `${entry.locationName}: ${entry.stock}`).join(" · ") ?? "",
           lastMovementAt: stock?.lastMovementAt,
+          defaultVatCode: ingredient.defaultVatCode ?? "STANDARD",
           active: ingredient.active,
           ingredient,
         };
@@ -1016,6 +1214,16 @@ export default function InventoryPage() {
         filterFn: "equals",
       },
       {
+        accessorKey: "defaultVatCode",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Default VAT
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => vatCodeLabel(row.original.defaultVatCode),
+      },
+      {
         accessorKey: "totalStock",
         header: ({ column }) => (
           <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
@@ -1056,14 +1264,16 @@ export default function InventoryPage() {
       {
         id: "actions",
         header: "",
-        cell: ({ row }) => (
-          <Button size="sm" variant="outline" onClick={() => openEditIngredient(row.original.ingredient)}>
-            Edit
-          </Button>
-        ),
+        cell: ({ row }) =>
+          canEditRecords ? (
+            <Button size="sm" variant="outline" onClick={() => openEditIngredient(row.original.ingredient)}>
+              Edit
+            </Button>
+          ) : null,
       },
     ],
-    [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [canEditRecords],
   );
 
   const ingredientTable = useReactTable({
@@ -1086,6 +1296,7 @@ export default function InventoryPage() {
   const openGrvBulkDialog = () => {
     setGrvBulkFile(null);
     setGrvBulkError(null);
+    setGrvBulkRowErrors([]);
     setGrvBulkResult(null);
     setGrvBulkDialogOpen(true);
   };
@@ -1114,6 +1325,7 @@ export default function InventoryPage() {
         countSheetCategoryId: Number(ingredientCategoryId),
         active: ingredientActive,
         itemCode: ingredientItemCode.trim() || undefined,
+        defaultVatCode: ingredientDefaultVatCode,
       };
 
       const res = editingIngredient
@@ -1130,6 +1342,7 @@ export default function InventoryPage() {
               unit: payload.unit,
               countSheetCategoryId: payload.countSheetCategoryId,
               itemCode: payload.itemCode,
+              defaultVatCode: payload.defaultVatCode,
             }),
           });
 
@@ -1188,13 +1401,17 @@ export default function InventoryPage() {
     const expectedHeaders = [...BULK_INGREDIENT_HEADERS];
     const normalizedFoundHeaders = foundHeaders.map(normalizeCsvHeader);
     const normalizedExpectedHeaders = expectedHeaders.map(normalizeCsvHeader);
+    // The first three columns are fixed; "Default VAT Code" may follow as an optional fourth.
+    const hasOptionalVatHeader =
+      normalizedFoundHeaders.length === normalizedExpectedHeaders.length + 1 &&
+      normalizedFoundHeaders[normalizedExpectedHeaders.length] === BULK_INGREDIENT_OPTIONAL_HEADER;
     const hasValidHeaders =
-      normalizedFoundHeaders.length === normalizedExpectedHeaders.length &&
-      normalizedFoundHeaders.every((header, index) => header === normalizedExpectedHeaders[index]);
+      (normalizedFoundHeaders.length === normalizedExpectedHeaders.length || hasOptionalVatHeader) &&
+      normalizedExpectedHeaders.every((header, index) => normalizedFoundHeaders[index] === header);
 
     if (!hasValidHeaders) {
       setBulkIngredientError(
-        `CSV header mismatch. Expected: ${expectedHeaders.join(",")}. Found: ${foundHeaders.join(",") || "(empty)"}.`,
+        `CSV header mismatch. Expected: ${expectedHeaders.join(",")} (optionally followed by ${BULK_INGREDIENT_OPTIONAL_HEADER}). Found: ${foundHeaders.join(",") || "(empty)"}.`,
       );
       return;
     }
@@ -1228,11 +1445,14 @@ export default function InventoryPage() {
   };
 
   const handleGrvSubmit = async (payload: LineItemSheetSubmitPayload) => {
+    if (!payload.vat) throw new Error("Choose whether the prices on this invoice include or exclude VAT.");
     const res = await authFetch("/admin/grv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         invoiceNumber: payload.extraFields.invoiceNumber?.trim(),
+        pricesIncludeVat: payload.vat.pricesIncludeVat,
+        invoiceTotalInclVat: payload.vat.invoiceTotalInclVat ?? undefined,
         purchaseOrderId: grvSelectedPurchaseOrderId ? Number(grvSelectedPurchaseOrderId) : undefined,
         supplierName: payload.extraFields.supplierName?.trim(),
         note: payload.extraFields.note?.trim() || undefined,
@@ -1240,7 +1460,8 @@ export default function InventoryPage() {
           ingredientId: line.ingredientId,
           purchaseOrderLineId: line.purchaseOrderLineId ?? undefined,
           quantityReceived: line.quantity,
-          costPerUnit: line.unitValue ?? 0,
+          unitPrice: line.unitValue,
+          vatCode: line.vatCode,
         })),
       }),
     });
@@ -1250,6 +1471,7 @@ export default function InventoryPage() {
     }
 
     const grv = body as GrvDto;
+    setLastSavedGrv(grv);
     setGrvSelectedPurchaseOrderId("");
     setGrvSheetResetKey((key) => key + 1);
     await refreshStockSensitiveData();
@@ -1264,15 +1486,25 @@ export default function InventoryPage() {
     if (!grvEditTarget) return;
     setGrvEditError(null);
 
+    if (grvEditPricesIncludeVat === null) {
+      setGrvEditError("Choose whether the prices on this invoice include or exclude VAT.");
+      return;
+    }
+    const printedTotal = parseOptionalAmount(grvEditInvoiceTotal);
+    if (grvEditInvoiceTotal.trim() !== "" && (printedTotal === null || printedTotal < 0)) {
+      setGrvEditError("Enter the invoice total as a number, or leave it blank.");
+      return;
+    }
+
     for (const line of grvEditLines) {
       const quantity = Number(line.quantityReceived);
-      const cost = Number(line.costPerUnit);
+      const price = Number(line.unitPrice);
       if (!Number.isFinite(quantity) || quantity <= 0) {
         setGrvEditError(`${line.ingredientName}: quantity received must be greater than 0.`);
         return;
       }
-      if (!Number.isFinite(cost) || cost < 0) {
-        setGrvEditError(`${line.ingredientName}: cost per unit must be 0 or more.`);
+      if (line.unitPrice.trim() === "" || !Number.isFinite(price) || price < 0) {
+        setGrvEditError(`${line.ingredientName}: enter the unit price as written on the invoice.`);
         return;
       }
     }
@@ -1284,12 +1516,16 @@ export default function InventoryPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           invoiceNumber: grvEditInvoiceNumber.trim(),
+          pricesIncludeVat: grvEditPricesIncludeVat,
+          invoiceTotalInclVat: printedTotal ?? undefined,
           supplierName: grvEditSupplierName.trim(),
           note: grvEditNote.trim() || undefined,
+          // Every existing line must be sent.
           lines: grvEditLines.map((line) => ({
             id: line.id,
             quantityReceived: Number(line.quantityReceived),
-            costPerUnit: Number(line.costPerUnit),
+            unitPrice: Number(line.unitPrice),
+            vatCode: line.vatCode,
           })),
         }),
       });
@@ -1304,7 +1540,7 @@ export default function InventoryPage() {
       await refreshStockSensitiveData();
       toast({
         title: "GRV updated",
-        description: `Invoice ${grv.invoiceNumber} updated.`,
+        description: `Invoice ${grv.invoiceNumber} updated. Total incl. VAT ${moneyOrDash(grv.totalInclVat)}.`,
       });
     } catch (err) {
       setGrvEditError(err instanceof Error ? err.message : "Unable to update GRV.");
@@ -1316,6 +1552,7 @@ export default function InventoryPage() {
   const saveBulkGrvs = async (event: React.FormEvent) => {
     event.preventDefault();
     setGrvBulkError(null);
+    setGrvBulkRowErrors([]);
     setGrvBulkResult(null);
 
     if (!grvBulkFile) {
@@ -1349,19 +1586,17 @@ export default function InventoryPage() {
       return;
     }
 
-    const foundHeaders = parseCsvHeaderLine(nonEmptyLine);
-    const expectedHeaders = [...BULK_GRV_HEADERS];
-    const normalizedFoundHeaders = foundHeaders.map(normalizeCsvHeader);
-    const normalizedExpectedHeaders = expectedHeaders.map(normalizeCsvHeader);
-
-    const hasValidHeaders =
-      normalizedFoundHeaders.length === normalizedExpectedHeaders.length &&
-      normalizedFoundHeaders.every((header, index) => header === normalizedExpectedHeaders[index]);
-
-    if (!hasValidHeaders) {
+    // Header order doesn't matter; the required columns must be present. The server re-validates every row.
+    const normalizedFoundHeaders = new Set(parseCsvHeaderLine(nonEmptyLine).map(normalizeCsvHeader));
+    if (normalizedFoundHeaders.has("COST PER UNIT")) {
       setGrvBulkError(
-        `CSV header mismatch. Expected: ${expectedHeaders.join(",")}. Found: ${foundHeaders.join(",") || "(empty)"}.`,
+        "The Cost Per Unit column has been replaced: use Unit Price (as written on the invoice) and Prices Include VAT (Y/N). Download the new template.",
       );
+      return;
+    }
+    const missingHeaders = BULK_GRV_REQUIRED_HEADERS.filter((header) => !normalizedFoundHeaders.has(header));
+    if (missingHeaders.length > 0) {
+      setGrvBulkError(`The CSV is missing required columns: ${missingHeaders.join(", ")}. Download the template for the expected layout.`);
       return;
     }
 
@@ -1376,6 +1611,15 @@ export default function InventoryPage() {
       });
       const body = (await res.json().catch(() => null)) as BulkGrvImportResultDto | unknown;
       if (!res.ok || !body || typeof body !== "object") {
+        // Row-level errors: the whole file was rejected and nothing was saved.
+        const rowErrors =
+          body && typeof body === "object" && Array.isArray((body as { errors?: unknown }).errors)
+            ? ((body as { errors: unknown[] }).errors.filter((item): item is string => typeof item === "string"))
+            : [];
+        if (rowErrors.length > 0) {
+          setGrvBulkRowErrors(rowErrors);
+          throw new Error("Nothing was imported. Fix these rows and upload the file again:");
+        }
         throw new Error(parseError(body, "Unable to bulk import GRVs."));
       }
 
@@ -1551,7 +1795,7 @@ export default function InventoryPage() {
     }
   };
 
-  if (authLoading || !isAuthenticated || !user?.role?.toUpperCase().includes("ADMIN")) {
+  if (authLoading || !isAuthenticated || !canManageInventory(user?.role)) {
     return null;
   }
 
@@ -1583,7 +1827,10 @@ export default function InventoryPage() {
               ["waste", "Waste"],
               ["stockTake", "Stock Take"],
               ["purchaseOrders", "Purchase Orders"],
-            ] as Array<[InventoryTab, string]>).map(([tab, label]) => (
+            ] as Array<[InventoryTab, string]>)
+              // Head Chefs manage inventory but not stock takes.
+              .filter(([tab]) => tab !== "stockTake" || canManageStockTakes(user?.role))
+              .map(([tab, label]) => (
               <button
                 key={tab}
                 type="button"
@@ -1608,15 +1855,19 @@ export default function InventoryPage() {
                     Manage raw ingredients and see current stock derived from the movement ledger.
                   </p>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant="outline" onClick={openCategoryDialog}>
-                    Manage Categories
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={openBulkIngredientDialog}>
-                    Bulk Upload CSV
-                  </Button>
-                  <Button size="sm" onClick={openCreateIngredient}>+ Add Ingredient</Button>
-                </div>
+                {canEditRecords ? (
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={openCategoryDialog}>
+                      Manage Categories
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={openBulkIngredientDialog}>
+                      Bulk Upload CSV
+                    </Button>
+                    <Button size="sm" onClick={openCreateIngredient}>+ Add Ingredient</Button>
+                  </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground">View only</span>
+                )}
               </div>
 
               <div className="flex flex-wrap items-end gap-3">
@@ -1732,11 +1983,42 @@ export default function InventoryPage() {
                     <Button type="button" size="sm" variant="outline" onClick={() => setGrvViewDialogOpen(true)}>
                       View GRVs
                     </Button>
-                    <Button type="button" size="sm" variant="outline" onClick={openGrvBulkDialog}>
-                      Bulk Upload CSV
-                    </Button>
+                    {canEditRecords && (
+                      <Button type="button" size="sm" variant="outline" onClick={openGrvBulkDialog}>
+                        Bulk Upload CSV
+                      </Button>
+                    )}
                   </div>
                 </div>
+
+                {canEditRecords ? (
+                  <>
+                {lastSavedGrv && (
+                  <div className="space-y-2 rounded-lg border border-emerald-300 bg-emerald-50/60 p-4 text-sm dark:border-emerald-800 dark:bg-emerald-950/30">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="font-medium">
+                        Saved: invoice {lastSavedGrv.invoiceNumber} · {lastSavedGrv.supplierName}{" "}
+                        <InvoiceBasisChip pricesIncludeVat={lastSavedGrv.pricesIncludeVat} />
+                      </p>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setLastSavedGrv(null)}>
+                        Dismiss
+                      </Button>
+                    </div>
+                    <p>
+                      Excl. VAT {moneyOrDash(lastSavedGrv.totalExclVat)} · VAT {moneyOrDash(lastSavedGrv.totalVat)} · Incl. VAT{" "}
+                      <span className="font-semibold">{moneyOrDash(lastSavedGrv.totalInclVat)}</span>
+                    </p>
+                    {lastSavedGrv.invoiceCheck && (
+                      <p className="flex flex-wrap items-center gap-2">
+                        Printed total {moneyOrDash(lastSavedGrv.invoiceTotalInclVat)} <InvoiceCheckChip check={lastSavedGrv.invoiceCheck} />
+                        {lastSavedGrv.invoiceCheck.status === "WARN" && (
+                          <span className="text-xs text-muted-foreground">Saved anyway. Check the invoice and edit today if needed.</span>
+                        )}
+                      </p>
+                    )}
+                    <p className="text-xs text-muted-foreground">These are the saved figures. Stock is costed incl. VAT.</p>
+                  </div>
+                )}
 
                 <LineItemSheet
                   key={grvSheetResetKey}
@@ -1751,10 +2033,12 @@ export default function InventoryPage() {
                   columnConfig={{
                     reasonRequirement: "hidden",
                     quantityMode: { kind: "orderedReceived", receivedLabel: "Qty Received", showVariance: true },
-                    showLineValue: true,
+                    // The VAT columns (excl. / VAT / incl.) replace the single line value.
+                    showLineValue: false,
                     unitValueEditable: true,
-                    unitValueLabel: "Unit Cost",
+                    unitValueLabel: "Unit Price (as invoiced)",
                   }}
+                  vat={{ standardRate: vatRate }}
                   ingredientOptions={grvIngredientOptions}
                   requestedByName={user?.name ?? "Admin"}
                   submitLabel="Submit GRV"
@@ -1838,12 +2122,19 @@ export default function InventoryPage() {
                     </div>
                   )}
                 />
+                  </>
+                ) : (
+                  <p className="rounded-md border bg-muted/40 p-3 text-sm text-muted-foreground">
+                    GRVs are captured by an Admin or Stock Admin. Use View GRVs to see deliveries received.
+                  </p>
+                )}
               </div>
             </div>
           )}
 
           {activeTab === "waste" && (
             <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+              {canEditRecords ? (
               <form onSubmit={saveWaste} className="space-y-4 rounded-lg border p-4">
                 <div>
                   <h2 className="text-lg font-semibold">Waste Entry</h2>
@@ -1899,6 +2190,14 @@ export default function InventoryPage() {
                   {wasteSaving ? "Saving…" : "Record Waste"}
                 </Button>
               </form>
+              ) : (
+                <div className="space-y-2 rounded-lg border p-4">
+                  <h2 className="text-lg font-semibold">Waste Entry</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Report waste as a request at the stock-movement station (New Waste Request); it is approved under Stock Requests.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-4 rounded-lg border p-4">
                 <div>
@@ -1929,7 +2228,7 @@ export default function InventoryPage() {
             </div>
           )}
 
-          {activeTab === "stockTake" && (
+          {activeTab === "stockTake" && canManageStockTakes(user?.role) && (
             <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
               <form onSubmit={saveStockTake} className="space-y-4 rounded-lg border p-4">
                 <div>
@@ -2136,6 +2435,26 @@ export default function InventoryPage() {
               </div>
 
               <div className="space-y-1">
+                <Label htmlFor="ingredient-default-vat">Default VAT</Label>
+                <Select value={ingredientDefaultVatCode} onValueChange={(value) => setIngredientDefaultVatCode(value as VatCode)}>
+                  <SelectTrigger id="ingredient-default-vat">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {VAT_CODES.map((code) => (
+                      <SelectItem key={code} value={code}>
+                        {vatCodeLabel(code, vatRate)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Pre-selected on GRV lines. Zero-rated staples (rice, samp, eggs, milk, cooking oil, fresh produce) should be set
+                  here. Confirm with the accountant.
+                </p>
+              </div>
+
+              <div className="space-y-1">
                 <Label>Unit</Label>
                 <Select value={ingredientUnit} onValueChange={(value: IngredientUnit) => setIngredientUnit(value)}>
                   <SelectTrigger>
@@ -2289,11 +2608,25 @@ export default function InventoryPage() {
 
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="mb-2 font-medium">Required header order:</p>
-                <p className="font-mono text-xs">NAME,UNIT,COUNT SHEET</p>
+                <p className="font-mono text-xs">NAME,UNIT,COUNT SHEET[,DEFAULT VAT CODE]</p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  DEFAULT VAT CODE is optional: STANDARD, ZERO_RATED or NO_VAT. A blank cell gives a new ingredient STANDARD and
+                  leaves an existing ingredient&apos;s code unchanged.
+                </p>
               </div>
 
               <div className="rounded-md border bg-muted/40 p-3">
-                <p className="mb-2 font-medium">Sample CSV:</p>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="font-medium">Sample CSV:</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => downloadTextFile("ingredient-upload-template.csv", INGREDIENT_UPLOAD_TEMPLATE)}
+                  >
+                    Download template
+                  </Button>
+                </div>
                 <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
 {bulkIngredientSampleCsv}
                 </pre>
@@ -2384,16 +2717,102 @@ export default function InventoryPage() {
                   onChange={(event) => setGrvTableSearch(event.target.value)}
                 />
               </div>
+              <div className="space-y-1">
+                <Label id="grv-view-mode-label">View</Label>
+                <div role="radiogroup" aria-labelledby="grv-view-mode-label" className="inline-flex rounded-md border p-0.5">
+                  {([
+                    ["invoices", "By invoice"],
+                    ["lines", "By line"],
+                  ] as Array<[GrvViewMode, string]>).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="radio"
+                      aria-checked={grvViewMode === mode}
+                      onClick={() => setGrvViewMode(mode)}
+                      className={`rounded px-3 py-1.5 text-sm font-medium ${
+                        grvViewMode === mode ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <span className="pb-2 text-sm text-muted-foreground whitespace-nowrap">
-                {grvTable.getFilteredRowModel().rows.length} of {grvTableRows.length} lines
+                {grvViewMode === "invoices"
+                  ? `${filteredGrvInvoices.length} of ${grvs.length} invoices`
+                  : `${grvTable.getFilteredRowModel().rows.length} of ${grvTableRows.length} lines`}
               </span>
             </div>
 
             {grvError && <p className="text-sm text-destructive">{grvError}</p>}
 
-            <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border">
               {grvLoading ? (
                 <p className="p-4 text-sm text-muted-foreground animate-pulse">Loading…</p>
+              ) : grvViewMode === "invoices" ? (
+                <table className="w-full caption-bottom text-sm">
+                  <TableHeader>
+                    <TableRow className="sticky top-0 z-10 bg-background">
+                      <TableHead>Invoice</TableHead>
+                      <TableHead>Supplier</TableHead>
+                      <TableHead>Prices</TableHead>
+                      <TableHead className="text-right">Lines</TableHead>
+                      <TableHead className="text-right">Total excl. VAT</TableHead>
+                      <TableHead className="text-right">VAT</TableHead>
+                      <TableHead className="text-right">Total incl. VAT</TableHead>
+                      <TableHead>Invoice check</TableHead>
+                      <TableHead>Received At</TableHead>
+                      <TableHead />
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredGrvInvoices.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="py-8 text-center text-sm text-muted-foreground">No GRVs found.</TableCell>
+                      </TableRow>
+                    ) : (
+                      filteredGrvInvoices.map((grv) => {
+                        // Recorded before VAT capture: only the incl. figures exist.
+                        const legacy = grv.totalExclVat === null || grv.totalExclVat === undefined;
+                        return (
+                          <TableRow key={grv.id}>
+                            <TableCell className="font-medium">{grv.invoiceNumber}</TableCell>
+                            <TableCell>{grv.supplierName}</TableCell>
+                            <TableCell>
+                              <InvoiceBasisChip pricesIncludeVat={grv.pricesIncludeVat} />
+                            </TableCell>
+                            <TableCell className="text-right">{grv.lines.length}</TableCell>
+                            <TableCell className="text-right tabular-nums">
+                              {moneyOrDash(grv.totalExclVat)}
+                              {legacy && <span className="block text-[11px] text-muted-foreground">Recorded before VAT capture</span>}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">{moneyOrDash(grv.totalVat)}</TableCell>
+                            <TableCell className="text-right font-medium tabular-nums">{moneyOrDash(grv.totalInclVat)}</TableCell>
+                            <TableCell>
+                              {grv.invoiceCheck ? <InvoiceCheckChip check={grv.invoiceCheck} /> : <span className="text-muted-foreground">—</span>}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap">{formatDateTime(grv.receivedAt)}</TableCell>
+                            <TableCell>
+                              {canEditRecords && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  disabled={!grvEditable(grv)}
+                                  title={grvEditable(grv) ? undefined : "GRVs can only be edited on the day they were received"}
+                                  onClick={() => openGrvEditDialog(grv)}
+                                >
+                                  Edit
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })
+                    )}
+                  </TableBody>
+                </table>
               ) : (
                 <table className="w-full caption-bottom text-sm">
                   <TableHeader>
@@ -2429,7 +2848,7 @@ export default function InventoryPage() {
         </Dialog>
 
         <Dialog open={grvEditDialogOpen} onOpenChange={setGrvEditDialogOpen}>
-          <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
+          <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-4xl">
             <DialogHeader>
               <DialogTitle>Edit GRV</DialogTitle>
               <DialogDescription>
@@ -2465,14 +2884,49 @@ export default function InventoryPage() {
                   <Input id="grv-edit-note" value={grvEditNote} onChange={(event) => setGrvEditNote(event.target.value)} />
                 </div>
 
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label id="grv-edit-basis-label">
+                      Prices on this invoice <span className="text-destructive">*</span>
+                    </Label>
+                    <div>
+                      <PricesIncludeVatToggle
+                        value={grvEditPricesIncludeVat}
+                        onChange={setGrvEditPricesIncludeVat}
+                        labelId="grv-edit-basis-label"
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="grv-edit-invoice-total">Invoice total incl. VAT (as printed, optional)</Label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input
+                        id="grv-edit-invoice-total"
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={grvEditInvoiceTotal}
+                        onChange={(event) => setGrvEditInvoiceTotal(event.target.value)}
+                        className="w-36"
+                      />
+                      {grvEditVatPreview && grvEditVatPreview.check && <InvoiceCheckChip check={grvEditVatPreview.check} />}
+                    </div>
+                  </div>
+                </div>
+
                 <div className="space-y-2">
                   <Label>Lines</Label>
+                  <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Ingredient</TableHead>
                         <TableHead>Qty Received</TableHead>
-                        <TableHead>Cost / Unit</TableHead>
+                        <TableHead>Unit Price (as invoiced)</TableHead>
+                        <TableHead>VAT</TableHead>
+                        <TableHead className="text-right">Line excl.</TableHead>
+                        <TableHead className="text-right">VAT</TableHead>
+                        <TableHead className="text-right">Line incl.</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -2499,20 +2953,50 @@ export default function InventoryPage() {
                               type="number"
                               min="0"
                               step="0.01"
-                              value={line.costPerUnit}
+                              value={line.unitPrice}
                               onChange={(event) =>
                                 setGrvEditLines((prev) =>
-                                  prev.map((l, i) => (i === index ? { ...l, costPerUnit: event.target.value } : l)),
+                                  prev.map((l, i) => (i === index ? { ...l, unitPrice: event.target.value } : l)),
                                 )
                               }
                               className="w-28"
                               required
                             />
                           </TableCell>
+                          <TableCell>
+                            <VatCodeSelect
+                              value={line.vatCode}
+                              onChange={(vatCode) =>
+                                setGrvEditLines((prev) => prev.map((l, i) => (i === index ? { ...l, vatCode } : l)))
+                              }
+                              standardRate={vatRate}
+                            />
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {moneyOrDash(grvEditVatPreview?.lines[index]?.lineExclVat)}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{moneyOrDash(grvEditVatPreview?.lines[index]?.lineVat)}</TableCell>
+                          <TableCell className="text-right tabular-nums">
+                            {moneyOrDash(grvEditVatPreview?.lines[index]?.lineInclVat)}
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
+                    {grvEditVatPreview && (
+                      <TableBody>
+                        <TableRow className="font-medium">
+                          <TableCell colSpan={4}>Totals</TableCell>
+                          <TableCell className="text-right tabular-nums">{moneyOrDash(grvEditVatPreview.totals.totalExclVat)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{moneyOrDash(grvEditVatPreview.totals.totalVat)}</TableCell>
+                          <TableCell className="text-right tabular-nums">{moneyOrDash(grvEditVatPreview.totals.totalInclVat)}</TableCell>
+                        </TableRow>
+                      </TableBody>
+                    )}
                   </Table>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    A preview using the current VAT rate. Saving recalculates everything, including stock.
+                  </p>
                 </div>
 
                 {grvEditError && <p className="text-sm text-destructive">{grvEditError}</p>}
@@ -2531,14 +3015,15 @@ export default function InventoryPage() {
         </Dialog>
 
         <Dialog open={grvBulkDialogOpen} onOpenChange={setGrvBulkDialogOpen}>
-          <DialogContent className="sm:max-w-2xl">
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>Bulk Upload GRVs (CSV)</DialogTitle>
             </DialogHeader>
 
             <form onSubmit={saveBulkGrvs} className="space-y-4 text-sm">
               <p className="text-muted-foreground">
-                Prepare your GRV CSV using the exact column order below, then upload to import GRVs in bulk.
+                Enter each invoice exactly as written. Rows sharing an Invoice Number become one GRV with several lines, and must
+                agree on supplier, Prices Include VAT and Invoice Total. The whole file is checked first: any error saves nothing.
               </p>
 
               <div className="space-y-1">
@@ -2551,6 +3036,7 @@ export default function InventoryPage() {
                     const file = event.target.files?.[0] ?? null;
                     setGrvBulkFile(file);
                     setGrvBulkError(null);
+                    setGrvBulkRowErrors([]);
                     setGrvBulkResult(null);
                   }}
                 />
@@ -2559,26 +3045,88 @@ export default function InventoryPage() {
                 )}
               </div>
 
-              <div className="rounded-md border bg-muted/40 p-3">
-                <p className="mb-2 font-medium">Required header order:</p>
-                <p className="font-mono text-xs">INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL),INVOICE NUMBER</p>
+              <div className="space-y-2 rounded-md border bg-muted/40 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-medium">Columns (any order)</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => downloadTextFile("grv-upload-template.csv", GRV_UPLOAD_TEMPLATE)}
+                  >
+                    Download template
+                  </Button>
+                </div>
+                <p className="text-xs">
+                  <span className="font-medium">Required:</span>{" "}
+                  <span className="font-mono">{BULK_GRV_REQUIRED_HEADERS.join(", ")}</span>
+                </p>
+                <p className="text-xs">
+                  <span className="font-medium">Optional:</span> <span className="font-mono">{BULK_GRV_OPTIONAL_HEADERS.join(", ")}</span>
+                </p>
+                <ul className="list-disc space-y-0.5 pl-5 text-xs text-muted-foreground">
+                  <li>Unit Price is the price exactly as printed on the invoice.</li>
+                  <li>Prices Include VAT: Y or N (Yes/No and True/False also work).</li>
+                  <li>VAT Code: STANDARD, ZERO_RATED or NO_VAT. Leave blank to use the ingredient&apos;s default.</li>
+                  <li>Invoice Total: the printed VAT-inclusive total, used to check the invoice.</li>
+                </ul>
               </div>
 
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="mb-2 font-medium">Sample CSV:</p>
-                <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
-{`INGREDIENT NAME,QUANTITY,COST PER UNIT,SUPPLIER NAME,NOTE (OPTIONAL),INVOICE NUMBER
-Tomato,25,17.50,Fresh Farms,Weekly produce delivery,INV-1001
-Olive Oil,12,89.00,Med Supply,,INV-1002
-Paper Straw,500,0.35,Bar Essentials,Promo weekend restock,INV-1003`}
-                </pre>
+                <pre className="overflow-x-auto whitespace-pre font-mono text-xs leading-relaxed">{GRV_UPLOAD_TEMPLATE}</pre>
               </div>
 
               {grvBulkError && <p className="text-sm text-destructive">{grvBulkError}</p>}
+              {grvBulkRowErrors.length > 0 && (
+                <ul className="max-h-40 list-disc space-y-1 overflow-y-auto rounded-md border border-destructive/40 bg-destructive/5 py-2 pl-7 pr-3 text-xs text-destructive">
+                  {grvBulkRowErrors.map((message) => (
+                    <li key={message}>{message}</li>
+                  ))}
+                </ul>
+              )}
 
               {grvBulkResult && (
-                <div className="rounded-md border bg-emerald-50 p-3 text-sm text-emerald-900">
-                  Imported successfully: {grvBulkResult.created} GRV records created.
+                <div className="space-y-2 rounded-md border border-emerald-300 bg-emerald-50/60 p-3 text-sm dark:border-emerald-800 dark:bg-emerald-950/30">
+                  <p className="font-medium">Imported: {grvBulkResult.created} GRVs created. Compare each invoice with the paper copy:</p>
+                  {(grvBulkResult.invoices ?? []).length > 0 && (
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Invoice</TableHead>
+                            <TableHead>Prices</TableHead>
+                            <TableHead className="text-right">Lines</TableHead>
+                            <TableHead className="text-right">Excl. VAT</TableHead>
+                            <TableHead className="text-right">VAT</TableHead>
+                            <TableHead className="text-right">Incl. VAT</TableHead>
+                            <TableHead>Invoice check</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(grvBulkResult.invoices ?? []).map((invoice) => (
+                            <TableRow key={invoice.invoiceNumber}>
+                              <TableCell className="font-medium">{invoice.invoiceNumber}</TableCell>
+                              <TableCell>
+                                <InvoiceBasisChip pricesIncludeVat={invoice.pricesIncludeVat} />
+                              </TableCell>
+                              <TableCell className="text-right">{invoice.lineCount}</TableCell>
+                              <TableCell className="text-right tabular-nums">{moneyOrDash(invoice.totalExclVat)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{moneyOrDash(invoice.totalVat)}</TableCell>
+                              <TableCell className="text-right font-medium tabular-nums">{moneyOrDash(invoice.totalInclVat)}</TableCell>
+                              <TableCell>
+                                {invoice.invoiceCheck ? (
+                                  <InvoiceCheckChip check={invoice.invoiceCheck} />
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">No printed total</span>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
                 </div>
               )}
 
