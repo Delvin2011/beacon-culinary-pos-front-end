@@ -1,4 +1,5 @@
 import { formatZarCurrency } from "@/lib/utils"
+import type { OrderKind } from "@/lib/complimentary"
 
 // Types and formatting for the POS oversight endpoints (/admin/shifts, /shifts/open).
 // Timestamps on these endpoints are ISO-8601 UTC with a trailing "Z".
@@ -21,6 +22,7 @@ export interface AdminShiftRow {
   closingCash: number | null
   expectedCash: number
   variance: number | null
+  // Sale orders only; complimentary orders are not counted.
   orderCount: number
 }
 
@@ -58,6 +60,7 @@ export interface CountAmount {
 export type PaymentMethodCode = "CASH" | "CARD" | "ACCOUNT"
 
 export interface ShiftActivityTotals {
+  // Sale orders only.
   orderCount: number
   salesByMethod: Record<PaymentMethodCode, number>
   voids: CountAmount
@@ -67,17 +70,23 @@ export interface ShiftActivityTotals {
   extrasRemoved: CountAmount
   // Old after-payment discounts processed in this shift. Present only when non-zero.
   legacyDiscountsAfterPayment?: CountAmount
+  // Complimentary orders at list price. Kept out of sales, voids and every cash figure.
+  complimentary: CountAmount
 }
 
 export interface ShiftActivityOrder {
   orderId: number
   orderNumber: number
+  orderKind: OrderKind
   createdAt: string
   rungBy: PersonRef
   status: string
   originalTotal: number
   total: number
   saleDiscount?: number
+  // List value, if the server sends it; a complimentary order's totals are 0.
+  preDiscountTotal?: number
+  // Empty for a complimentary order.
   payments: { method: PaymentMethodCode; amount: number }[]
   // True for a discount at sale or an old after-payment discount.
   discounted: boolean
@@ -91,6 +100,8 @@ export interface ShiftActivityAdjustment {
   createdAt: string
   orderId: number
   orderNumber: number
+  // A complimentary void is a R0.00 row that totals.voids leaves out.
+  orderKind: OrderKind
   type: AdjustmentType
   amount: number
   refundMethod: "CASH" | "ACCOUNT_BALANCE"

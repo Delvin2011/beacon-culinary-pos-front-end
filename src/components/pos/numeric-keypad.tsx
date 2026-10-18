@@ -41,7 +41,7 @@ export function NumericKeypad({
   };
 
   return (
-    <div className={`grid grid-cols-3 w-full ${compact ? "gap-2 max-w-[15rem]" : "gap-3 max-w-xs"}`}>
+    <div className={`grid grid-cols-3 w-full ${compact ? "gap-2.5 max-w-[26rem]" : "gap-3 max-w-xs"}`}>
       {KEYS.map((key, i) => {
         if (key === "") {
           return <div key={i} aria-hidden />;
@@ -54,7 +54,7 @@ export function NumericKeypad({
             disabled={disabled}
             onClick={() => handleKey(key)}
             className={`flex w-full items-center justify-center bg-white/10 font-semibold text-white transition-colors hover:bg-white/20 active:scale-95 active:bg-white/30 disabled:pointer-events-none disabled:opacity-40 select-none ${
-              compact ? "h-14 rounded-xl text-xl" : "h-[72px] rounded-2xl text-2xl"
+              compact ? "h-16 rounded-xl text-2xl" : "h-[72px] rounded-2xl text-2xl"
             }`}
           >
             {key === "backspace" ? <Delete className="h-6 w-6" /> : key}

@@ -13,7 +13,7 @@ import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
 import { useAuth } from "@/hooks/use-auth"
-import { canManageInventory, canManageMenu, canManageStockTakes, isAdminRole } from "@/lib/roles"
+import { canManageInventory, canManageMenu, canManageStockTakes, canViewReports, isAdminRole } from "@/lib/roles"
 import {
   Sidebar,
   SidebarContent,
@@ -96,7 +96,7 @@ const data = {
       url: "/reports",
       icon: FileBarChart,
       isActive: true,
-      access: "admin" as const,
+      access: "reports" as const,
       items: [
         {
           title: "All Reports",
@@ -135,6 +135,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       if (access === "inventory") return canManageInventory(role)
       if (access === "stockTakes") return canManageStockTakes(role)
       if (access === "menu") return canManageMenu(role)
+      if (access === "reports") return canViewReports(role)
       return true
     }
     return data.navMain

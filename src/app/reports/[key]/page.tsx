@@ -23,10 +23,15 @@ import {
   detectPreset,
   filenameFromDisposition,
   formatCalendarDate,
+  formatInt,
   humaniseEnum,
+  isParamSet,
+  paramOptions,
   parseFieldErrors,
   presetRange,
   resolveParamDefault,
+  selectPrompt,
+  withArticle,
   type DatePreset,
   type ReportDefinition,
   type ReportEnvelope,
@@ -127,7 +132,19 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
   const [exportError, setExportError] = useState<string | null>(null)
   const [users, setUsers] = useState<UserOption[]>([])
 
+  // Required parameters (e.g. the statement's account): nothing runs until they are set.
+  const requiredParams = definition.params.filter((param) => param.required)
+  const missingRequired = requiredParams.find((param) => (applied[param.name] ?? "") === "")
+  const draftComplete = requiredParams.every((param) => isParamSet(param, draft[param.name] ?? ""))
+
   const runReport = useCallback(async () => {
+    if (missingRequired) {
+      setEnvelope(null)
+      setRunError(null)
+      setFieldErrors({})
+      setRunning(false)
+      return
+    }
     setRunning(true)
     setRunError(null)
     setFieldErrors({})
@@ -150,7 +167,7 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
     } finally {
       setRunning(false)
     }
-  }, [appliedQuery, authFetch, definition.key])
+  }, [appliedQuery, authFetch, definition.key, missingRequired])
 
   useEffect(() => {
     void runReport()
@@ -232,18 +249,27 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
         return text === "true" ? "Yes" : "No"
       case "USER":
         return users.find((user) => String(user.id) === text)?.name ?? `User #${text}`
+      case "ID":
+        return meta?.paramLabels?.[param.name] ?? paramOptions(param).find((option) => option.value === text)?.label ?? text
+      case "LIMIT":
+        return text === "ALL" ? "All" : text
       default:
         return humaniseEnum(text)
     }
   }
 
   const meta = envelope?.meta
+  const paramLabels = Object.values(meta?.paramLabels ?? {})
+  const emptyStateParam = missingRequired ?? requiredParams.find((param) => fieldErrors[param.name])
 
   return (
     <div className="space-y-4">
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold">{definition.title}</h1>
+          <h1 className="text-lg font-semibold">
+            {definition.title}
+            {paramLabels.length > 0 && <span className="font-normal text-muted-foreground"> · {paramLabels.join(" · ")}</span>}
+          </h1>
           <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">{categoryLabel(definition.category)}</span>
           {meta?.amountsInclVat && <span className="text-xs text-muted-foreground">Amounts include VAT</span>}
         </div>
@@ -324,7 +350,7 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
           />
         ))}
 
-        <Button type="submit" size="sm" disabled={running}>
+        <Button type="submit" size="sm" disabled={running || !draftComplete}>
           {running ? "Running…" : "Apply"}
         </Button>
       </form>
@@ -363,7 +389,11 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
         </p>
       )}
 
-      {runError ? (
+      {emptyStateParam && !envelope ? (
+        <div className="rounded-md border border-dashed p-10 text-center text-sm text-muted-foreground">
+          Choose {withArticle(emptyStateParam.label)} to see this report.
+        </div>
+      ) : runError ? (
         <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-4">
           <p className="text-sm text-destructive">{runError}</p>
           <Button size="sm" variant="outline" onClick={() => void runReport()}>
@@ -379,6 +409,11 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
       ) : envelope ? (
         <div className={running ? "space-y-3 opacity-60 transition-opacity" : "space-y-3"} aria-busy={running}>
           <ReportChecks meta={envelope.meta} checks={envelope.checks ?? []} />
+          {envelope.page && (
+            <p className="text-xs text-muted-foreground">
+              Showing {formatInt(envelope.rows.length)} of {formatInt(envelope.page.totalRows)} rows
+            </p>
+          )}
           <ReportTable title={definition.title} columns={envelope.columns} rows={envelope.rows} totals={envelope.totals} />
         </div>
       ) : null}
@@ -400,7 +435,8 @@ function ParamControl({
   users: UserOption[]
 }) {
   const id = `report-${param.name}`
-  const optional = param.default === undefined || param.default === null
+  // LIMIT always has a value ("ALL" by default), so it never gets the extra "All" item.
+  const optional = !param.required && param.type !== "LIMIT" && (param.default === undefined || param.default === null)
 
   let control: React.ReactNode
   switch (param.type) {
@@ -425,15 +461,20 @@ function ParamControl({
       )
       break
     case "USER":
-    case "ENUM": {
+    case "ENUM":
+    case "ID":
+    case "LIMIT": {
       const options =
-        param.type === "USER"
-          ? users.map((user) => ({ value: String(user.id), label: user.name }))
-          : (param.options ?? []).map((option) => ({ value: option, label: humaniseEnum(option) }))
+        param.type === "USER" ? users.map((user) => ({ value: String(user.id), label: user.name })) : paramOptions(param)
+      const known = value === "" || options.some((option) => option.value === value)
+      // A URL limit outside the offered list (e.g. ?limit=2) stays selected as an extra choice.
+      if (!known && param.type === "LIMIT") options.push({ value, label: value })
+      // An ID that is no longer an option (deleted account) shows as unselected; the server's 400 explains why.
+      const shown = known || param.type === "LIMIT" ? value : ""
       control = (
-        <Select value={value === "" ? ANY : value} onValueChange={(next) => onChange(next === ANY ? "" : next)}>
-          <SelectTrigger id={id} className="w-[180px]" aria-invalid={!!error}>
-            <SelectValue placeholder="All" />
+        <Select value={shown === "" ? (optional ? ANY : "") : shown} onValueChange={(next) => onChange(next === ANY ? "" : next)}>
+          <SelectTrigger id={id} className={param.type === "ID" ? "w-[220px]" : "w-[180px]"} aria-invalid={!!error}>
+            <SelectValue placeholder={param.required ? selectPrompt(param) : "All"} />
           </SelectTrigger>
           <SelectContent>
             {optional && <SelectItem value={ANY}>All</SelectItem>}
@@ -451,11 +492,20 @@ function ParamControl({
       control = <Input id={id} value={value} onChange={(event) => onChange(event.target.value)} aria-invalid={!!error} className="w-[180px]" />
   }
 
+  const missing = param.required && !isParamSet(param, value)
+
   return (
     <div className="space-y-1">
-      <Label htmlFor={id}>{param.label}</Label>
+      <Label htmlFor={id}>
+        {param.label}
+        {param.required && <span className="ml-1 text-xs font-normal text-muted-foreground">(required)</span>}
+      </Label>
       {control}
-      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">{error}</p>
+      ) : (
+        missing && <p className="text-xs text-muted-foreground">{selectPrompt(param)}</p>
+      )}
     </div>
   )
 }

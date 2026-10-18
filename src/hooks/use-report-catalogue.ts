@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from "react"
 import { useAuth } from "@/hooks/use-auth"
-import { isAdminRole } from "@/lib/roles"
+import { canViewReports } from "@/lib/roles"
 import type { ReportDefinition } from "@/lib/reports"
 
 // GET /admin/reports: only the reports the caller may run.
 export function useReportCatalogue() {
   const { authFetch, isAuthenticated, user } = useAuth()
-  const canLoad = isAuthenticated && isAdminRole(user?.role)
+  const canLoad = isAuthenticated && canViewReports(user?.role)
   const [reports, setReports] = useState<ReportDefinition[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

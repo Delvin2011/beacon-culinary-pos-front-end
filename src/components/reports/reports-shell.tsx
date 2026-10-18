@@ -14,13 +14,13 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import { Separator } from "@/components/ui/separator"
-import { isAdminRole } from "@/lib/roles"
+import { canViewReports } from "@/lib/roles"
 
-// Admin-only back-office frame for /reports and /reports/[key].
+// Back-office frame (Admin, Head Chef) for /reports and /reports/[key].
 export function ReportsShell({ current, children }: { current?: string; children: ReactNode }) {
   const router = useRouter()
   const { isAuthenticated, isLoading: authLoading, user } = useAuth()
-  const isAdmin = isAdminRole(user?.role)
+  const canView = canViewReports(user?.role)
 
   useEffect(() => {
     if (authLoading) return
@@ -28,10 +28,10 @@ export function ReportsShell({ current, children }: { current?: string; children
       router.replace("/login")
       return
     }
-    if (!isAdmin) router.replace("/dashboard")
-  }, [authLoading, isAdmin, isAuthenticated, router])
+    if (!canView) router.replace("/dashboard")
+  }, [authLoading, canView, isAuthenticated, router])
 
-  if (authLoading || !isAuthenticated || !isAdmin) return null
+  if (authLoading || !isAuthenticated || !canView) return null
 
   return (
     <SidebarProvider>

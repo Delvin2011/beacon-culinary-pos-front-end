@@ -50,6 +50,12 @@ export function canEditInventoryRecords(role?: string): boolean {
   return normalised === "ADMIN" || normalised === "STOCK_ADMIN";
 }
 
+// The reports hub and viewer. The server's catalogue decides which reports each role sees.
+export function canViewReports(role?: string): boolean {
+  const normalised = normaliseRole(role);
+  return normalised === "ADMIN" || normalised === "HEAD_CHEF";
+}
+
 // Creating or editing catalog items (components, meals, recipes). Head Chefs view the catalog.
 export function canEditCatalog(role?: string): boolean {
   return normaliseRole(role) === "ADMIN";

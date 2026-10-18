@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Gift, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
@@ -11,6 +11,14 @@ import {
 } from "@/components/pos/adjustment-reason-fields";
 import { Input } from "@/components/ui/input";
 import { formatZarCurrency } from "@/lib/utils";
+import {
+  COMPLIMENTARY_REASONS,
+  complimentaryReasonLabel,
+  isComplimentary,
+  type ComplimentaryReasonCode,
+  type OrderComplimentary,
+  type OrderKind,
+} from "@/lib/complimentary";
 
 type MealPeriod = {
   id: number;
@@ -157,6 +165,9 @@ type OrderDto = {
   preDiscountTotal?: number;
   saleDiscount?: number;
   discount?: OrderSaleDiscountDto | null;
+  // COMPLIMENTARY orders take no payment: total is 0 and preDiscountTotal is the list value.
+  orderKind?: OrderKind;
+  complimentary?: OrderComplimentary | null;
   printFailed?: boolean;
   rungBy?: { id: number; name: string; role?: string };
   lines?: OrderLineDto[];
@@ -432,6 +443,41 @@ export function PosOrderBuilder({
       </span>
     ) : null;
 
+  const renderComplimentaryBadge = () => (
+    <span className="ml-1.5 inline-flex items-center gap-1 rounded border border-violet-300/40 bg-violet-500/15 px-1.5 text-[10px] font-semibold uppercase text-violet-200">
+      <Gift className="h-3 w-3" aria-hidden />
+      Complimentary
+    </span>
+  );
+
+  // A complimentary row shows its list value, never R0.00 alone.
+  const renderOrderListItem = (order: OrderDto) => {
+    const complimentary = isComplimentary(order);
+    return (
+      <>
+        <div className="flex items-center justify-between gap-2">
+          <p className="font-semibold text-slate-100">
+            #{order.orderNumber}
+            {complimentary && renderComplimentaryBadge()}
+          </p>
+          {complimentary ? (
+            <p className="text-right text-sm font-medium text-slate-200">
+              {toMoney(order.preDiscountTotal ?? 0)} <span className="text-xs font-normal text-slate-400">at list price</span>
+            </p>
+          ) : (
+            <p className="text-sm font-medium text-slate-200">{toMoney(order.total)}</p>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-slate-400">
+          {complimentary ? `${toMoney(0)} paid · ` : ""}
+          {order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "Time unavailable"}
+          {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
+          {renderRungBy(order)}
+        </p>
+      </>
+    );
+  };
+
   const renderRungBy = (order: OrderDto) =>
     order.rungBy ? (
       <>
@@ -476,6 +522,13 @@ export function PosOrderBuilder({
   const [saleDiscountDraftReason, setSaleDiscountDraftReason] = useState<SaleDiscountReasonCode>("PROMOTION");
   const [saleDiscountDraftNote, setSaleDiscountDraftNote] = useState("");
   const [saleDiscountError, setSaleDiscountError] = useState<string | null>(null);
+  // Complimentary at checkout: no payment step; a manager approves it the same way as a discount.
+  const [showComplimentaryForm, setShowComplimentaryForm] = useState(false);
+  const [complimentaryReason, setComplimentaryReason] = useState<ComplimentaryReasonCode | null>(null);
+  const [complimentaryNote, setComplimentaryNote] = useState("");
+  const [complimentaryError, setComplimentaryError] = useState<string | null>(null);
+  // Kept after a 400 or a stock conflict: the order rolled back, so the approval is reused on retry.
+  const [complimentaryToken, setComplimentaryToken] = useState<string | null>(null);
 
   const [completedOrder, setCompletedOrder] = useState<OrderDto | null>(null);
   const [completedOrderId, setCompletedOrderId] = useState<number | null>(null);
@@ -796,8 +849,40 @@ export function PosOrderBuilder({
     );
   };
 
+  const resetComplimentary = () => {
+    setShowComplimentaryForm(false);
+    setComplimentaryReason(null);
+    setComplimentaryNote("");
+    setComplimentaryError(null);
+    setComplimentaryToken(null);
+  };
+
+  const closePaymentStep = () => {
+    resetSaleDiscount();
+    setShowPayment(false);
+    setPaymentEntries([]);
+    setPaymentAmountInput("");
+    setCashTenderedInput("");
+    setCardReference("");
+    setCardReferenceError(null);
+    setPaymentEntryError(null);
+    setAccountsError(null);
+    setAccountSearch("");
+    setSelectedAccountId(null);
+  };
+
+  // Complimentary and discount are exclusive, and a complimentary order has no payment step.
+  const openComplimentaryForm = () => {
+    if (draftLines.length === 0 || saleDiscount) return;
+    closePaymentStep();
+    setSubmissionError(null);
+    setComplimentaryError(null);
+    setShowComplimentaryForm(true);
+  };
+
   const clearDraft = () => {
     resetSaleDiscount();
+    resetComplimentary();
     setDraftLines([]);
     setSubmissionError(null);
     setShowPayment(false);
@@ -1098,6 +1183,38 @@ export function PosOrderBuilder({
     [authFetch],
   );
 
+  const buildLinesPayload = () =>
+    draftLines.map((line) => ({
+      dailyMealOptionId: line.dailyMealOptionId,
+      quantity: line.quantity,
+      extras: line.extras.map((ex) => ({
+        dailyComponentStockId: ex.dailyComponentStockId,
+        quantity: ex.quantity,
+      })),
+    }));
+
+  // After POST /orders succeeds, sale or complimentary: clear checkout and show the receipt.
+  const finishOrder = async (order: OrderDto) => {
+    setCompletedOrderId(order.id);
+    setCompletedOrder(order);
+    setReceiptOrder(null);
+    setReceiptError(null);
+    resetSaleDiscount();
+    resetComplimentary();
+    setDraftLines([]);
+    setShowPayment(false);
+    setPaymentMethod("CASH");
+    setPaymentEntries([]);
+    setPaymentAmountInput("");
+    setCashTenderedInput("");
+    setCardReference("");
+    setPaymentEntryError(null);
+    setAccountSearch("");
+    await loadOrderReceipt(order.id);
+    await loadTodayOrders();
+    await loadMenuForPeriod(selectedPeriod?.name ?? "");
+  };
+
   // discountSessionToken: the manager session approving a discount at sale.
   const submitOrder = async (discountSessionToken?: string) => {
     if (!canConfirmPayment) return;
@@ -1135,14 +1252,7 @@ export function PosOrderBuilder({
         cardReference: entry.cardReference,
         accountId: entry.accountId,
       })),
-      lines: draftLines.map((line) => ({
-        dailyMealOptionId: line.dailyMealOptionId,
-        quantity: line.quantity,
-        extras: line.extras.map((ex) => ({
-          dailyComponentStockId: ex.dailyComponentStockId,
-          quantity: ex.quantity,
-        })),
-      })),
+      lines: buildLinesPayload(),
     };
 
     if (saleDiscount && discountSessionToken) {
@@ -1204,30 +1314,113 @@ export function PosOrderBuilder({
         throw new Error(parseMessage(body, "Order submission failed."));
       }
 
-      const order = body as OrderDto;
-      setCompletedOrderId(order.id);
-      setCompletedOrder(order);
-      setReceiptOrder(null);
-      setReceiptError(null);
-      resetSaleDiscount();
-      setDraftLines([]);
-      setShowPayment(false);
-      setPaymentMethod("CASH");
-      setPaymentEntries([]);
-      setPaymentAmountInput("");
-      setCashTenderedInput("");
-      setCardReference("");
-      setPaymentEntryError(null);
-      setAccountSearch("");
-      await loadOrderReceipt(order.id);
-      await loadTodayOrders();
-      await loadMenuForPeriod(selectedPeriod?.name ?? "");
+      await finishOrder(body as OrderDto);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Order submission failed.";
       setSubmissionError(msg);
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  // A complimentary order: lines and the manager's approval, never payments or a discount.
+  const submitComplimentary = async (sessionToken: string) => {
+    if (draftLines.length === 0 || !complimentaryReason) return;
+
+    setIsSubmitting(true);
+    setSubmissionError(null);
+    setComplimentaryError(null);
+
+    const payload = {
+      lines: buildLinesPayload(),
+      complimentary: {
+        reasonCode: complimentaryReason,
+        note: complimentaryNote.trim() || undefined,
+        authorization: { sessionToken },
+      },
+    };
+
+    try {
+      const res = await authFetch("/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const body = (await res.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
+
+      if (!res.ok) {
+        const errorCode = (body as ApiErrorPayload | null)?.code;
+        if (errorCode === "NO_OPEN_SHIFT") {
+          setShiftClosedWhileSelling(true);
+          return;
+        }
+        if (errorCode === "TILL_IN_USE") {
+          await refetchShift();
+          return;
+        }
+        if (errorCode === "AUTHORIZATION_INVALID" || res.status === 401) {
+          // Bad, expired or already used: drop it and ask for a new PIN.
+          invalidateManagementSession();
+          setComplimentaryToken(null);
+          setComplimentaryError("Manager approval failed. Enter the PIN again.");
+          requestManagementSession((token) => void submitComplimentary(token), {
+            title: "Manager PIN Required",
+            description: "Manager approval failed. Enter the PIN again.",
+            submitLabel: "Approve Complimentary",
+          });
+          return;
+        }
+        if (errorCode === "COMPLIMENTARY_INVALID") {
+          // The approval wasn't used: keep it while the cashier fixes the form.
+          setComplimentaryToken(sessionToken);
+          setComplimentaryError(parseMessage(body, "This complimentary order isn't allowed. Check the reason and note."));
+          return;
+        }
+        if (res.status === 409) {
+          // The order rolled back, so the approval is still valid: retry after fixing the cart, no new PIN.
+          setComplimentaryToken(sessionToken);
+          applyConflictFeedback(body);
+          await loadMenuForPeriod(selectedPeriod?.name ?? "");
+          setComplimentaryError(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
+          return;
+        }
+        throw new Error(parseMessage(body, "Order submission failed."));
+      }
+
+      await finishOrder(body as OrderDto);
+    } catch (err) {
+      setComplimentaryError(err instanceof Error ? err.message : "Order submission failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const complimentaryFormError = (): string | null => {
+    if (!complimentaryReason) return "Choose a reason.";
+    if (complimentaryReason === "OTHER" && !complimentaryNote.trim()) return "A note is required when the reason is Other.";
+    return null;
+  };
+
+  const confirmComplimentary = () => {
+    if (draftLines.length === 0 || saleDiscount || isSubmitting) return;
+    const error = complimentaryFormError();
+    if (error) {
+      setComplimentaryError(error);
+      return;
+    }
+    if (complimentaryToken) {
+      void submitComplimentary(complimentaryToken);
+      return;
+    }
+    // Reuses an open management session, or asks for a manager PIN.
+    requestManagementSession((token) => void submitComplimentary(token), {
+      title: "Manager PIN Required",
+      description: `Enter a manager PIN to give away ${toMoney(draftTotal)}. No payment is taken.`,
+      submitLabel: "Approve Complimentary",
+    });
   };
 
   const beginAdjustment = (scope: OrderAdjustmentScope) => {
@@ -1272,6 +1465,12 @@ export function PosOrderBuilder({
           if (errorCode === "DISCOUNTED_ORDER_NOT_REFUNDABLE") {
             setShowAdjustmentForm(false);
             setAdjustmentError("This order was discounted at sale, so it can't be refunded or have extras removed.");
+            return;
+          }
+
+          if (errorCode === "COMPLIMENTARY_ORDER_NOT_REFUNDABLE") {
+            setShowAdjustmentForm(false);
+            setAdjustmentError("This complimentary order can't be refunded or have extras removed. It can only be voided while pending.");
             return;
           }
 
@@ -1330,7 +1529,13 @@ export function PosOrderBuilder({
             ? `Credited to ${getAccountName(recent.accountId) ?? "linked account"} - no cash or card action needed.`
             : `Hand back ${toMoney(amount)} in cash.${usesCard ? " Originally paid by card - refund is cash." : ""}`;
 
-        if (action === "VOID") {
+        if (isComplimentary(order)) {
+          // Nothing was paid, so nothing is paid back; only the stock returns.
+          const portionsReturned = getTotalMealPortions(order);
+          const extraUnitsReturned = getUnadjustedExtraUnits(order);
+          const extraSuffix = extraUnitsReturned > 0 ? ` and ${extraUnitsReturned} extra units` : "";
+          setAdjustmentSuccess(`Voided · no refund. ${portionsReturned} portions${extraSuffix} returned to today's stock.`);
+        } else if (action === "VOID") {
           if (scope === "WHOLE_ORDER") {
             const portionsReturned = getTotalMealPortions(order);
             const extraUnitsReturned = getUnadjustedExtraUnits(order);
@@ -1425,23 +1630,43 @@ export function PosOrderBuilder({
     const terminalOrder = isTerminalOrderStatus(shownOrder.status);
     // A discounted sale can only be voided while PENDING; refunds and removing extras are refused.
     const discountedAtSale = (shownOrder.saleDiscount ?? 0) > 0;
-    const canCancelOrder = !discountedAtSale || shownOrder.status === "PENDING";
-    const canRemoveExtras = !discountedAtSale && hasAnyUnadjustedExtras(shownOrder);
+    // A complimentary order can only be voided, and only while PENDING. Refund and Remove extras are never offered.
+    const complimentaryOrder = isComplimentary(shownOrder);
+    const canCancelOrder = complimentaryOrder || discountedAtSale ? shownOrder.status === "PENDING" : true;
+    const canRemoveExtras = !complimentaryOrder && !discountedAtSale && hasAnyUnadjustedExtras(shownOrder);
+    const showManagementActions = !terminalOrder && (!complimentaryOrder || canCancelOrder);
     const managementReady = managementSessionActive && Boolean(managementSessionToken);
-    const selectedActionLabel = adjustmentScope === "WHOLE_ORDER" ? "Cancel Order" : "Remove Extras";
+    const selectedActionLabel = complimentaryOrder
+      ? "Void Order"
+      : adjustmentScope === "WHOLE_ORDER"
+        ? "Cancel Order"
+        : "Remove Extras";
     return (
       <>
       <main className="grid flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[1.2fr_0.8fr]">
         <div className="rounded-3xl border border-emerald-500/30 bg-emerald-500/10 p-8">
-          <div className="flex items-center gap-2 text-emerald-300">
-            <CheckCircle2 className="h-5 w-5" />
-            <p className="text-sm font-semibold uppercase tracking-wider">Payment Confirmed</p>
-          </div>
+          {complimentaryOrder ? (
+            <div className="flex items-center gap-2 text-violet-200">
+              <Gift className="h-5 w-5" />
+              <p className="text-sm font-semibold uppercase tracking-wider">Complimentary</p>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-emerald-300">
+              <CheckCircle2 className="h-5 w-5" />
+              <p className="text-sm font-semibold uppercase tracking-wider">Payment Confirmed</p>
+            </div>
+          )}
 
           <p className="mt-6 text-sm text-emerald-200/90">Order Number</p>
           <p className="text-7xl font-black text-white">#{shownOrder.orderNumber}</p>
 
-          {shownChangeDue > 0 ? (
+          {complimentaryOrder ? (
+            <>
+              <p className="mt-6 text-sm text-emerald-200/90">Amount Due</p>
+              <p className="text-6xl font-black text-white">{toMoney(0)}</p>
+              <p className="mt-1 text-sm text-violet-200">List value {toMoney(shownOrder.preDiscountTotal ?? 0)} · no payment</p>
+            </>
+          ) : shownChangeDue > 0 ? (
             <>
               <p className="mt-6 text-sm text-emerald-200/90">Change Due</p>
               <p className="text-6xl font-black text-white">{toMoney(shownChangeDue)}</p>
@@ -1455,48 +1680,60 @@ export function PosOrderBuilder({
 
           <div className="mt-8 grid gap-2 text-sm text-emerald-100">
             {shownOrder.status && <p>Status: {shownOrder.status.replace("_", " ")}</p>}
-            <p>Subtotal: {toMoney(shownOrder.subtotal)}</p>
-            {(shownOrder.saleDiscount ?? 0) > 0 ? (
+            {complimentaryOrder ? (
+              shownOrder.complimentary && (
+                <>
+                  <p>Reason: {complimentaryReasonLabel(shownOrder.complimentary.reasonCode)}</p>
+                  {shownOrder.complimentary.note && <p>Note: {shownOrder.complimentary.note}</p>}
+                  <p>Approved by {shownOrder.complimentary.authorizedBy.name}</p>
+                </>
+              )
+            ) : (
               <>
-                {typeof shownOrder.preDiscountTotal === "number" && (
-                  <p>Total before discount: {toMoney(shownOrder.preDiscountTotal)}</p>
+                <p>Subtotal: {toMoney(shownOrder.subtotal)}</p>
+                {(shownOrder.saleDiscount ?? 0) > 0 ? (
+                  <>
+                    {typeof shownOrder.preDiscountTotal === "number" && (
+                      <p>Total before discount: {toMoney(shownOrder.preDiscountTotal)}</p>
+                    )}
+                    <p>
+                      Discount
+                      {shownOrder.discount
+                        ? ` (${shownOrder.discount.type === "PERCENTAGE" ? `${shownOrder.discount.value}%` : "fixed"} · ${saleDiscountReasonLabel(shownOrder.discount.reasonCode)})`
+                        : ""}
+                      : −{toMoney(shownOrder.saleDiscount ?? 0)}
+                    </p>
+                    {shownOrder.discount?.authorizedBy && <p>Discount approved by: {shownOrder.discount.authorizedBy.name}</p>}
+                    {typeof shownOrder.originalTotal === "number" && (
+                      <p className="font-semibold">Amount paid: {toMoney(shownOrder.originalTotal)}</p>
+                    )}
+                  </>
+                ) : (
+                  typeof shownOrder.originalTotal === "number" && <p>Amount paid: {toMoney(shownOrder.originalTotal)}</p>
                 )}
-                <p>
-                  Discount
-                  {shownOrder.discount
-                    ? ` (${shownOrder.discount.type === "PERCENTAGE" ? `${shownOrder.discount.value}%` : "fixed"} · ${saleDiscountReasonLabel(shownOrder.discount.reasonCode)})`
-                    : ""}
-                  : −{toMoney(shownOrder.saleDiscount ?? 0)}
-                </p>
-                {shownOrder.discount?.authorizedBy && <p>Discount approved by: {shownOrder.discount.authorizedBy.name}</p>}
-                {typeof shownOrder.originalTotal === "number" && (
-                  <p className="font-semibold">Amount paid: {toMoney(shownOrder.originalTotal)}</p>
+                {(typeof shownOrder.originalTotal !== "number" || toCents(shownOrder.originalTotal) !== toCents(shownOrder.total)) && (
+                  <p>Total after adjustments: {toMoney(shownOrder.total)}</p>
+                )}
+                {shownPayments.length > 0 && (
+                  <div className="rounded-lg border border-emerald-200/20 bg-emerald-500/10 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-emerald-200">Payments</p>
+                    <div className="mt-2 space-y-1">
+                      {shownPayments.map((payment) => (
+                        <div key={payment.id} className="text-xs text-emerald-100/95">
+                          <p>
+                            {payment.method}: {toMoney(payment.amount)}
+                            {payment.method === "ACCOUNT" && payment.accountId ? ` to ${getAccountName(payment.accountId)}` : ""}
+                          </p>
+                          {payment.method === "CASH" && typeof payment.amountTendered === "number" && (
+                            <p>Tendered: {toMoney(payment.amountTendered)}{payment.changeDue ? ` · Change ${toMoney(payment.changeDue)}` : ""}</p>
+                          )}
+                          {payment.method === "CARD" && payment.cardReference && <p>Card Ref: {payment.cardReference}</p>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </>
-            ) : (
-              typeof shownOrder.originalTotal === "number" && <p>Amount paid: {toMoney(shownOrder.originalTotal)}</p>
-            )}
-            {(typeof shownOrder.originalTotal !== "number" || toCents(shownOrder.originalTotal) !== toCents(shownOrder.total)) && (
-              <p>Total after adjustments: {toMoney(shownOrder.total)}</p>
-            )}
-            {shownPayments.length > 0 && (
-              <div className="rounded-lg border border-emerald-200/20 bg-emerald-500/10 p-3">
-                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-200">Payments</p>
-                <div className="mt-2 space-y-1">
-                  {shownPayments.map((payment) => (
-                    <div key={payment.id} className="text-xs text-emerald-100/95">
-                      <p>
-                        {payment.method}: {toMoney(payment.amount)}
-                        {payment.method === "ACCOUNT" && payment.accountId ? ` to ${getAccountName(payment.accountId)}` : ""}
-                      </p>
-                      {payment.method === "CASH" && typeof payment.amountTendered === "number" && (
-                        <p>Tendered: {toMoney(payment.amountTendered)}{payment.changeDue ? ` · Change ${toMoney(payment.changeDue)}` : ""}</p>
-                      )}
-                      {payment.method === "CARD" && payment.cardReference && <p>Card Ref: {payment.cardReference}</p>}
-                    </div>
-                  ))}
-                </div>
-              </div>
             )}
             {shownOrder.rungBy && <p>Rung by: {shownOrder.rungBy.name}{renderAdminChip(shownOrder)}</p>}
             {typeof shownOrder.printFailed === "boolean" && (
@@ -1506,7 +1743,9 @@ export function PosOrderBuilder({
 
           {recentAdjustment && (recentAdjustment.action === "REFUND" || recentAdjustment.action === "VOID" || recentAdjustment.action === "DISCOUNT") && (
             <div className="mt-4 rounded-xl border border-amber-300/30 bg-amber-500/10 p-3 text-sm text-amber-100">
-              {recentAdjustment.refundMethod === "ACCOUNT_BALANCE" ? (
+              {complimentaryOrder ? (
+                <p className="font-semibold">Voided · no refund</p>
+              ) : recentAdjustment.refundMethod === "ACCOUNT_BALANCE" ? (
                 <p>
                   Credited to {getAccountName(recentAdjustment.accountId) ?? "linked account"}. No cash or card action needed.
                 </p>
@@ -1603,11 +1842,31 @@ export function PosOrderBuilder({
                     </div>
                   ))
                 )}
+                {complimentaryOrder && (
+                  <div className="space-y-1 border-t border-emerald-200/20 pt-2">
+                    <p className="text-center text-xs font-bold uppercase tracking-widest text-violet-200">Complimentary</p>
+                    <div className="flex justify-between gap-2">
+                      <p>List value</p>
+                      <p>{toMoney(shownOrder.preDiscountTotal ?? 0)}</p>
+                    </div>
+                    <div className="flex justify-between gap-2 font-semibold">
+                      <p>Amount due</p>
+                      <p>{toMoney(0)}</p>
+                    </div>
+                    {shownOrder.complimentary && (
+                      <p className="text-xs text-emerald-100/85">
+                        {complimentaryReasonLabel(shownOrder.complimentary.reasonCode)}
+                        {shownOrder.complimentary.note ? ` · ${shownOrder.complimentary.note}` : ""}
+                        {` · Approved by ${shownOrder.complimentary.authorizedBy.name}`}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {!terminalOrder && (
+          {showManagementActions && (
             <div className="mt-8 rounded-2xl border border-amber-300/30 bg-amber-500/10 p-4">
               <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-100">Management Actions</h3>
               <p className="mt-2 text-sm text-amber-100/90">
@@ -1623,19 +1882,26 @@ export function PosOrderBuilder({
                   onClick={() => beginAdjustment("WHOLE_ORDER")}
                   className="rounded-lg border border-rose-300/40 bg-rose-500/20 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  Cancel Order
+                  {complimentaryOrder ? "Void Order" : "Cancel Order"}
                 </button>
-                <button
-                  type="button"
-                  disabled={!canRemoveExtras}
-                  onClick={() => beginAdjustment("EXTRAS_ONLY")}
-                  className="rounded-lg border border-amber-200/40 bg-amber-500/20 px-3 py-2 text-sm font-semibold text-amber-50 hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Remove Extras
-                </button>
+                {!complimentaryOrder && (
+                  <button
+                    type="button"
+                    disabled={!canRemoveExtras}
+                    onClick={() => beginAdjustment("EXTRAS_ONLY")}
+                    className="rounded-lg border border-amber-200/40 bg-amber-500/20 px-3 py-2 text-sm font-semibold text-amber-50 hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Remove Extras
+                  </button>
+                )}
               </div>
 
-              {discountedAtSale ? (
+              {complimentaryOrder ? (
+                <p className="mt-2 text-xs text-amber-100/80">
+                  Complimentary order: it can be voided while pending and its stock goes back. It can&apos;t be refunded or
+                  have extras removed.
+                </p>
+              ) : discountedAtSale ? (
                 <p className="mt-2 text-xs text-amber-100/80">
                   This order was discounted at sale, so it can&apos;t be refunded or have extras removed.
                   {canCancelOrder ? " It can still be cancelled while pending." : ""}
@@ -1651,6 +1917,9 @@ export function PosOrderBuilder({
               {showAdjustmentForm && (
                 <div className="mt-4 rounded-xl border border-amber-300/30 bg-slate-950/50 p-4">
                   <p className="text-sm font-semibold text-white">{selectedActionLabel}</p>
+                  {complimentaryOrder && (
+                    <p className="mt-1 text-sm text-amber-100">Void this complimentary order? No money is paid back.</p>
+                  )}
 
                   <AdjustmentReasonFields
                     reasonCode={adjustmentReasonCode}
@@ -1734,15 +2003,7 @@ export function PosOrderBuilder({
                   }}
                   className="w-full rounded-lg border border-slate-700 bg-slate-800/70 p-3 text-left hover:bg-slate-800"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-semibold text-slate-100">#{order.orderNumber}</p>
-                    <p className="text-sm font-medium text-slate-200">{toMoney(order.total)}</p>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400">
-                    {order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "Time unavailable"}
-                    {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
-                    {renderRungBy(order)}
-                  </p>
+                  {renderOrderListItem(order)}
                 </button>
               ))}
             </div>
@@ -1755,7 +2016,7 @@ export function PosOrderBuilder({
 
   return (
     <>
-      <main className="grid flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-[1.25fr_0.95fr]">
+      <main className="grid flex-1 grid-cols-1 gap-4 p-4 xl:grid-cols-2">
       <section className="rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-lg font-semibold text-slate-100">Today&apos;s Menu</h2>
@@ -2094,21 +2355,104 @@ export function PosOrderBuilder({
           )}
         </div>
 
-        {!showPayment ? (
-          <button
-            type="button"
-            disabled={draftLines.length === 0}
-            onClick={() => {
-              setShowPayment(true);
-              setSubmissionError(null);
-              setCardReferenceError(null);
-              setPaymentEntryError(null);
-              resetPaymentEditor(payableCents);
-            }}
-            className="mt-4 w-full rounded-xl bg-emerald-500 px-4 py-3 text-base font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
-          >
-            Charge
-          </button>
+        {showComplimentaryForm ? (
+          <div className="mt-4 space-y-3 rounded-xl border border-violet-300/40 bg-slate-950/60 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wider text-violet-200">Complimentary (manager PIN required)</p>
+            <div>
+              <p className="text-xs font-medium text-slate-200">Reason (required)</p>
+              <div className="mt-1 flex flex-wrap gap-2">
+                {COMPLIMENTARY_REASONS.map((reason) => (
+                  <button
+                    key={reason.value}
+                    type="button"
+                    aria-pressed={complimentaryReason === reason.value}
+                    onClick={() => {
+                      setComplimentaryReason(reason.value);
+                      setComplimentaryError(null);
+                    }}
+                    className={`rounded-lg border px-2.5 py-1 text-xs font-semibold ${
+                      complimentaryReason === reason.value
+                        ? "border-violet-300 bg-violet-500/20 text-violet-50"
+                        : "border-slate-700 bg-slate-950 text-slate-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    {reason.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label htmlFor="complimentary-note" className="text-xs font-medium text-slate-200">
+                Note {complimentaryReason === "OTHER" ? "(required)" : "(optional)"}
+              </label>
+              <Input
+                id="complimentary-note"
+                value={complimentaryNote}
+                onChange={(event) => {
+                  setComplimentaryNote(event.target.value);
+                  setComplimentaryError(null);
+                }}
+                className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
+              />
+            </div>
+            <div className="rounded-md border border-violet-300/30 bg-violet-500/10 p-3">
+              <p className="text-lg font-bold text-white">{toMoney(draftTotal)} given away · no payment</p>
+              <p className="mt-1 text-xs text-violet-100/80">
+                The kitchen gets this order as normal and it uses stock. It&apos;s recorded at list price.
+              </p>
+            </div>
+            {complimentaryToken && (
+              <p className="text-xs text-violet-100/80">Manager approval kept. Fix the order and confirm again; no new PIN is needed.</p>
+            )}
+            {complimentaryError && <p className="text-xs text-rose-200">{complimentaryError}</p>}
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={resetComplimentary}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isSubmitting || draftLines.length === 0 || complimentaryFormError() !== null}
+                onClick={confirmComplimentary}
+                className="rounded-lg bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-400 disabled:cursor-not-allowed disabled:bg-slate-700"
+              >
+                {isSubmitting
+                  ? "Sending..."
+                  : complimentaryToken || (managementSessionActive && managementSessionToken)
+                    ? `Give away ${toMoney(draftTotal)}`
+                    : "Approve with PIN"}
+              </button>
+            </div>
+          </div>
+        ) : !showPayment ? (
+          <>
+            <button
+              type="button"
+              disabled={draftLines.length === 0}
+              onClick={() => {
+                setShowPayment(true);
+                setSubmissionError(null);
+                setCardReferenceError(null);
+                setPaymentEntryError(null);
+                resetPaymentEditor(payableCents);
+              }}
+              className="mt-4 w-full rounded-xl bg-emerald-500 px-4 py-3 text-base font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
+            >
+              Charge
+            </button>
+            <button
+              type="button"
+              disabled={draftLines.length === 0}
+              onClick={openComplimentaryForm}
+              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-violet-300/30 px-3 py-1.5 text-xs font-semibold text-violet-200 hover:bg-violet-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Gift className="h-3.5 w-3.5" />
+              Complimentary…
+            </button>
+          </>
         ) : (
           <div className="mt-4 rounded-xl border border-emerald-500/40 bg-slate-950/60 p-3">
             <div className="mb-3 rounded-lg border border-emerald-300/25 bg-emerald-500/10 p-3 text-sm text-emerald-100">
@@ -2245,13 +2589,23 @@ export function PosOrderBuilder({
               </div>
             ) : (
               paymentEntries.length === 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowSaleDiscountForm(true)}
-                  className="mb-3 rounded-lg border border-amber-300/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/20"
-                >
-                  Add Discount
-                </button>
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowSaleDiscountForm(true)}
+                    className="rounded-lg border border-amber-300/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/20"
+                  >
+                    Add Discount
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openComplimentaryForm}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300/30 px-3 py-1.5 text-xs font-semibold text-violet-200 hover:bg-violet-500/10"
+                  >
+                    <Gift className="h-3.5 w-3.5" />
+                    Complimentary…
+                  </button>
+                </div>
               )
             )}
 
@@ -2328,7 +2682,7 @@ export function PosOrderBuilder({
             )}
 
             {showPaymentKeypad && (
-              <div className="mt-3 grid items-start gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="mt-3 grid items-start gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3 sm:grid-cols-[minmax(9rem,2fr)_3fr]">
                 <div className="space-y-2">
                   {isSplitAmount && (
                     <button
@@ -2489,19 +2843,7 @@ export function PosOrderBuilder({
             <div className="mt-3 grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  resetSaleDiscount();
-                  setShowPayment(false);
-                  setPaymentEntries([]);
-                  setPaymentAmountInput("");
-                  setCashTenderedInput("");
-                  setCardReference("");
-                  setCardReferenceError(null);
-                  setPaymentEntryError(null);
-                  setAccountsError(null);
-                  setAccountSearch("");
-                  setSelectedAccountId(null);
-                }}
+                onClick={closePaymentStep}
                 className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
               >
                 Cancel
@@ -2568,15 +2910,7 @@ export function PosOrderBuilder({
                     }}
                     className="w-full rounded-lg border border-slate-700 bg-slate-800/70 p-3 text-left hover:bg-slate-800"
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-semibold text-slate-100">#{order.orderNumber}</p>
-                      <p className="text-sm font-medium text-slate-200">{toMoney(order.total)}</p>
-                    </div>
-                    <p className="mt-1 text-xs text-slate-400">
-                      {order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "Time unavailable"}
-                      {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
-                      {renderRungBy(order)}
-                    </p>
+                    {renderOrderListItem(order)}
                   </button>
                 ))}
               </div>

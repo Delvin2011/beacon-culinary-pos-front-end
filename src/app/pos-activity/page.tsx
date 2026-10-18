@@ -300,7 +300,7 @@ export default function PosActivityPage() {
                       {tillNow.displayStatus === "OVERDUE"
                         ? `Opened ${formatJhbDateTime(tillNow.openShift.openedAt)}`
                         : `On shift since ${formatJhbTime(tillNow.openShift.openedAt)}`}
-                      {" · "}Expected cash {formatMoney(tillNow.expectedCash)} · {tillNow.orderCount} order
+                      {" · "}Expected cash {formatMoney(tillNow.expectedCash)} · {tillNow.orderCount} sale order
                       {tillNow.orderCount === 1 ? "" : "s"}
                     </p>
                     {tillNow.displayStatus === "OVERDUE" && (

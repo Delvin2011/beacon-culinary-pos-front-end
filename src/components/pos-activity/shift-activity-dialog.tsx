@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Info } from "lucide-react"
+import { AlertTriangle, Gift, Info } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -9,6 +9,7 @@ import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/compon
 import { AdminChip, ShiftStatusBadge, VarianceText } from "@/components/pos-activity/shift-badges"
 import { cn } from "@/lib/utils"
 import { isAdminRole } from "@/lib/roles"
+import { isComplimentary } from "@/lib/complimentary"
 import {
   ADJUSTMENT_TYPE_LABELS,
   PAYMENT_METHOD_LABELS,
@@ -23,7 +24,7 @@ import {
   type ShiftActivityOrder,
 } from "@/lib/pos-activity"
 
-type SalesFilter = "all" | "successful" | "voided" | "refunded" | "discounted" | "extrasRemoved"
+type SalesFilter = "all" | "successful" | "voided" | "refunded" | "discounted" | "extrasRemoved" | "complimentary"
 type DialogTab = "sales" | "adjustments"
 
 const SALES_FILTERS: { value: SalesFilter; label: string }[] = [
@@ -33,6 +34,7 @@ const SALES_FILTERS: { value: SalesFilter; label: string }[] = [
   { value: "refunded", label: "Refunded" },
   { value: "discounted", label: "Discounted" },
   { value: "extrasRemoved", label: "Extras removed" },
+  { value: "complimentary", label: "Complimentary" },
 ]
 
 function matchesSalesFilter(order: ShiftActivityOrder, filter: SalesFilter): boolean {
@@ -48,6 +50,8 @@ function matchesSalesFilter(order: ShiftActivityOrder, filter: SalesFilter): boo
       return order.discounted
     case "extrasRemoved":
       return order.extrasRemoved
+    case "complimentary":
+      return isComplimentary(order)
     default:
       return true
   }
@@ -64,6 +68,15 @@ function Figure({ label, children }: { label: string; children: React.ReactNode 
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="text-sm font-semibold">{children}</p>
     </div>
+  )
+}
+
+function ComplimentaryBadge() {
+  return (
+    <span className="ml-1.5 inline-flex items-center gap-1 rounded border border-violet-300 bg-violet-50 px-1.5 text-[10px] font-semibold uppercase text-violet-800 dark:border-violet-700 dark:bg-violet-950 dark:text-violet-200">
+      <Gift className="h-3 w-3" aria-hidden />
+      Complimentary
+    </span>
   )
 }
 
@@ -280,7 +293,7 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
 
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <div className="rounded-md border px-3 py-2">
-                  <p className="text-xs text-muted-foreground">Orders</p>
+                  <p className="text-xs text-muted-foreground">Sale orders</p>
                   <p className="text-sm font-semibold">{activity.totals.orderCount}</p>
                 </div>
                 <SummaryTile label="Cash sales" amount={activity.totals.salesByMethod.CASH} />
@@ -305,6 +318,19 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
                     amount={activity.totals.legacyDiscountsAfterPayment.amount}
                   />
                 )}
+              </div>
+
+              {/* Server totals only: complimentary orders are kept out of sales, voids and cash on purpose. */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-dashed border-violet-300 bg-violet-50/60 px-3 py-2 dark:border-violet-800 dark:bg-violet-950/30">
+                <p className="flex items-center gap-1.5 text-xs font-medium text-violet-800 dark:text-violet-200">
+                  <Gift className="h-3.5 w-3.5" aria-hidden />
+                  Complimentary
+                </p>
+                <p className="text-sm font-semibold">
+                  {activity.totals.complimentary.count} meal{activity.totals.complimentary.count === 1 ? "" : "s"} ·{" "}
+                  {formatMoney(activity.totals.complimentary.amount)} at list price
+                </p>
+                <p className="text-xs text-muted-foreground">Not part of sales or cash.</p>
               </div>
 
               <div className="flex gap-1 border-b" role="tablist">
@@ -373,19 +399,33 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
                         ) : (
                           filteredOrders.map((order) => (
                             <TableRow key={order.orderId}>
-                              <TableCell className="font-medium">#{order.orderNumber}</TableCell>
+                              <TableCell className="whitespace-nowrap font-medium">
+                                #{order.orderNumber}
+                                {isComplimentary(order) && <ComplimentaryBadge />}
+                              </TableCell>
                               <TableCell>{formatJhbTime(order.createdAt)}</TableCell>
                               <TableCell className="whitespace-nowrap">
                                 {order.rungBy.name}
                                 {order.rungBy.id !== shift.owner.id && isAdminRole(order.rungBy.role) && <AdminChip />}
                               </TableCell>
                               <TableCell>
-                                {order.payments
-                                  .map((payment) => `${PAYMENT_METHOD_LABELS[payment.method] ?? payment.method} ${formatMoney(payment.amount)}`)
-                                  .join(" + ") || "—"}
+                                {isComplimentary(order)
+                                  ? "Complimentary"
+                                  : order.payments
+                                      .map((payment) => `${PAYMENT_METHOD_LABELS[payment.method] ?? payment.method} ${formatMoney(payment.amount)}`)
+                                      .join(" + ") || "—"}
                               </TableCell>
                               <TableCell className="whitespace-nowrap">
-                                {Math.round(order.originalTotal * 100) === Math.round(order.total * 100) ? (
+                                {isComplimentary(order) ? (
+                                  order.preDiscountTotal !== undefined ? (
+                                    <>
+                                      {formatMoney(order.preDiscountTotal)}
+                                      <span className="block text-xs text-muted-foreground">at list price · not charged</span>
+                                    </>
+                                  ) : (
+                                    <span className="text-muted-foreground">Not charged</span>
+                                  )
+                                ) : Math.round(order.originalTotal * 100) === Math.round(order.total * 100) ? (
                                   formatMoney(order.total)
                                 ) : (
                                   <>
@@ -454,9 +494,16 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
                                   </span>
                                 )}
                               </TableCell>
-                              <TableCell>{ADJUSTMENT_TYPE_LABELS[adjustment.type] ?? humaniseCode(adjustment.type)}</TableCell>
+                              <TableCell className="whitespace-nowrap">
+                                {ADJUSTMENT_TYPE_LABELS[adjustment.type] ?? humaniseCode(adjustment.type)}
+                                {isComplimentary(adjustment) && <ComplimentaryBadge />}
+                              </TableCell>
                               <TableCell className="whitespace-nowrap">{formatMoney(adjustment.amount)}</TableCell>
-                              <TableCell>{REFUND_METHOD_LABELS[adjustment.refundMethod] ?? humaniseCode(adjustment.refundMethod)}</TableCell>
+                              <TableCell>
+                                {isComplimentary(adjustment)
+                                  ? "No refund"
+                                  : REFUND_METHOD_LABELS[adjustment.refundMethod] ?? humaniseCode(adjustment.refundMethod)}
+                              </TableCell>
                               <TableCell>
                                 {humaniseCode(adjustment.reasonCode)}
                                 {adjustment.note && <span className="block text-xs text-muted-foreground">{adjustment.note}</span>}

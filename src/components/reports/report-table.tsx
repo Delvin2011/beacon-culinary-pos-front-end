@@ -1,15 +1,17 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react"
 import { VarianceText } from "@/components/pos-activity/shift-badges"
 import { cn, formatZarCurrency } from "@/lib/utils"
 import { formatJhbDateTime } from "@/lib/pos-activity"
 import {
   formatCalendarDate,
+  formatDecimal,
   formatInt,
   formatPercent,
   isNumericColumn,
+  statusLabel,
   type CellValue,
   type ReportColumn,
   type ReportRow,
@@ -25,10 +27,10 @@ const TONE_STYLES: Record<StatusTone, string> = {
 
 const Dash = () => <span className="text-muted-foreground">—</span>
 
-function ReportCell({ column, value }: { column: ReportColumn; value: CellValue }) {
+function ReportCell({ column, value, isTotal = false }: { column: ReportColumn; value: CellValue; isTotal?: boolean }) {
   if (value === null || value === undefined || value === "") return <Dash />
-  // Totals can hold labels such as "Total" or "3 shifts" in any column.
-  if (typeof value === "string" && column.type !== "DATE" && column.type !== "DATETIME" && column.type !== "STATUS") {
+  // Totals hold labels such as "Total" or "Closing balance" in any column, even DATETIME: print them as they are.
+  if (typeof value === "string" && (isTotal || (column.type !== "DATE" && column.type !== "DATETIME" && column.type !== "STATUS"))) {
     return <>{value}</>
   }
   if (typeof value === "boolean") return <>{value ? "Yes" : "No"}</>
@@ -38,6 +40,8 @@ function ReportCell({ column, value }: { column: ReportColumn; value: CellValue 
       return <>{typeof value === "number" ? formatZarCurrency(value) : value}</>
     case "INT":
       return <>{typeof value === "number" ? formatInt(value) : value}</>
+    case "DECIMAL":
+      return <>{typeof value === "number" ? formatDecimal(value) : value}</>
     case "PERCENT":
       return <>{typeof value === "number" ? formatPercent(value) : value}</>
     case "VARIANCE":
@@ -51,7 +55,7 @@ function ReportCell({ column, value }: { column: ReportColumn; value: CellValue 
       const tone = column.statusTones?.[text] ?? "neutral"
       return (
         <span className={cn("inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium", TONE_STYLES[tone])}>
-          {text}
+          {statusLabel(text)}
         </span>
       )
     }
@@ -80,6 +84,12 @@ interface ReportTableProps {
 
 export function ReportTable({ title, columns, rows, totals }: ReportTableProps) {
   const [sort, setSort] = useState<SortState>(null)
+
+  // Parameters can swap the column set (groupBy); a sort on a column from the old set resets to the server's order.
+  const columnKeys = columns.map((column) => column.key).join("|")
+  useEffect(() => {
+    setSort(null)
+  }, [columnKeys])
 
   const sortedRows = useMemo(() => {
     if (!sort) return rows
@@ -164,7 +174,7 @@ export function ReportTable({ title, columns, rows, totals }: ReportTableProps) 
                     scope={index === 0 ? "row" : undefined}
                     className={cn("px-3 py-2 text-left align-middle", isNumericColumn(column.type) && "text-right tabular-nums")}
                   >
-                    {value === undefined ? null : <ReportCell column={column} value={value} />}
+                    {value === undefined ? null : <ReportCell column={column} value={value} isTotal />}
                   </Cell>
                 )
               })}

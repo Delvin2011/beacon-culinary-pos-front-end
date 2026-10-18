@@ -845,7 +845,7 @@ function PosMainContent() {
                 <p>Cash Sales: {formatZarCurrency(managementSummary.cashSalesTotal)}</p>
                 <p>Adjustments: {formatZarCurrency(managementSummary.adjustmentsTotal)}</p>
                 <p className="text-base font-semibold text-amber-100">Expected Cash: {formatZarCurrency(managementSummary.expectedCash)}</p>
-                <p>Orders Ringed Up: {managementSummary.orderCount}</p>
+                <p>Orders rung (incl. complimentary): {managementSummary.orderCount}</p>
               </div>
             ) : null}
           </div>

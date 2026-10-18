@@ -4,14 +4,18 @@ import { jhbIsoDate } from "@/lib/pos-activity"
 // Types and helpers for the generic report viewer (GET /admin/reports...).
 // The viewer formats what the server sends; it never calculates figures.
 
-export type ReportParamType = "DATE" | "ENUM" | "BOOLEAN" | "USER"
+export type ReportParamType = "DATE" | "ENUM" | "BOOLEAN" | "USER" | "ID" | "LIMIT"
+
+// ENUM and LIMIT options are plain strings; ID options carry a database id and its label.
+export type ReportParamOption = string | { value: string; label: string }
 
 export interface ReportParam {
   name: string
   label: string
   type: ReportParamType
   default?: string
-  options?: string[]
+  options?: ReportParamOption[]
+  required?: boolean
 }
 
 export interface ReportDefinition {
@@ -24,7 +28,7 @@ export interface ReportDefinition {
   params: ReportParam[]
 }
 
-export type ReportColumnType = "TEXT" | "INT" | "MONEY" | "VARIANCE" | "PERCENT" | "DATE" | "DATETIME" | "STATUS"
+export type ReportColumnType = "TEXT" | "INT" | "DECIMAL" | "MONEY" | "VARIANCE" | "PERCENT" | "DATE" | "DATETIME" | "STATUS"
 export type StatusTone = "positive" | "neutral" | "warning" | "negative"
 
 export interface ReportColumn {
@@ -62,13 +66,16 @@ export interface ReportEnvelope {
     currency: string
     amountsInclVat: boolean
     params: Record<string, string | number | boolean | null>
+    // Labels of the ID parameters that are set, e.g. { accountId: "Acme Logistics" }. Omitted when empty.
+    paramLabels?: Record<string, string>
     notes?: string[]
   }
   columns: ReportColumn[]
   rows: ReportRow[]
   totals: ReportRow | null
   checks: ReportCheck[]
-  page: unknown
+  // Present only when a limit cut the rows; totals still cover every row.
+  page: { number: number; size: number; totalRows: number } | null
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -104,6 +111,35 @@ export function humaniseEnum(value: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1)
 }
 
+// ---- Parameters ----
+
+// Option values are strings, but meta.params echoes ids as numbers: always compare with String().
+export function paramOptions(param: ReportParam): { value: string; label: string }[] {
+  return (param.options ?? []).map((option) =>
+    typeof option === "string"
+      ? { value: option, label: humaniseEnum(option) }
+      : { value: String(option.value), label: option.label },
+  )
+}
+
+// "Account" -> "an account", "Meal period" -> "a meal period".
+export function withArticle(label: string): string {
+  const lower = label.toLowerCase()
+  return `${/^[aeiou]/.test(lower) ? "an" : "a"} ${lower}`
+}
+
+// "Select an account": the same message the server returns for a missing required parameter.
+export function selectPrompt(param: ReportParam): string {
+  return `Select ${withArticle(param.label)}`
+}
+
+// A required ID only counts as set when it is one of the catalogue options (a copied link may name a deleted account).
+export function isParamSet(param: ReportParam, value: string): boolean {
+  if (value === "") return false
+  if (param.type !== "ID" || !param.options) return true
+  return paramOptions(param).some((option) => option.value === value)
+}
+
 // ---- Dates (Johannesburg trading days, yyyy-MM-dd) ----
 
 function addDays(isoDate: string, days: number): string {
@@ -114,7 +150,7 @@ function addDays(isoDate: string, days: number): string {
 
 // Resolves catalogue defaults such as "today" and "today-6".
 export function resolveParamDefault(param: ReportParam): string | undefined {
-  if (param.default === undefined || param.default === null) return undefined
+  if (param.default === undefined || param.default === null) return param.type === "LIMIT" ? "ALL" : undefined
   if (param.type === "DATE") {
     const match = /^today(?:([+-])(\d+))?$/.exec(param.default.trim())
     if (match) {
@@ -168,6 +204,7 @@ export function detectPreset(from: string, to: string): DatePreset {
 
 const intFormatter = new Intl.NumberFormat("en-ZA", { maximumFractionDigits: 0 })
 const percentFormatter = new Intl.NumberFormat("en-ZA", { maximumFractionDigits: 2 })
+const decimalFormatter = new Intl.NumberFormat("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 // DATE values are already Johannesburg calendar days, so format them without shifting zones.
 const calendarDateFormatter = new Intl.DateTimeFormat("en-ZA", {
   timeZone: "UTC",
@@ -185,6 +222,16 @@ export function formatInt(value: number): string {
   return intFormatter.format(value)
 }
 
+// JSON 3.00 arrives as 3, so DECIMAL always shows 2 places.
+export function formatDecimal(value: number): string {
+  return decimalFormatter.format(value)
+}
+
+// Status codes ("CHARGE", "EXTRAS_REMOVED") read as text; anything already readable is left alone.
+export function statusLabel(value: string): string {
+  return /^[A-Z0-9_]+$/.test(value) ? humaniseEnum(value) : value
+}
+
 export function formatPercent(value: number): string {
   return `${percentFormatter.format(value)}%`
 }
@@ -195,7 +242,7 @@ export function formatCheckValue(value: number | null, unit: string): string {
 }
 
 export function isNumericColumn(type: string): boolean {
-  return type === "INT" || type === "MONEY" || type === "VARIANCE" || type === "PERCENT"
+  return type === "INT" || type === "DECIMAL" || type === "MONEY" || type === "VARIANCE" || type === "PERCENT"
 }
 
 // ---- Checks ----
