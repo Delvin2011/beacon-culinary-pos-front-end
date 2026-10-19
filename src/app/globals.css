@@ -116,3 +116,30 @@ body {
     @apply bg-background text-foreground;
   }
 }
+
+/* Printing (hooks/use-print): only the print portal is printed, in black on white. */
+.print-portal {
+  display: none;
+}
+
+@media print {
+  html.printing body > *:not(.print-portal) {
+    display: none !important;
+  }
+
+  html.printing .print-portal {
+    display: block !important;
+    color: #000;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  html.printing .print-portal table {
+    page-break-inside: auto;
+  }
+
+  html.printing .print-portal tr {
+    page-break-inside: avoid;
+  }
+}

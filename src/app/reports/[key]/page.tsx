@@ -3,13 +3,19 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Download, RefreshCw } from "lucide-react"
+import { CheckCircle2, Download, Printer, RefreshCw } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
+import { usePrint } from "@/hooks/use-print"
 import { useReportCatalogue } from "@/hooks/use-report-catalogue"
 import { ReportsShell } from "@/components/reports/reports-shell"
 import { ReportTable } from "@/components/reports/report-table"
 import { ReportChecks } from "@/components/reports/report-checks"
+import { ReportStatement } from "@/components/reports/report-statement"
+import { BlockerList, ReportActions, sendAction } from "@/components/reports/report-actions"
+import { ReportPaging } from "@/components/reports/report-paging"
+import { ReceiptReprintDialog, isReceiptPayload, type ReceiptPayload } from "@/components/reports/receipt-reprint"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -26,6 +32,9 @@ import {
   formatInt,
   humaniseEnum,
   isParamSet,
+  isStatement,
+  paramApplies,
+  reportHref,
   paramOptions,
   parseFieldErrors,
   presetRange,
@@ -33,15 +42,21 @@ import {
   selectPrompt,
   withArticle,
   type DatePreset,
+  type EndOfDayBlocker,
+  type PrintMedium,
   type ReportDefinition,
   type ReportEnvelope,
   type ReportParam,
+  type ReportRow,
+  type RowAction,
 } from "@/lib/reports"
 
 // Radix Select can't use "" as an item value, so optional selects use this for "All".
 const ANY = "__any"
 // Field-error keys that belong next to the export buttons rather than a filter.
 const EXPORT_ERROR_KEYS = ["export", "format"]
+// Server-side paging parameters (page is 0-based). Not catalogue parameters; kept in the URL like filters.
+const PAGING_KEYS = ["page", "size"] as const
 
 type ParamValues = Record<string, string>
 
@@ -99,6 +114,7 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const { authFetch } = useAuth()
+  const { print, portal } = usePrint()
 
   const fromParam = definition.params.find((param) => param.name === "from" && param.type === "DATE")
   const toParam = definition.params.find((param) => param.name === "to" && param.type === "DATE")
@@ -115,7 +131,13 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
     }
     return values
   }, [definition.params, searchString])
-  const appliedQuery = buildQuery(applied)
+  const paging = useMemo<ParamValues>(() => {
+    const url = new URLSearchParams(searchString)
+    const values: ParamValues = {}
+    for (const key of PAGING_KEYS) values[key] = url.get(key) ?? ""
+    return values
+  }, [searchString])
+  const appliedQuery = buildQuery({ ...applied, ...paging })
 
   const [draft, setDraft] = useState<ParamValues>(applied)
   const [preset, setPreset] = useState<DatePreset>(() => detectPreset(applied.from ?? "", applied.to ?? ""))
@@ -131,6 +153,11 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
   const [exporting, setExporting] = useState<"csv" | "xlsx" | null>(null)
   const [exportError, setExportError] = useState<string | null>(null)
   const [users, setUsers] = useState<UserOption[]>([])
+  // An envelope an action answered with (Close Day returns the Z Reading), shown in place of the report.
+  const [actionResult, setActionResult] = useState<ReportEnvelope | null>(null)
+  const [pendingRowAction, setPendingRowAction] = useState<{ row: ReportRow; action: RowAction } | null>(null)
+  const [rowActionError, setRowActionError] = useState<{ label: string; message: string; blockers: EndOfDayBlocker[] } | null>(null)
+  const [reprint, setReprint] = useState<ReceiptPayload | null>(null)
 
   // Required parameters (e.g. the statement's account): nothing runs until they are set.
   const requiredParams = definition.params.filter((param) => param.required)
@@ -148,6 +175,7 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
     setRunning(true)
     setRunError(null)
     setFieldErrors({})
+    setActionResult(null)
     try {
       const res = await authFetch(`/admin/reports/${encodeURIComponent(definition.key)}?${appliedQuery}`)
       if (res.status === 400) {
@@ -192,13 +220,53 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
     }
   }
 
-  const apply = () => {
-    const query = buildQuery(draft)
+  const navigate = (values: ParamValues) => {
+    const query = buildQuery(values)
     if (query === searchString) {
       void runReport()
       return
     }
     router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false })
+  }
+
+  // New filters start again at the first page, keeping the chosen page size.
+  // A parameter that doesn't apply to the other choices (appliesWhen) is left out.
+  const apply = () => {
+    const values: ParamValues = { ...draft }
+    for (const param of definition.params) if (!paramApplies(param, draft)) values[param.name] = ""
+    navigate({ ...values, page: "", size: paging.size })
+  }
+
+  const changePage = (page: number, size: number) =>
+    navigate({ ...applied, page: page > 0 ? String(page) : "", size: String(size) })
+
+  const executeRowAction = async (action: RowAction) => {
+    setRowActionError(null)
+    if (!action.path) return
+    const outcome = await sendAction(authFetch, action.method ?? "POST", action.path)
+    if (!outcome.ok) {
+      setRowActionError({ label: action.label, message: outcome.message, blockers: outcome.blockers })
+      return
+    }
+    if (action.onSuccess === "PRINT_RECEIPT" && isReceiptPayload(outcome.body)) {
+      // A reprint never changes the order, so the report isn't reloaded for it.
+      setReprint(outcome.body)
+      return
+    }
+    await runReport()
+  }
+
+  const handleRowAction = async (row: ReportRow, action: RowAction) => {
+    if (action.onSuccess === "OPEN_REPORT") {
+      // Navigation only: no request.
+      if (action.report) router.push(reportHref(action.report, action.params))
+      return
+    }
+    if (action.confirm) {
+      setPendingRowAction({ row, action })
+      return
+    }
+    await executeRowAction(action)
   }
 
   const exportReport = async (format: "csv" | "xlsx") => {
@@ -209,7 +277,8 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
       // Export what's on screen: the parameters the server says it applied.
       const values: ParamValues = {}
       for (const [name, value] of Object.entries(envelope.meta.params)) {
-        if (value !== null && value !== undefined) values[name] = String(value)
+        // Exports always include every row, so paging is left out.
+        if (value !== null && value !== undefined && !(PAGING_KEYS as readonly string[]).includes(name)) values[name] = String(value)
       }
       const query = buildQuery({ ...values, format })
       const res = await authFetch(`/admin/reports/${encodeURIComponent(definition.key)}/export?${query}`)
@@ -234,7 +303,8 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
     }
   }
 
-  const knownFields = new Set([...definition.params.map((param) => param.name), ...EXPORT_ERROR_KEYS])
+  const knownFields = new Set([...definition.params.map((param) => param.name), ...EXPORT_ERROR_KEYS, ...PAGING_KEYS])
+  const pagingError = PAGING_KEYS.map((key) => fieldErrors[key]).filter(Boolean).join(" ")
   const otherErrors = Object.entries(fieldErrors).filter(([field]) => !knownFields.has(field))
   const rangeErrors = [fieldErrors.from, fieldErrors.to].filter(Boolean)
   const exportFieldError = EXPORT_ERROR_KEYS.map((key) => fieldErrors[key]).filter(Boolean).join(" ")
@@ -261,6 +331,14 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
   const meta = envelope?.meta
   const paramLabels = Object.values(meta?.paramLabels ?? {})
   const emptyStateParam = missingRequired ?? requiredParams.find((param) => fieldErrors[param.name])
+  // What's on screen: the report, or the envelope an action answered with (the Z after Close Day).
+  const shown = actionResult ?? envelope
+  const statement = shown ? isStatement(shown) : false
+  const exportFormats = meta?.exportFormats ?? ["csv", "xlsx"]
+
+  const printStatement = (medium: PrintMedium) => {
+    if (shown) print(medium, <ReportStatement envelope={shown} medium={medium} />)
+  }
 
   return (
     <div className="space-y-4">
@@ -275,6 +353,10 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
         </div>
         <p className="text-sm text-muted-foreground">{definition.description}</p>
       </div>
+
+      {envelope && !actionResult && (envelope.actions?.length ?? 0) > 0 && (
+        <ReportActions actions={envelope.actions ?? []} onDone={(result) => (result ? setActionResult(result) : void runReport())} />
+      )}
 
       {meta && (meta.notes?.length ?? 0) > 0 && (
         <details className="group rounded-md border px-3 py-2 text-sm">
@@ -339,7 +421,7 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
           </div>
         )}
 
-        {otherParams.map((param) => (
+        {otherParams.filter((param) => paramApplies(param, draft)).map((param) => (
           <ParamControl
             key={param.name}
             param={param}
@@ -370,15 +452,31 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
               .join(" · ")}
             {" · "}Generated {formatJhbDateTime(meta.generatedAt)}
           </p>
-          <div className="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={exporting !== null} onClick={() => void exportReport("csv")}>
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              {exporting === "csv" ? "Exporting…" : "Export CSV"}
-            </Button>
-            <Button size="sm" variant="outline" disabled={exporting !== null} onClick={() => void exportReport("xlsx")}>
-              <Download className="mr-1.5 h-3.5 w-3.5" />
-              {exporting === "xlsx" ? "Exporting…" : "Export Excel"}
-            </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {statement && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => printStatement("A4")}>
+                  <Printer className="mr-1.5 h-3.5 w-3.5" />
+                  Print A4
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => printStatement("SLIP80")}>
+                  <Printer className="mr-1.5 h-3.5 w-3.5" />
+                  Print slip
+                </Button>
+              </>
+            )}
+            {!actionResult && exportFormats.includes("csv") && (
+              <Button size="sm" variant="outline" disabled={exporting !== null} onClick={() => void exportReport("csv")}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                {exporting === "csv" ? "Exporting…" : "Export CSV"}
+              </Button>
+            )}
+            {!actionResult && exportFormats.includes("xlsx") && (
+              <Button size="sm" variant="outline" disabled={exporting !== null} onClick={() => void exportReport("xlsx")}>
+                <Download className="mr-1.5 h-3.5 w-3.5" />
+                {exporting === "xlsx" ? "Exporting…" : "Export Excel"}
+              </Button>
+            )}
           </div>
         </div>
       )}
@@ -406,17 +504,94 @@ function ReportViewer({ definition }: { definition: ReportDefinition }) {
           <Skeleton className="h-10" />
           <Skeleton className="h-64" />
         </div>
-      ) : envelope ? (
+      ) : shown ? (
         <div className={running ? "space-y-3 opacity-60 transition-opacity" : "space-y-3"} aria-busy={running}>
-          <ReportChecks meta={envelope.meta} checks={envelope.checks ?? []} />
-          {envelope.page && (
-            <p className="text-xs text-muted-foreground">
-              Showing {formatInt(envelope.rows.length)} of {formatInt(envelope.page.totalRows)} rows
-            </p>
+          {actionResult && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+              <p className="flex items-center gap-1.5 font-medium">
+                <CheckCircle2 className="h-4 w-4" aria-hidden />
+                Done. Showing {actionResult.meta.statementTitle ?? actionResult.meta.title}
+                {actionResult.meta.reference ? ` ${actionResult.meta.reference}` : ""}. Print it now if you need it.
+              </p>
+              <div className="flex gap-2">
+                {actionResult.meta.key !== definition.key && (
+                  <Button size="sm" variant="outline" asChild>
+                    <Link href={reportHref(actionResult.meta.key, actionResult.meta.params)}>Open as report</Link>
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" onClick={() => void runReport()}>
+                  Back to {definition.title}
+                </Button>
+              </div>
+            </div>
           )}
-          <ReportTable title={definition.title} columns={envelope.columns} rows={envelope.rows} totals={envelope.totals} />
+          <ReportChecks meta={shown.meta} checks={shown.checks ?? []} />
+          {rowActionError && (
+            <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+              <p className="font-medium">
+                {rowActionError.label}: {rowActionError.message}
+              </p>
+              {rowActionError.blockers.length > 0 && <BlockerList blockers={rowActionError.blockers} />}
+            </div>
+          )}
+          {statement ? (
+            <ReportStatement envelope={shown} />
+          ) : (
+            <>
+              {shown.page?.paged ? (
+                <ReportPaging page={shown.page} rowCount={shown.rows?.length ?? 0} onChange={changePage} disabled={running} error={pagingError} />
+              ) : (
+                shown.page && (
+                  <p className="text-xs text-muted-foreground">
+                    Showing {formatInt(shown.rows?.length ?? 0)} of {formatInt(shown.page.totalRows)} rows
+                  </p>
+                )
+              )}
+              <ReportTable
+                title={definition.title}
+                columns={shown.columns ?? []}
+                rows={shown.rows ?? []}
+                totals={shown.totals}
+                sortable={!shown.page?.paged}
+                onRowAction={handleRowAction}
+              />
+            </>
+          )}
+        </div>
+      ) : pagingError ? (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-4">
+          <p className="text-sm text-destructive">{pagingError}</p>
+          <Button size="sm" variant="outline" onClick={() => changePage(0, Number(paging.size) || 50)}>
+            Go to the first page
+          </Button>
         </div>
       ) : null}
+
+      <Dialog open={pendingRowAction !== null} onOpenChange={(open) => !open && setPendingRowAction(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{pendingRowAction?.action.label}?</DialogTitle>
+            <DialogDescription className="text-foreground">{pendingRowAction?.action.confirm}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setPendingRowAction(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                const pending = pendingRowAction
+                setPendingRowAction(null)
+                if (pending) void executeRowAction(pending.action)
+              }}
+            >
+              {pendingRowAction?.action.label}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <ReceiptReprintDialog receipt={reprint} onClose={() => setReprint(null)} />
+      {portal}
     </div>
   )
 }
@@ -488,6 +663,23 @@ function ParamControl({
       )
       break
     }
+    case "INT":
+      // Optional whole number; empty means "not set" and is left out of the URL.
+      control = (
+        <Input
+          id={id}
+          type="number"
+          inputMode="numeric"
+          min="0"
+          step="1"
+          value={value}
+          onChange={(event) => onChange(event.target.value.trim())}
+          aria-invalid={!!error}
+          className="w-[120px]"
+          placeholder="Any"
+        />
+      )
+      break
     default:
       control = <Input id={id} value={value} onChange={(event) => onChange(event.target.value)} aria-invalid={!!error} className="w-[180px]" />
   }

@@ -6,6 +6,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { formatZarCurrency } from "@/lib/utils";
+import { DayClosedError } from "@/contexts/shift-context";
 
 // Opening float is entered as whole currency units (e.g. 50 = R 50.00)
 const MAX_FLOAT_DIGITS = 6; // up to 999999
@@ -24,6 +25,8 @@ export default function ShiftOpenPage() {
   const [rawAmount, setRawAmount] = useState("0");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when today already has a Z: opening is refused for the rest of the day, so no retry is offered.
+  const [dayClosed, setDayClosed] = useState(false);
 
   // Auth guard
   useEffect(() => {
@@ -40,7 +43,7 @@ export default function ShiftOpenPage() {
   }, [shift, shiftLoading, router]);
 
   const handleAmountChange = (value: string) => {
-    setError(null);
+    if (!dayClosed) setError(null);
     // Prevent leading zeros (except plain "0")
     const cleaned = value.replace(/^0+(\d)/, "$1") || "0";
     setRawAmount(cleaned);
@@ -59,6 +62,11 @@ export default function ShiftOpenPage() {
       await openShift(amount);
       router.replace("/pos");
     } catch (err) {
+      if (err instanceof DayClosedError) {
+        setDayClosed(true);
+        setError(err.message);
+        return;
+      }
       const msg = err instanceof Error ? err.message : "Failed to open shift.";
       if (msg.includes("already open")) {
         // Shift was opened in another tab / race — redirect
@@ -114,14 +122,14 @@ export default function ShiftOpenPage() {
         value={rawAmount === "0" ? "" : rawAmount}
         onChange={(v) => handleAmountChange(v === "" ? "0" : v)}
         maxLength={MAX_FLOAT_DIGITS}
-        disabled={submitting}
+        disabled={submitting || dayClosed}
       />
 
       {/* Open shift button */}
       <button
         type="button"
         onClick={handleOpenShift}
-        disabled={submitting || numericAmount < 0}
+        disabled={submitting || dayClosed || numericAmount < 0}
         className="w-full max-w-xs rounded-2xl bg-emerald-500 py-4 text-lg font-semibold text-white transition-colors hover:bg-emerald-400 active:bg-emerald-600 disabled:opacity-50 disabled:pointer-events-none"
       >
         {submitting ? "Opening shift…" : "Open Shift"}

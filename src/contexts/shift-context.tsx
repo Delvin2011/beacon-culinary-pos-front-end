@@ -39,6 +39,18 @@ interface ShiftContextValue {
 
 export const ShiftContext = createContext<ShiftContextValue | undefined>(undefined);
 
+// Today's trading day already has a Z, so no more shifts can open today.
+export class DayClosedError extends Error {
+  constructor(public readonly zNumber: number | null) {
+    super(
+      zNumber !== null
+        ? `Today's trading day is already closed (Z-${String(zNumber).padStart(4, "0")}). No more shifts can open today.`
+        : "Today's trading day is already closed. No more shifts can open today.",
+    );
+    this.name = "DayClosedError";
+  }
+}
+
 function extractShift(payload: unknown): Shift | null {
   if (!payload || typeof payload !== "object") return null;
   const raw = payload as Record<string, unknown>;
@@ -124,6 +136,12 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
       });
 
       const body = (await res.json().catch(() => null)) as unknown;
+
+      const code = body && typeof body === "object" ? (body as Record<string, unknown>).code : undefined;
+      if (res.status === 409 && code === "DAY_CLOSED") {
+        const zNumber = (body as Record<string, unknown>).zNumber;
+        throw new DayClosedError(typeof zNumber === "number" ? zNumber : null);
+      }
 
       if (res.status === 409) {
         // Already open — sync state so the UI can redirect correctly

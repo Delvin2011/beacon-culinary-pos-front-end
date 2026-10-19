@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Clock, Lock, LogOut, RefreshCw, ShieldCheck, UserRound } from "lucide-react";
+import { Clock, FileText, Lock, LogOut, RefreshCw, ShieldCheck, UserRound } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { useManagementSession } from "@/hooks/use-management-session";
 import { PosOrderBuilder } from "@/components/pos/order-builder";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
+import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
@@ -127,6 +128,8 @@ function PosMainContent() {
   const [varianceFormError, setVarianceFormError] = useState<string | null>(null);
   const [closeoutRecord, setCloseoutRecord] = useState<ShiftCloseResponse | null>(null);
   const [managementSummaryOpen, setManagementSummaryOpen] = useState(false);
+  // The shift whose Cashier Reading is open (the current shift, or the one just closed).
+  const [readingShiftId, setReadingShiftId] = useState<number | null>(null);
   const [managementSummaryLoading, setManagementSummaryLoading] = useState(false);
   const [managementSummaryError, setManagementSummaryError] = useState<string | null>(null);
   const [managementSummary, setManagementSummary] = useState<ShiftSummaryDto | null>(null);
@@ -530,17 +533,26 @@ function PosMainContent() {
 
           <button
             type="button"
+            onClick={() => setReadingShiftId(closeoutRecord.id)}
+            className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-emerald-400/50 px-4 py-3 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/10"
+          >
+            <FileText className="h-4 w-4" />
+            Print reading
+          </button>
+          <button
+            type="button"
             onClick={() => {
               resetCloseFlow();
               setCloseoutRecord(null);
               logout();
               router.replace("/pos/login");
             }}
-            className="mt-6 w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
+            className="mt-3 w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
           >
             Done
           </button>
         </div>
+        <ShiftReadingDialog shiftId={readingShiftId} onClose={() => setReadingShiftId(null)} />
       </div>
     );
   }
@@ -558,9 +570,10 @@ function PosMainContent() {
             Shift Open
           </span>
           {shift && (
-            <span className="flex items-center gap-1 text-xs text-slate-500">
-              <Clock className="h-3 w-3" />
-              Since {formatTime(shift.openedAt)} · {formatDate(shift.openedAt)} · Float {formatZarCurrency(shift.openingFloat)}
+            <span className="flex items-center gap-1.5 text-sm text-slate-300">
+              <Clock className="h-4 w-4 text-slate-400" />
+              Since <span className="font-semibold text-white">{formatTime(shift.openedAt)}</span> · {formatDate(shift.openedAt)} · Float{" "}
+              <span className="font-semibold text-white">{formatZarCurrency(shift.openingFloat)}</span>
             </span>
           )}
           {sellingOnOthersShift && shift && (
@@ -596,6 +609,16 @@ function PosMainContent() {
               End Management
             </button>
           )}
+          {shift && (
+            <button
+              type="button"
+              onClick={() => setReadingShiftId(shift.id)}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700"
+            >
+              <FileText className="h-3.5 w-3.5" />
+              Reading
+            </button>
+          )}
           <button
             type="button"
             onClick={requestCloseShift}
@@ -613,6 +636,8 @@ function PosMainContent() {
           Sales count toward their drawer.
         </div>
       )}
+
+      <ShiftReadingDialog shiftId={readingShiftId} onClose={() => setReadingShiftId(null)} />
 
       <PosOrderBuilder
         managementSessionToken={sessionToken}

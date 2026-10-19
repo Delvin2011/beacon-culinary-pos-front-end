@@ -4,7 +4,7 @@ import { jhbIsoDate } from "@/lib/pos-activity"
 // Types and helpers for the generic report viewer (GET /admin/reports...).
 // The viewer formats what the server sends; it never calculates figures.
 
-export type ReportParamType = "DATE" | "ENUM" | "BOOLEAN" | "USER" | "ID" | "LIMIT"
+export type ReportParamType = "DATE" | "ENUM" | "BOOLEAN" | "USER" | "ID" | "LIMIT" | "INT"
 
 // ENUM and LIMIT options are plain strings; ID options carry a database id and its label.
 export type ReportParamOption = string | { value: string; label: string }
@@ -16,6 +16,13 @@ export interface ReportParam {
   default?: string
   options?: ReportParamOption[]
   required?: boolean
+  // Only applies while another parameter has one of these values (Tender's Check # with groupBy CHECK).
+  appliesWhen?: { param: string; values: string[] }
+}
+
+export function paramApplies(param: ReportParam, values: Record<string, string>): boolean {
+  if (!param.appliesWhen) return true
+  return param.appliesWhen.values.includes(values[param.appliesWhen.param] ?? "")
 }
 
 export interface ReportDefinition {
@@ -55,6 +62,109 @@ export interface ReportCheck {
   detail?: string | null
 }
 
+// ---- R3: statements, actions, paging ----
+
+export type PrintMedium = "A4" | "SLIP80"
+export type SectionType = "KEY_VALUE" | "TABLE" | "SIGNATURE_LINES"
+
+export interface KeyValueItem {
+  label: string
+  type: ReportColumnType | string
+  value: CellValue
+  emphasis?: "TOTAL"
+}
+
+interface BaseSection {
+  key: string
+  type: SectionType | string
+  // A section without a title is the statement's header block.
+  title?: string
+  // Absent means both media.
+  printOn?: PrintMedium[]
+}
+
+export interface KeyValueSection extends BaseSection {
+  type: "KEY_VALUE"
+  items: KeyValueItem[]
+}
+
+export interface TableSection extends BaseSection {
+  type: "TABLE"
+  columns: ReportColumn[]
+  rows: ReportRow[]
+  totals: ReportRow | null
+  // The (at most 3) columns printed on the 80 mm slip.
+  slipColumns?: string[]
+}
+
+export interface SignatureSection extends BaseSection {
+  type: "SIGNATURE_LINES"
+  labels: string[]
+}
+
+export type ReportSection = KeyValueSection | TableSection | SignatureSection
+
+// An input the viewer collects in the action's confirm step and sends in the JSON body (e.g. a revoke reason).
+export interface ReportActionField {
+  name?: string
+  key?: string
+  label: string
+  type?: string
+  required?: boolean
+}
+
+export function actionFieldName(field: ReportActionField): string {
+  return field.name ?? field.key ?? field.label
+}
+
+export interface ReportAction {
+  key: string
+  label: string
+  method: "POST" | string
+  path: string
+  confirm?: string
+  enabled: boolean
+  disabledReasons?: string[]
+  fields?: ReportActionField[]
+}
+
+export type RowActionOutcome = "RELOAD" | "PRINT_RECEIPT" | "OPEN_REPORT"
+
+export interface RowAction {
+  key: string
+  label: string
+  method?: "POST" | string
+  path?: string
+  confirm?: string
+  onSuccess: RowActionOutcome | string
+  report?: string
+  params?: Record<string, unknown>
+}
+
+export interface ReportPage {
+  number: number
+  size: number
+  totalRows: number
+  // false: a limit cut the rows ("Showing N of M"); true: server-side pages.
+  paged?: boolean
+}
+
+// Close Day refusals and other end-of-day 409s.
+export interface EndOfDayBlocker {
+  code: string
+  message: string
+  shiftId?: number
+  date?: string
+  zNumber?: number
+}
+
+export interface EndOfDayError {
+  error: string
+  code: string
+  blockers?: EndOfDayBlocker[]
+  zNumber?: number
+}
+
 export interface ReportEnvelope {
   meta: {
     key: string
@@ -69,13 +179,24 @@ export interface ReportEnvelope {
     // Labels of the ID parameters that are set, e.g. { accountId: "Acme Logistics" }. Omitted when empty.
     paramLabels?: Record<string, string>
     notes?: string[]
+    // Formats the export offers: ["csv","xlsx"] for tables, ["xlsx"] for statements.
+    exportFormats?: Array<"csv" | "xlsx">
+    // Statements: the printed title ("X Reading"), its reference ("Z-0001"), and the business line.
+    statementTitle?: string
+    reference?: string
+    // An open shift's Cashier Reading: counted cash and variance are null.
+    interim?: boolean
+    business?: { name: string }
   }
-  columns: ReportColumn[]
-  rows: ReportRow[]
+  // A statement (template STATEMENT) sets columns, rows and totals to null and fills sections.
+  columns: ReportColumn[] | null
+  rows: ReportRow[] | null
   totals: ReportRow | null
+  sections?: ReportSection[]
+  actions?: ReportAction[]
   checks: ReportCheck[]
-  // Present only when a limit cut the rows; totals still cover every row.
-  page: { number: number; size: number; totalRows: number } | null
+  // Totals always cover every row, whatever the page.
+  page: ReportPage | null
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -109,6 +230,48 @@ export function templateLabel(template: string): string {
 export function humaniseEnum(value: string): string {
   const words = value.toLowerCase().split("_").join(" ")
   return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+export function isStatement(envelope: ReportEnvelope): boolean {
+  return Array.isArray(envelope.sections) && envelope.sections.length > 0
+}
+
+// Looks like an envelope (e.g. Close Day answers with the Z Reading).
+export function isEnvelope(body: unknown): body is ReportEnvelope {
+  return !!body && typeof body === "object" && "meta" in body && ("sections" in body || "columns" in body)
+}
+
+export function onMedium(section: { printOn?: PrintMedium[] }, medium: PrintMedium): boolean {
+  return !section.printOn || section.printOn.includes(medium)
+}
+
+// _actions rides on the row but is never a column.
+export function rowActions(row: ReportRow): RowAction[] {
+  const actions = (row as Record<string, unknown>)._actions
+  return Array.isArray(actions) ? (actions as RowAction[]) : []
+}
+
+export function formatZNumber(zNumber: number): string {
+  return `Z-${String(zNumber).padStart(4, "0")}`
+}
+
+// Every Close Day blocker that points somewhere links there, so managers can fix them one by one.
+export function blockerHref(blocker: EndOfDayBlocker): string | null {
+  if ((blocker.code === "SHIFT_NOT_SIGNED_OFF" || blocker.code === "SHIFT_OPEN") && blocker.shiftId !== undefined) {
+    return `/reports/cashier-reading?shiftId=${blocker.shiftId}`
+  }
+  if (blocker.code === "PREVIOUS_DAY_NOT_CLOSED" && blocker.date) return `/reports/x-reading?tradingDay=${blocker.date}`
+  if (blocker.code === "DAY_ALREADY_CLOSED" && blocker.zNumber !== undefined) return `/reports/z-reading?zNumber=${blocker.zNumber}`
+  return null
+}
+
+export function reportHref(key: string, params?: Record<string, unknown>): string {
+  const query = new URLSearchParams()
+  for (const [name, value] of Object.entries(params ?? {})) {
+    if (value !== null && value !== undefined && value !== "") query.set(name, String(value))
+  }
+  const search = query.toString()
+  return `/reports/${encodeURIComponent(key)}${search ? `?${search}` : ""}`
 }
 
 // ---- Parameters ----

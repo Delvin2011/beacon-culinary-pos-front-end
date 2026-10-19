@@ -149,7 +149,6 @@ type OrderPaymentDto = {
   amount: number;
   amountTendered?: number;
   changeDue?: number;
-  cardReference?: string;
   accountId?: number;
 };
 
@@ -184,7 +183,6 @@ type DraftPaymentEntry = {
   method: PaymentMethod;
   amount: number;
   amountTendered?: number;
-  cardReference?: string;
   accountId?: number;
 };
 
@@ -505,8 +503,6 @@ export function PosOrderBuilder({
   const [activePaymentField, setActivePaymentField] = useState<PaymentKeypadField>("tendered");
   // When true, the next keypad digit replaces the prefilled value instead of appending to it.
   const [replaceOnNextKey, setReplaceOnNextKey] = useState(true);
-  const [cardReference, setCardReference] = useState("");
-  const [cardReferenceError, setCardReferenceError] = useState<string | null>(null);
   const [paymentEntryError, setPaymentEntryError] = useState<string | null>(null);
   const [checkoutAccounts, setCheckoutAccounts] = useState<AccountDto[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(false);
@@ -698,15 +694,12 @@ export function PosOrderBuilder({
     }
 
     if (paymentMethod === "CARD") {
-      const reference = cardReference.trim();
-      if (!reference) return null;
-      return { method: "CARD", amount, cardReference: reference };
+      return { method: "CARD", amount };
     }
 
     if (cashTenderedAmount < amount) return null;
     return { method: "CASH", amount, amountTendered: cashTenderedAmount };
   }, [
-    cardReference,
     cashTenderedAmount,
     paymentAmount,
     paymentEntries.length,
@@ -863,8 +856,6 @@ export function PosOrderBuilder({
     setPaymentEntries([]);
     setPaymentAmountInput("");
     setCashTenderedInput("");
-    setCardReference("");
-    setCardReferenceError(null);
     setPaymentEntryError(null);
     setAccountsError(null);
     setAccountSearch("");
@@ -890,8 +881,6 @@ export function PosOrderBuilder({
     setPaymentEntries([]);
     setPaymentAmountInput("");
     setCashTenderedInput("");
-    setCardReference("");
-    setCardReferenceError(null);
     setPaymentEntryError(null);
     setAccountsError(null);
     setAccountSearch("");
@@ -906,8 +895,6 @@ export function PosOrderBuilder({
       setIsSplitAmount(false);
       setActivePaymentField("tendered");
       setReplaceOnNextKey(true);
-      setCardReference("");
-      setCardReferenceError(null);
       setPaymentEntryError(null);
     },
     [remainingToPayCents],
@@ -1052,18 +1039,11 @@ export function PosOrderBuilder({
     }
 
     if (paymentMethod === "CARD") {
-      const reference = cardReference.trim();
-      if (!reference) {
-        setCardReferenceError("Card reference is required.");
-        return;
-      }
-
       setPaymentEntries((prev) => [
         ...prev,
         {
           method: "CARD",
           amount,
-          cardReference: reference,
         },
       ]);
       resetPaymentEditor(remainingToPayCents - amountCents);
@@ -1207,7 +1187,6 @@ export function PosOrderBuilder({
     setPaymentEntries([]);
     setPaymentAmountInput("");
     setCashTenderedInput("");
-    setCardReference("");
     setPaymentEntryError(null);
     setAccountSearch("");
     await loadOrderReceipt(order.id);
@@ -1235,7 +1214,6 @@ export function PosOrderBuilder({
 
     setIsSubmitting(true);
     setSubmissionError(null);
-    setCardReferenceError(null);
 
     const paymentsForSubmit = paymentEntries.length > 0 ? paymentEntries : singlePaymentDraft ? [singlePaymentDraft] : [];
     if (paymentsForSubmit.length === 0) {
@@ -1249,7 +1227,6 @@ export function PosOrderBuilder({
         method: entry.method,
         amount: entry.amount,
         amountTendered: entry.amountTendered,
-        cardReference: entry.cardReference,
         accountId: entry.accountId,
       })),
       lines: buildLinesPayload(),
@@ -1727,7 +1704,6 @@ export function PosOrderBuilder({
                           {payment.method === "CASH" && typeof payment.amountTendered === "number" && (
                             <p>Tendered: {toMoney(payment.amountTendered)}{payment.changeDue ? ` · Change ${toMoney(payment.changeDue)}` : ""}</p>
                           )}
-                          {payment.method === "CARD" && payment.cardReference && <p>Card Ref: {payment.cardReference}</p>}
                         </div>
                       ))}
                     </div>
@@ -2072,47 +2048,62 @@ export function PosOrderBuilder({
             No meals are ready for sale in this period yet. They appear once the kitchen records actual portions on the Daily Planning page.
           </p>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {periodOptions.map((option) => {
-              const soldOut = option.portionsRemaining <= 0;
-              const lowStock = option.portionsRemaining > 0 && option.portionsRemaining <= LOW_STOCK_THRESHOLD;
-
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  disabled={soldOut}
-                  onClick={() => openBuilderForOption(option)}
-                  className={`rounded-2xl border p-4 text-left transition ${
-                    soldOut
-                      ? "cursor-not-allowed border-slate-800 bg-slate-900/40 text-slate-500"
-                      : "border-slate-700 bg-slate-800/70 text-slate-100 hover:border-emerald-400/60 hover:bg-slate-800"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
+          <>
+            <ul className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400" aria-label="Stock colours">
+              <li className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded border border-emerald-400/40 bg-emerald-500/30" aria-hidden />
+                Available
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded border border-amber-400/60 bg-amber-500/40" aria-hidden />
+                Low stock ({LOW_STOCK_THRESHOLD} or fewer left)
+              </li>
+              <li className="flex items-center gap-1.5">
+                <span className="h-3 w-3 rounded border border-slate-700 bg-slate-800/60" aria-hidden />
+                Sold out
+              </li>
+            </ul>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {periodOptions.map((option) => {
+                const soldOut = option.portionsRemaining <= 0;
+                const lowStock = option.portionsRemaining > 0 && option.portionsRemaining <= LOW_STOCK_THRESHOLD;
+                // The card's colour shows its stock: green good, amber low, slate sold out.
+                const stockStyle = soldOut
+                  ? { card: "cursor-not-allowed border-slate-700 bg-slate-800/40 text-slate-500", remaining: "text-slate-500" }
+                  : lowStock
+                    ? {
+                        card: "border-amber-400/60 bg-amber-500/15 text-slate-100 hover:border-amber-300 hover:bg-amber-500/25",
+                        remaining: "font-semibold text-amber-300",
+                      }
+                    : {
+                        card: "border-emerald-400/40 bg-emerald-500/10 text-slate-100 hover:border-emerald-300/70 hover:bg-emerald-500/20",
+                        remaining: "text-emerald-300",
+                      };
+  
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    disabled={soldOut}
+                    onClick={() => openBuilderForOption(option)}
+                    className={`rounded-2xl border p-4 text-left transition ${stockStyle.card}`}
+                  >
                     <p className="text-base font-semibold">{option.name}</p>
-                    {lowStock && (
-                      <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[11px] font-semibold uppercase text-amber-300">
-                        Low Stock
-                      </span>
+                    {option.description && (
+                      <p className="mt-1 line-clamp-2 text-xs text-slate-400">{option.description}</p>
                     )}
-                    {soldOut && (
-                      <span className="rounded-full border border-slate-600 px-2 py-0.5 text-[11px] font-semibold uppercase">
-                        Sold Out
-                      </span>
-                    )}
-                  </div>
-                  {option.description && (
-                    <p className="mt-1 line-clamp-2 text-xs text-slate-400">{option.description}</p>
-                  )}
-                  <div className="mt-4 flex items-end justify-between">
-                    <p className="text-2xl font-black">{toMoney(option.price)}</p>
-                    <p className="text-xs text-slate-400">Remaining: {option.portionsRemaining}</p>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                    <div className="mt-4 flex items-end justify-between gap-2">
+                      <p className="text-2xl font-black">{toMoney(option.price)}</p>
+                      {/* Text as well as colour, so the state never depends on colour alone. */}
+                      <p className={`text-right text-xs ${stockStyle.remaining}`}>
+                        {soldOut ? "Sold out" : lowStock ? `Low · ${option.portionsRemaining} left` : `${option.portionsRemaining} left`}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </>
         )}
 
         {selectedOption && (
@@ -2428,18 +2419,18 @@ export function PosOrderBuilder({
             </div>
           </div>
         ) : !showPayment ? (
-          <>
+          // Charge keeps most of the row; Complimentary is visible but smaller so it isn't hit by accident.
+          <div className="mt-4 grid grid-cols-[3fr_1fr] gap-2">
             <button
               type="button"
               disabled={draftLines.length === 0}
               onClick={() => {
                 setShowPayment(true);
                 setSubmissionError(null);
-                setCardReferenceError(null);
                 setPaymentEntryError(null);
                 resetPaymentEditor(payableCents);
               }}
-              className="mt-4 w-full rounded-xl bg-emerald-500 px-4 py-3 text-base font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
+              className="rounded-xl bg-emerald-500 px-4 py-3 text-base font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
             >
               Charge
             </button>
@@ -2447,12 +2438,12 @@ export function PosOrderBuilder({
               type="button"
               disabled={draftLines.length === 0}
               onClick={openComplimentaryForm}
-              className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-violet-300/30 px-3 py-1.5 text-xs font-semibold text-violet-200 hover:bg-violet-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+              className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl bg-violet-600 px-2 py-2 text-xs font-semibold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
             >
-              <Gift className="h-3.5 w-3.5" />
-              Complimentary…
+              <Gift className="h-4 w-4" aria-hidden />
+              Complimentary
             </button>
-          </>
+          </div>
         ) : (
           <div className="mt-4 rounded-xl border border-emerald-500/40 bg-slate-950/60 p-3">
             <div className="mb-3 rounded-lg border border-emerald-300/25 bg-emerald-500/10 p-3 text-sm text-emerald-100">
@@ -2619,7 +2610,6 @@ export function PosOrderBuilder({
                       {entry.method === "CASH" && typeof entry.amountTendered === "number" && (
                         <p>Tendered: {toMoney(entry.amountTendered)}</p>
                       )}
-                      {entry.method === "CARD" && entry.cardReference && <p>Card Ref: {entry.cardReference}</p>}
                       {entry.method === "ACCOUNT" && entry.accountId && <p>Account: {getAccountName(entry.accountId)}</p>}
                     </div>
                     <button
@@ -2646,7 +2636,6 @@ export function PosOrderBuilder({
                     disabled={disabled}
                     onClick={() => {
                       setPaymentMethod(method);
-                      setCardReferenceError(null);
                       setPaymentEntryError(null);
                     }}
                     className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
@@ -2755,25 +2744,7 @@ export function PosOrderBuilder({
               <div className="mt-4 rounded-xl border border-blue-300/25 bg-blue-500/10 p-4">
                 <p className="text-xs uppercase tracking-wider text-blue-100">Card Payment</p>
                 <p className="mt-2 text-3xl font-black text-white">{toMoney(paymentAmount)}</p>
-                <p className="mt-2 text-sm text-slate-300">
-                  Process the payment on the physical card machine, then enter the reference shown on the device.
-                </p>
-                <div className="mt-3">
-                  <label htmlFor="card-reference" className="text-xs font-medium text-slate-200">
-                    Card Reference
-                  </label>
-                  <Input
-                    id="card-reference"
-                    value={cardReference}
-                    onChange={(event) => {
-                      setCardReference(event.target.value);
-                      setCardReferenceError(null);
-                    }}
-                    className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
-                    placeholder="Approval code or last 4 digits"
-                  />
-                  {cardReferenceError && <p className="mt-2 text-xs text-rose-200">{cardReferenceError}</p>}
-                </div>
+                <p className="mt-2 text-sm text-slate-300">Process the payment on the physical card machine, then confirm here.</p>
               </div>
             ) : (
               <div className="mt-4 rounded-xl border border-amber-300/25 bg-amber-500/10 p-4">

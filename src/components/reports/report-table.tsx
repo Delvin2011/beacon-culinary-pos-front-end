@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react"
 import { VarianceText } from "@/components/pos-activity/shift-badges"
+import { Button } from "@/components/ui/button"
 import { cn, formatZarCurrency } from "@/lib/utils"
 import { formatJhbDateTime } from "@/lib/pos-activity"
 import {
@@ -11,7 +12,9 @@ import {
   formatInt,
   formatPercent,
   isNumericColumn,
+  rowActions,
   statusLabel,
+  type RowAction,
   type CellValue,
   type ReportColumn,
   type ReportRow,
@@ -27,7 +30,7 @@ const TONE_STYLES: Record<StatusTone, string> = {
 
 const Dash = () => <span className="text-muted-foreground">—</span>
 
-function ReportCell({ column, value, isTotal = false }: { column: ReportColumn; value: CellValue; isTotal?: boolean }) {
+export function ReportCell({ column, value, isTotal = false }: { column: ReportColumn; value: CellValue; isTotal?: boolean }) {
   if (value === null || value === undefined || value === "") return <Dash />
   // Totals hold labels such as "Total" or "Closing balance" in any column, even DATETIME: print them as they are.
   if (typeof value === "string" && (isTotal || (column.type !== "DATE" && column.type !== "DATETIME" && column.type !== "STATUS"))) {
@@ -80,10 +83,26 @@ interface ReportTableProps {
   columns: ReportColumn[]
   rows: ReportRow[]
   totals: ReportRow | null
+  // Off for server-paged tables: sorting one page would misrepresent the whole list.
+  sortable?: boolean
+  // Row actions (rows[]._actions); the promise settles when the action has finished.
+  onRowAction?: (row: ReportRow, action: RowAction) => Promise<void>
 }
 
-export function ReportTable({ title, columns, rows, totals }: ReportTableProps) {
+export function ReportTable({ title, columns, rows, totals, sortable = true, onRowAction }: ReportTableProps) {
   const [sort, setSort] = useState<SortState>(null)
+  const [busyAction, setBusyAction] = useState<string | null>(null)
+  const hasRowActions = !!onRowAction && rows.some((row) => rowActions(row).length > 0)
+
+  const runRowAction = async (rowIndex: number, row: ReportRow, action: RowAction) => {
+    if (!onRowAction) return
+    setBusyAction(`${rowIndex}:${action.key}`)
+    try {
+      await onRowAction(row, action)
+    } finally {
+      setBusyAction(null)
+    }
+  }
 
   // Parameters can swap the column set (groupBy); a sort on a column from the old set resets to the server's order.
   const columnKeys = columns.map((column) => column.key).join("|")
@@ -92,10 +111,10 @@ export function ReportTable({ title, columns, rows, totals }: ReportTableProps) 
   }, [columnKeys])
 
   const sortedRows = useMemo(() => {
-    if (!sort) return rows
+    if (!sort || !sortable) return rows
     const direction = sort.direction === "asc" ? 1 : -1
     return [...rows].sort((a, b) => compareValues(a[sort.key], b[sort.key], direction))
-  }, [rows, sort])
+  }, [rows, sort, sortable])
 
   const toggleSort = (key: string) => {
     setSort((current) => {
@@ -121,32 +140,41 @@ export function ReportTable({ title, columns, rows, totals }: ReportTableProps) 
                   aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none"}
                   className={cn("h-10 whitespace-nowrap px-2 align-middle font-medium text-muted-foreground", numeric ? "text-right" : "text-left")}
                 >
-                  <button
-                    type="button"
-                    onClick={() => toggleSort(column.key)}
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded px-1 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      numeric && "flex-row-reverse",
-                    )}
-                  >
-                    {column.label}
-                    {sorted === "asc" ? (
-                      <ArrowUp className="h-3.5 w-3.5" aria-hidden />
-                    ) : sorted === "desc" ? (
-                      <ArrowDown className="h-3.5 w-3.5" aria-hidden />
-                    ) : (
-                      <ArrowUpDown className="h-3.5 w-3.5 opacity-50" aria-hidden />
-                    )}
-                  </button>
+                  {!sortable ? (
+                    <span className="px-1">{column.label}</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => toggleSort(column.key)}
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded px-1 py-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        numeric && "flex-row-reverse",
+                      )}
+                    >
+                      {column.label}
+                      {sorted === "asc" ? (
+                        <ArrowUp className="h-3.5 w-3.5" aria-hidden />
+                      ) : sorted === "desc" ? (
+                        <ArrowDown className="h-3.5 w-3.5" aria-hidden />
+                      ) : (
+                        <ArrowUpDown className="h-3.5 w-3.5 opacity-50" aria-hidden />
+                      )}
+                    </button>
+                  )}
                 </th>
               )
             })}
+            {hasRowActions && (
+              <th scope="col" className="h-10 px-3 text-right align-middle font-medium text-muted-foreground">
+                <span className="sr-only">Actions</span>
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
           {sortedRows.length === 0 ? (
             <tr>
-              <td colSpan={columns.length} className="py-10 text-center text-sm text-muted-foreground">
+              <td colSpan={columns.length + (hasRowActions ? 1 : 0)} className="py-10 text-center text-sm text-muted-foreground">
                 No data for this period.
               </td>
             </tr>
@@ -158,6 +186,27 @@ export function ReportTable({ title, columns, rows, totals }: ReportTableProps) 
                     <ReportCell column={column} value={row[column.key]} />
                   </td>
                 ))}
+                {hasRowActions && (
+                  <td className="whitespace-nowrap px-3 py-1.5 text-right align-middle">
+                    <div className="flex justify-end gap-1">
+                      {rowActions(row).map((action) => {
+                        const busy = busyAction === `${index}:${action.key}`
+                        return (
+                          <Button
+                            key={action.key}
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-xs"
+                            disabled={busyAction !== null}
+                            onClick={() => void runRowAction(index, row, action)}
+                          >
+                            {busy ? "Working…" : action.label}
+                          </Button>
+                        )
+                      })}
+                    </div>
+                  </td>
+                )}
               </tr>
             ))
           )}
@@ -178,6 +227,7 @@ export function ReportTable({ title, columns, rows, totals }: ReportTableProps) 
                   </Cell>
                 )
               })}
+              {hasRowActions && <td />}
             </tr>
           </tfoot>
         )}
