@@ -11,6 +11,7 @@ import {
 } from "@/components/pos/adjustment-reason-fields";
 import { Input } from "@/components/ui/input";
 import { formatZarCurrency } from "@/lib/utils";
+import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import {
   COMPLIMENTARY_REASONS,
   complimentaryReasonLabel,
@@ -258,6 +259,8 @@ type PaymentKeypadField = "amount" | "tendered";
 
 const QUICK_TENDER_NOTES = [20, 50, 100, 200];
 
+const MAX_PAYMENT_WHOLE_DIGITS = 7; // up to R9,999,999.99
+
 // Next banknote totals a customer is likely to hand over for the given amount, e.g. R30 -> R40, R50, R100.
 function getQuickTenderOptions(amountCents: number): number[] {
   if (amountCents <= 0) return [];
@@ -268,12 +271,6 @@ function getQuickTenderOptions(amountCents: number): number[] {
     if (rounded > amountCents) options.add(rounded);
   }
   return Array.from(options).sort((a, b) => a - b).slice(0, 3);
-}
-
-function fromCentsInput(raw: string): number {
-  const parsed = Number(raw || "0");
-  if (!Number.isFinite(parsed)) return 0;
-  return Math.max(0, parsed) / 100;
 }
 
 function parseMessage(payload: unknown, fallback: string): string {
@@ -644,8 +641,8 @@ export function PosOrderBuilder({
   const draftTotal = draftSubtotal + draftExtrasTotal;
   const draftTotalCents = useMemo(() => toCents(draftTotal), [draftTotal]);
 
-  const paymentAmount = useMemo(() => fromCentsInput(paymentAmountInput), [paymentAmountInput]);
-  const cashTenderedAmount = useMemo(() => fromCentsInput(cashTenderedInput), [cashTenderedInput]);
+  const paymentAmount = useMemo(() => parseAmountInput(paymentAmountInput), [paymentAmountInput]);
+  const cashTenderedAmount = useMemo(() => parseAmountInput(cashTenderedInput), [cashTenderedInput]);
 
   const totalPaidCents = useMemo(
     () => paymentEntries.reduce((sum, entry) => sum + toCents(entry.amount), 0),
@@ -890,8 +887,8 @@ export function PosOrderBuilder({
   const resetPaymentEditor = useCallback(
     (nextAmountCents?: number) => {
       const amountCents = Math.max(0, nextAmountCents ?? remainingToPayCents);
-      setPaymentAmountInput(String(amountCents));
-      setCashTenderedInput(String(amountCents));
+      setPaymentAmountInput(centsToAmountInput(amountCents));
+      setCashTenderedInput(centsToAmountInput(amountCents));
       setIsSplitAmount(false);
       setActivePaymentField("tendered");
       setReplaceOnNextKey(true);
@@ -908,17 +905,14 @@ export function PosOrderBuilder({
   const changeDueCents = toCents(cashTenderedAmount) - toCents(paymentAmount);
   const quickTenderOptions = useMemo(() => getQuickTenderOptions(toCents(paymentAmount)), [paymentAmount]);
 
+  // The keypad edits an empty value while the prefill is pending, so the first key starts a fresh
+  // amount (backspace clears it).
   const handleKeypadChange = (next: string) => {
-    let value = next;
-    if (replaceOnNextKey) {
-      // Typing replaces the prefilled value; backspace clears it.
-      value = next.length > keypadValue.length ? next.slice(keypadValue.length) : "";
-      setReplaceOnNextKey(false);
-    }
+    if (replaceOnNextKey) setReplaceOnNextKey(false);
     if (keypadField === "amount") {
-      setPaymentAmountInput(value);
+      setPaymentAmountInput(next);
     } else {
-      setCashTenderedInput(value);
+      setCashTenderedInput(next);
     }
     setPaymentEntryError(null);
   };
@@ -930,7 +924,7 @@ export function PosOrderBuilder({
 
   const toggleSplitAmount = () => {
     if (isSplitAmount) {
-      setPaymentAmountInput(String(remainingToPayCents));
+      setPaymentAmountInput(centsToAmountInput(remainingToPayCents));
       setActivePaymentField("tendered");
     } else {
       setActivePaymentField("amount");
@@ -941,7 +935,7 @@ export function PosOrderBuilder({
   };
 
   const setTenderedCents = (cents: number) => {
-    setCashTenderedInput(String(cents));
+    setCashTenderedInput(centsToAmountInput(cents));
     setActivePaymentField("tendered");
     setReplaceOnNextKey(true);
     setPaymentEntryError(null);
@@ -2686,7 +2680,7 @@ export function PosOrderBuilder({
                       <p className="text-[11px] uppercase tracking-wider text-slate-300">
                         {paymentMethod === "CASH" ? "Cash" : "Card"} amount
                       </p>
-                      <p className="text-2xl font-black text-white">{toMoney(paymentAmount)}</p>
+                      <p className="text-2xl font-black text-white">{formatAmountInput(paymentAmountInput)}</p>
                     </button>
                   )}
 
@@ -2702,7 +2696,7 @@ export function PosOrderBuilder({
                         }`}
                       >
                         <p className="text-[11px] uppercase tracking-wider text-slate-300">Cash tendered</p>
-                        <p className="text-2xl font-black text-white">{toMoney(cashTenderedAmount)}</p>
+                        <p className="text-2xl font-black text-white">{formatAmountInput(cashTenderedInput)}</p>
                       </button>
 
                       <p className={`text-sm font-semibold ${changeDueCents < 0 ? "text-rose-300" : "text-emerald-200"}`}>
@@ -2735,7 +2729,14 @@ export function PosOrderBuilder({
                 </div>
 
                 <div className="flex justify-center">
-                  <NumericKeypad value={keypadValue} onChange={handleKeypadChange} size="compact" />
+                  <NumericKeypad
+                    value={replaceOnNextKey ? "" : keypadValue}
+                    onChange={handleKeypadChange}
+                    maxLength={MAX_PAYMENT_WHOLE_DIGITS}
+                    size="compact"
+                    decimal
+                  />
+
                 </div>
               </div>
             )}

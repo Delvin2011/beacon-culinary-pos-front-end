@@ -8,6 +8,7 @@ import { useShift } from "@/hooks/use-shift";
 import { useManagementSession } from "@/hooks/use-management-session";
 import { PosOrderBuilder } from "@/components/pos/order-builder";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
+import { formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
 import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
@@ -57,7 +58,7 @@ type VarianceDecision = {
   direction: "OVER" | "SHORT" | "EVEN";
 };
 
-const MAX_CASH_DIGITS = 9; // cents, up to R9,999,999.99
+const MAX_CASH_WHOLE_DIGITS = 7; // up to R9,999,999.99
 
 const VARIANCE_REASON_OPTIONS: Array<{ value: VarianceReasonCode; label: string }> = [
   { value: "CASH_COUNTING_ERROR", label: "Cash Counting Error" },
@@ -154,13 +155,7 @@ function PosMainContent() {
     return fallback;
   }, []);
 
-  // Keypad digits are cents, as on the payment keypad: "12345" -> R123.45.
-  const toUnits = (raw: string): number => {
-    if (!raw) return 0;
-    const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed)) return 0;
-    return Math.max(0, parsed) / 100;
-  };
+  const toUnits = parseAmountInput;
 
   const evaluateVariance = (expectedCash: number, countedCash: number): VarianceDecision => {
     // Round to cents so float noise doesn't register as a variance.
@@ -705,15 +700,16 @@ function PosMainContent() {
                 <div>
                   <p className="mb-2 text-sm text-slate-300">Enter Counted Cash</p>
                   <div className="mb-3 rounded-xl border border-slate-700 bg-slate-950 p-3 text-center text-4xl font-black text-white">
-                    {formatZarCurrency(countedCashUnits)}
+                    {formatAmountInput(countedCashInput)}
                   </div>
 
                   <div className="flex justify-center">
                     <NumericKeypad
                       value={countedCashInput}
                       onChange={setCountedCashInput}
-                      maxLength={MAX_CASH_DIGITS}
+                      maxLength={MAX_CASH_WHOLE_DIGITS}
                       disabled={closing}
+                      decimal
                     />
                   </div>
                 </div>
