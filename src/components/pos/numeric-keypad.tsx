@@ -8,7 +8,8 @@ interface NumericKeypadProps {
   // In decimal mode this limits the digits before the separator.
   maxLength?: number;
   disabled?: boolean;
-  size?: "default" | "compact";
+  // "small" fits keypads into dialogs with limited height.
+  size?: "default" | "compact" | "small";
   // Money entry: shows a "," key and emits values like "12.5" (at most 2 decimals, no leading zeros).
   decimal?: boolean;
 }
@@ -32,7 +33,16 @@ export function NumericKeypad({
   size = "default",
   decimal = false,
 }: NumericKeypadProps) {
-  const compact = size === "compact";
+  const gridClass = {
+    default: "gap-3 max-w-xs",
+    compact: "gap-2.5 max-w-[26rem]",
+    small: "gap-3 max-w-md",
+  }[size];
+  const keyClass = {
+    default: "h-[72px] rounded-2xl text-2xl",
+    compact: "h-16 rounded-xl text-2xl",
+    small: "h-16 rounded-xl text-3xl",
+  }[size];
 
   const handleDecimalKey = (key: KeyValue) => {
     const [whole, fraction] = value.split(".");
@@ -71,7 +81,7 @@ export function NumericKeypad({
   const keys: KeyValue[] = decimal ? KEYS.map((key) => (key === "" ? "separator" : key)) : [...KEYS];
 
   return (
-    <div className={`grid grid-cols-3 w-full ${compact ? "gap-2.5 max-w-[26rem]" : "gap-3 max-w-xs"}`}>
+    <div className={`grid grid-cols-3 w-full ${gridClass}`}>
       {keys.map((key, i) => {
         if (key === "") {
           return <div key={i} aria-hidden />;
@@ -84,9 +94,7 @@ export function NumericKeypad({
             disabled={disabled}
             onClick={() => handleKey(key)}
             aria-label={key === "separator" ? "Decimal comma" : key === "backspace" ? "Backspace" : undefined}
-            className={`flex w-full items-center justify-center bg-white/10 font-semibold text-white transition-colors hover:bg-white/20 active:scale-95 active:bg-white/30 disabled:pointer-events-none disabled:opacity-40 select-none ${
-              compact ? "h-16 rounded-xl text-2xl" : "h-[72px] rounded-2xl text-2xl"
-            }`}
+            className={`flex w-full items-center justify-center bg-white/10 font-semibold text-white transition-colors hover:bg-white/20 active:scale-95 active:bg-white/30 disabled:pointer-events-none disabled:opacity-40 select-none ${keyClass}`}
           >
             {key === "backspace" ? <Delete className="h-6 w-6" /> : key === "separator" ? "," : key}
           </button>

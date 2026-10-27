@@ -5,24 +5,18 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
-import { formatZarCurrency } from "@/lib/utils";
+import { formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import { DayClosedError } from "@/contexts/shift-context";
 
-// Opening float is entered as whole currency units (e.g. 50 = R 50.00)
-const MAX_FLOAT_DIGITS = 6; // up to 999999
-
-function formatFloat(raw: string): string {
-  if (!raw || raw === "0") return "0";
-  // Strip leading zeros
-  return String(parseInt(raw, 10));
-}
+// Opening float is entered as typed, with "," for cents (e.g. "50,5" = R 50.50)
+const MAX_FLOAT_WHOLE_DIGITS = 6; // up to R999,999.99
 
 export default function ShiftOpenPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user } = useAuth();
   const { shift, isLoading: shiftLoading, openShift } = useShift();
 
-  const [rawAmount, setRawAmount] = useState("0");
+  const [rawAmount, setRawAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Set when today already has a Z: opening is refused for the rest of the day, so no retry is offered.
@@ -44,17 +38,11 @@ export default function ShiftOpenPage() {
 
   const handleAmountChange = (value: string) => {
     if (!dayClosed) setError(null);
-    // Prevent leading zeros (except plain "0")
-    const cleaned = value.replace(/^0+(\d)/, "$1") || "0";
-    setRawAmount(cleaned);
+    setRawAmount(value);
   };
 
   const handleOpenShift = async () => {
-    const amount = parseInt(rawAmount, 10);
-    if (isNaN(amount) || amount < 0) {
-      setError("Please enter a valid opening float amount.");
-      return;
-    }
+    const amount = parseAmountInput(rawAmount);
 
     setSubmitting(true);
     setError(null);
@@ -87,9 +75,6 @@ export default function ShiftOpenPage() {
     );
   }
 
-  const displayAmount = formatFloat(rawAmount);
-  const numericAmount = parseInt(rawAmount, 10);
-
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-8 bg-slate-950 p-8">
       {/* Greeting */}
@@ -106,7 +91,7 @@ export default function ShiftOpenPage() {
           Opening Float
         </span>
         <div className="text-6xl font-bold tabular-nums text-white leading-none">
-          {formatZarCurrency(Number(displayAmount))}
+          {formatAmountInput(rawAmount)}
         </div>
       </div>
 
@@ -119,17 +104,18 @@ export default function ShiftOpenPage() {
 
       {/* Keypad */}
       <NumericKeypad
-        value={rawAmount === "0" ? "" : rawAmount}
-        onChange={(v) => handleAmountChange(v === "" ? "0" : v)}
-        maxLength={MAX_FLOAT_DIGITS}
+        value={rawAmount}
+        onChange={handleAmountChange}
+        maxLength={MAX_FLOAT_WHOLE_DIGITS}
         disabled={submitting || dayClosed}
+        decimal
       />
 
       {/* Open shift button */}
       <button
         type="button"
         onClick={handleOpenShift}
-        disabled={submitting || dayClosed || numericAmount < 0}
+        disabled={submitting || dayClosed}
         className="w-full max-w-xs rounded-2xl bg-emerald-500 py-4 text-lg font-semibold text-white transition-colors hover:bg-emerald-400 active:bg-emerald-600 disabled:opacity-50 disabled:pointer-events-none"
       >
         {submitting ? "Opening shift…" : "Open Shift"}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Gift, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Gift, Info, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
@@ -10,6 +10,7 @@ import {
   type OrderAdjustmentReasonCode,
 } from "@/components/pos/adjustment-reason-fields";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatZarCurrency } from "@/lib/utils";
 import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import {
@@ -151,6 +152,8 @@ type OrderPaymentDto = {
   amountTendered?: number;
   changeDue?: number;
   accountId?: number;
+  // ACCOUNT payments only; absent on account orders placed before approval was required.
+  authorizedBy?: { id: number; name: string } | null;
 };
 
 type OrderDto = {
@@ -177,7 +180,11 @@ type OrderDto = {
 
 type AccountDto = {
   id: number;
+  accountNumber?: string | null;
   name: string;
+  department?: string | null;
+  contactNumber?: string | null;
+  contactEmail?: string | null;
 };
 
 type DraftPaymentEntry = {
@@ -506,6 +513,7 @@ export function PosOrderBuilder({
   const [accountsError, setAccountsError] = useState<string | null>(null);
   const [accountSearch, setAccountSearch] = useState("");
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
+  const [showAccountDetails, setShowAccountDetails] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   // Discount at checkout: the draft being edited, and the one a manager approved.
   const [saleDiscount, setSaleDiscount] = useState<SaleDiscount | null>(null);
@@ -671,8 +679,16 @@ export function PosOrderBuilder({
   const accountSearchLower = accountSearch.trim().toLowerCase();
   const filteredAccounts = useMemo(() => {
     if (!accountSearchLower) return checkoutAccounts;
-    return checkoutAccounts.filter((account) => account.name.toLowerCase().includes(accountSearchLower));
+    return checkoutAccounts.filter(
+      (account) =>
+        account.name.toLowerCase().includes(accountSearchLower) ||
+        (account.accountNumber ?? "").toLowerCase().includes(accountSearchLower),
+    );
   }, [accountSearchLower, checkoutAccounts]);
+  const selectedAccount = useMemo(
+    () => checkoutAccounts.find((account) => account.id === selectedAccountId) ?? null,
+    [checkoutAccounts, selectedAccountId],
+  );
 
   const existingMethodSet = useMemo(
     () => new Set(paymentEntries.map((entry) => entry.method)),
@@ -952,10 +968,8 @@ export function PosOrderBuilder({
       }
 
       setCheckoutAccounts(body);
-      setSelectedAccountId((current) => {
-        if (current && body.some((account) => account.id === current)) return current;
-        return body.length > 0 ? body[0].id : null;
-      });
+      // No default: the cashier must pick the account. Keep a pick only if it is still active.
+      setSelectedAccountId((current) => (current && body.some((account) => account.id === current) ? current : null));
     } catch (err) {
       setAccountsError(err instanceof Error ? err.message : "Unable to load accounts for checkout.");
       setCheckoutAccounts([]);
@@ -1188,33 +1202,41 @@ export function PosOrderBuilder({
     await loadMenuForPeriod(selectedPeriod?.name ?? "");
   };
 
-  // discountSessionToken: the manager session approving a discount at sale.
-  const submitOrder = async (discountSessionToken?: string) => {
+  // approvalSessionToken: the manager session approving a discount and/or an account charge.
+  // It is a session token, so one PIN covers both and a rejected order doesn't use it up.
+  const submitOrder = async (approvalSessionToken?: string) => {
     if (!canConfirmPayment) return;
 
-    if (saleDiscount && !discountSessionToken) {
-      if (appliedDiscountCents <= 0 || appliedDiscountCents >= draftTotalCents) {
+    const paymentsForSubmit = paymentEntries.length > 0 ? paymentEntries : singlePaymentDraft ? [singlePaymentDraft] : [];
+    if (paymentsForSubmit.length === 0) {
+      setSubmissionError("Add a valid payment before confirming.");
+      return;
+    }
+
+    const chargesAccount = paymentsForSubmit.some((entry) => entry.method === "ACCOUNT");
+    const approvalPrompt = {
+      title: "Manager PIN Required",
+      description:
+        saleDiscount && chargesAccount
+          ? "Enter an admin PIN to approve this discount and the account charge."
+          : chargesAccount
+            ? `Enter an admin PIN to approve charging ${toMoney(remainingToPay)} to ${getAccountName(paymentsForSubmit.find((entry) => entry.method === "ACCOUNT")?.accountId) ?? "this account"}.`
+            : "Enter an admin PIN to approve this discount.",
+      submitLabel: "Approve & Charge",
+    };
+
+    if ((saleDiscount || chargesAccount) && !approvalSessionToken) {
+      if (saleDiscount && (appliedDiscountCents <= 0 || appliedDiscountCents >= draftTotalCents)) {
         setSaleDiscountError("A discount can't make the order free. It must be less than the order total.");
         return;
       }
       // Reuses an active management session, or asks for the PIN if it has expired.
-      requestManagementSession((token) => void submitOrder(token), {
-        title: "Manager PIN Required",
-        description: "Management mode has expired. Enter a manager PIN to approve this discount.",
-        submitLabel: "Approve & Charge",
-      });
+      requestManagementSession((token) => void submitOrder(token), approvalPrompt);
       return;
     }
 
     setIsSubmitting(true);
     setSubmissionError(null);
-
-    const paymentsForSubmit = paymentEntries.length > 0 ? paymentEntries : singlePaymentDraft ? [singlePaymentDraft] : [];
-    if (paymentsForSubmit.length === 0) {
-      setSubmissionError("Add a valid payment before confirming.");
-      setIsSubmitting(false);
-      return;
-    }
 
     const payload: Record<string, unknown> = {
       payments: paymentsForSubmit.map((entry) => ({
@@ -1222,17 +1244,20 @@ export function PosOrderBuilder({
         amount: entry.amount,
         amountTendered: entry.amountTendered,
         accountId: entry.accountId,
+        ...(entry.method === "ACCOUNT" && approvalSessionToken
+          ? { authorization: { sessionToken: approvalSessionToken } }
+          : {}),
       })),
       lines: buildLinesPayload(),
     };
 
-    if (saleDiscount && discountSessionToken) {
+    if (saleDiscount && approvalSessionToken) {
       payload.discount = {
         type: saleDiscount.type,
         value: saleDiscount.value,
         reasonCode: saleDiscount.reasonCode,
         note: saleDiscount.note || null,
-        authorization: { sessionToken: discountSessionToken },
+        authorization: { sessionToken: approvalSessionToken },
       };
     }
 
@@ -1263,13 +1288,12 @@ export function PosOrderBuilder({
         if (errorCode === "AUTHORIZATION_INVALID") {
           // No order was created. Ask for the PIN again and resubmit the same cart.
           invalidateManagementSession();
-          setSubmissionError("The manager approval was rejected or has expired. Enter the PIN again to charge.");
-          requestManagementSession((token) => void submitOrder(token), {
-            title: "Manager PIN Required",
-            description: "Enter a manager PIN to approve this discount.",
-            submitLabel: "Approve & Charge",
-          });
+          setSubmissionError("The manager approval was rejected or has expired. Enter an admin PIN again to charge.");
+          requestManagementSession((token) => void submitOrder(token), approvalPrompt);
           return;
+        }
+        if (errorCode === "ACCOUNT_PAYMENT_INVALID") {
+          throw new Error(parseMessage(body, "The account payment was refused. Check the account and try again."));
         }
         if (errorCode === "DISCOUNT_INVALID" || errorCode === "DISCOUNT_TOO_LARGE") {
           setSaleDiscountError(parseMessage(body, "This discount isn't allowed. Change or remove it."));
@@ -1695,6 +1719,9 @@ export function PosOrderBuilder({
                             {payment.method}: {toMoney(payment.amount)}
                             {payment.method === "ACCOUNT" && payment.accountId ? ` to ${getAccountName(payment.accountId)}` : ""}
                           </p>
+                          {payment.method === "ACCOUNT" && payment.authorizedBy && (
+                            <p>Approved by {payment.authorizedBy.name}</p>
+                          )}
                           {payment.method === "CASH" && typeof payment.amountTendered === "number" && (
                             <p>Tendered: {toMoney(payment.amountTendered)}{payment.changeDue ? ` · Change ${toMoney(payment.changeDue)}` : ""}</p>
                           )}
@@ -2764,9 +2791,31 @@ export function PosOrderBuilder({
                     value={accountSearch}
                     onChange={(event) => setAccountSearch(event.target.value)}
                     className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
-                    placeholder="Type account name"
+                    placeholder="Type account name or number"
                   />
                 </div>
+
+                {selectedAccount && (
+                  <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-amber-300/40 bg-amber-500/15 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-[11px] uppercase tracking-wider text-amber-100/80">Selected account</p>
+                      <p className="truncate text-sm font-semibold text-white">
+                        {selectedAccount.name}
+                        {selectedAccount.accountNumber && (
+                          <span className="ml-2 font-normal text-amber-100/80">{selectedAccount.accountNumber}</span>
+                        )}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAccountDetails(true)}
+                      aria-label="Show account details"
+                      className="shrink-0 rounded-full p-1.5 text-amber-100 hover:bg-amber-500/25"
+                    >
+                      <Info className="h-5 w-5" />
+                    </button>
+                  </div>
+                )}
 
                 {accountsError && <p className="mt-2 text-xs text-rose-200">{accountsError}</p>}
                 {accountsLoading ? (
@@ -2789,11 +2838,36 @@ export function PosOrderBuilder({
                           }`}
                         >
                           {account.name}
+                          {account.accountNumber && (
+                            <span className="ml-2 text-xs text-slate-400">{account.accountNumber}</span>
+                          )}
                         </button>
                       );
                     })}
                   </div>
                 )}
+
+                <Dialog open={showAccountDetails && selectedAccount !== null} onOpenChange={setShowAccountDetails}>
+                  <DialogContent className="max-w-sm border-slate-700 bg-slate-900 text-slate-100">
+                    <DialogHeader>
+                      <DialogTitle className="text-white">Account details</DialogTitle>
+                    </DialogHeader>
+                    {selectedAccount && (
+                      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+                        <dt className="text-slate-400">Account number</dt>
+                        <dd className="font-semibold">{selectedAccount.accountNumber || "—"}</dd>
+                        <dt className="text-slate-400">Name</dt>
+                        <dd className="font-semibold">{selectedAccount.name}</dd>
+                        <dt className="text-slate-400">Department</dt>
+                        <dd className="font-semibold">{selectedAccount.department || "—"}</dd>
+                        <dt className="text-slate-400">Contact number</dt>
+                        <dd className="font-semibold">{selectedAccount.contactNumber || "—"}</dd>
+                        <dt className="text-slate-400">Email</dt>
+                        <dd className="break-all font-semibold">{selectedAccount.contactEmail || "—"}</dd>
+                      </dl>
+                    )}
+                  </DialogContent>
+                </Dialog>
               </div>
             )}
 

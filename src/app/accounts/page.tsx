@@ -24,8 +24,11 @@ import { formatZarCurrency } from "@/lib/utils";
 
 type AccountAdminDto = {
   id: number;
+  accountNumber?: string | null;
   name: string;
-  contactEmail?: string;
+  department?: string | null;
+  contactNumber?: string | null;
+  contactEmail?: string | null;
   active: boolean;
 };
 
@@ -62,6 +65,8 @@ export default function AccountsPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<AccountAdminDto | null>(null);
   const [nameInput, setNameInput] = useState("");
+  const [departmentInput, setDepartmentInput] = useState("");
+  const [contactNumberInput, setContactNumberInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
   const [activeInput, setActiveInput] = useState(true);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -149,12 +154,19 @@ export default function AccountsPage() {
   const filteredAccounts = useMemo(() => {
     const term = search.trim().toLowerCase();
     if (!term) return accounts;
-    return accounts.filter((account) => account.name.toLowerCase().includes(term));
+    return accounts.filter(
+      (account) =>
+        account.name.toLowerCase().includes(term) ||
+        (account.accountNumber ?? "").toLowerCase().includes(term) ||
+        (account.department ?? "").toLowerCase().includes(term),
+    );
   }, [accounts, search]);
 
   const openCreateDialog = () => {
     setEditingAccount(null);
     setNameInput("");
+    setDepartmentInput("");
+    setContactNumberInput("");
     setEmailInput("");
     setActiveInput(true);
     setSaveError(null);
@@ -164,6 +176,8 @@ export default function AccountsPage() {
   const openEditDialog = (account: AccountAdminDto) => {
     setEditingAccount(account);
     setNameInput(account.name);
+    setDepartmentInput(account.department ?? "");
+    setContactNumberInput(account.contactNumber ?? "");
     setEmailInput(account.contactEmail ?? "");
     setActiveInput(account.active);
     setSaveError(null);
@@ -182,6 +196,8 @@ export default function AccountsPage() {
 
     const payload = {
       name: nameInput.trim(),
+      department: departmentInput.trim() || null,
+      contactNumber: contactNumberInput.trim() || null,
       contactEmail: emailInput.trim() || null,
       active: activeInput,
     };
@@ -198,6 +214,8 @@ export default function AccountsPage() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               name: payload.name,
+              department: payload.department,
+              contactNumber: payload.contactNumber,
               contactEmail: payload.contactEmail,
             }),
           });
@@ -292,7 +310,7 @@ export default function AccountsPage() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search accounts"
+              placeholder="Search by name, account number or department"
               className="mb-3"
             />
 
@@ -308,7 +326,10 @@ export default function AccountsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead>Account No.</TableHead>
                     <TableHead>Name</TableHead>
+                    <TableHead>Department</TableHead>
+                    <TableHead>Contact No.</TableHead>
                     <TableHead>Email</TableHead>
                     <TableHead>Active</TableHead>
                     <TableHead className="w-24" />
@@ -317,7 +338,7 @@ export default function AccountsPage() {
                 <TableBody>
                   {filteredAccounts.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={4} className="text-center text-sm text-muted-foreground">No accounts found.</TableCell>
+                      <TableCell colSpan={7}className="text-center text-sm text-muted-foreground">No accounts found.</TableCell>
                     </TableRow>
                   ) : (
                     filteredAccounts.map((account) => (
@@ -325,6 +346,7 @@ export default function AccountsPage() {
                         key={account.id}
                         className={selectedAccountId === account.id ? "bg-slate-100/80 dark:bg-slate-800/70" : ""}
                       >
+                        <TableCell className="whitespace-nowrap tabular-nums">{account.accountNumber || "-"}</TableCell>
                         <TableCell>
                           <button
                             type="button"
@@ -334,6 +356,8 @@ export default function AccountsPage() {
                             {account.name}
                           </button>
                         </TableCell>
+                        <TableCell>{account.department || "-"}</TableCell>
+                        <TableCell className="whitespace-nowrap">{account.contactNumber || "-"}</TableCell>
                         <TableCell>{account.contactEmail || "-"}</TableCell>
                         <TableCell>{account.active ? "Yes" : "No"}</TableCell>
                         <TableCell>
@@ -354,8 +378,15 @@ export default function AccountsPage() {
             ) : (
               <>
                 <div className="mt-3 rounded-lg border border-slate-200 p-3 dark:border-slate-700">
-                  <p className="font-medium">{selectedAccount.name}</p>
-                  <p className="text-sm text-muted-foreground">{selectedAccount.contactEmail || "No email"}</p>
+                  <p className="font-medium">
+                    {selectedAccount.name}
+                    {selectedAccount.accountNumber && (
+                      <span className="ml-2 font-normal text-muted-foreground">{selectedAccount.accountNumber}</span>
+                    )}
+                  </p>
+                  <p className="text-sm text-muted-foreground">Department: {selectedAccount.department || "-"}</p>
+                  <p className="text-sm text-muted-foreground">Contact number: {selectedAccount.contactNumber || "-"}</p>
+                  <p className="text-sm text-muted-foreground">Email: {selectedAccount.contactEmail || "-"}</p>
                   <p className="text-sm text-muted-foreground">Status: {selectedAccount.active ? "Active" : "Inactive"}</p>
                 </div>
 
@@ -422,8 +453,38 @@ export default function AccountsPage() {
 
             <form onSubmit={saveAccount} className="space-y-3">
               <div>
+                <Label htmlFor="account-number">Account Number</Label>
+                {/* Generated by the server on create; never sent back. */}
+                <Input
+                  id="account-number"
+                  value={editingAccount?.accountNumber ?? "Assigned when saved"}
+                  readOnly
+                  disabled
+                />
+              </div>
+
+              <div>
                 <Label htmlFor="account-name">Name</Label>
                 <Input id="account-name" value={nameInput} onChange={(event) => setNameInput(event.target.value)} />
+              </div>
+
+              <div>
+                <Label htmlFor="account-department">Department</Label>
+                <Input
+                  id="account-department"
+                  value={departmentInput}
+                  onChange={(event) => setDepartmentInput(event.target.value)}
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="account-contact-number">Contact Number</Label>
+                <Input
+                  id="account-contact-number"
+                  type="tel"
+                  value={contactNumberInput}
+                  onChange={(event) => setContactNumberInput(event.target.value)}
+                />
               </div>
 
               <div>

@@ -9,10 +9,15 @@ type BoardStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" |
 type PublicOrderDto = {
   orderNumber: number;
   status: BoardStatus;
+  // DONE orders only, UTC ISO strings.
+  doneAt?: string;
+  removeAt?: string;
 };
 
 type PublicBoardDto = {
   orders: PublicOrderDto[];
+  serverTime?: string;
+  doneDisplayMinutes?: number;
 };
 
 type PublicBoardStreamPayload = {
@@ -22,7 +27,9 @@ type PublicBoardStreamPayload = {
 
 type BoardEntry = {
   order: PublicOrderDto;
+  // DONE entries only, both on the local clock.
   completedAtMs?: number;
+  removeAtMs?: number;
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
@@ -81,65 +88,76 @@ async function consumeSseResponse(
   }
 }
 
+// Server UTC timestamp -> local clock, using offset = serverTime - local clock.
+function toLocalMs(iso: string | undefined, offsetMs: number): number | undefined {
+  if (!iso) return undefined;
+  const serverMs = Date.parse(iso);
+  return Number.isFinite(serverMs) ? serverMs - offsetMs : undefined;
+}
+
 export function PublicDisplayBoard() {
   const [ordersByNumber, setOrdersByNumber] = useState<Record<number, BoardEntry>>({});
   const streamControllerRef = useRef<AbortController | null>(null);
+  // Refreshed from serverTime on every /today load, so a wrong kiosk clock doesn't shift drop-off times.
+  const clockOffsetMsRef = useRef(0);
+  const doneDisplayMsRef = useRef(DONE_RETENTION_MS);
 
-  const upsertOrder = useCallback((order: PublicOrderDto, fallbackDoneAtMs: number) => {
-    setOrdersByNumber((prev) => {
-      const next = { ...prev };
-      const existing = next[order.orderNumber];
-
-      if (order.status === "PENDING" || order.status === "IN_PROGRESS") {
-        next[order.orderNumber] = { order };
-        return next;
-      }
-
-      if (order.status === "DONE") {
-        next[order.orderNumber] = {
-          order,
-          completedAtMs: existing?.completedAtMs ?? fallbackDoneAtMs,
-        };
-        return next;
-      }
-
-      delete next[order.orderNumber];
-      return next;
-    });
+  // removeAt from the server decides when a DONE order drops off. If it's missing (older server),
+  // fall back to doneDisplayMinutes after it was finished.
+  const toDoneEntry = useCallback((order: PublicOrderDto, existing?: BoardEntry): BoardEntry => {
+    const offset = clockOffsetMsRef.current;
+    const completedAtMs = toLocalMs(order.doneAt, offset) ?? existing?.completedAtMs ?? Date.now();
+    const removeAtMs = toLocalMs(order.removeAt, offset) ?? completedAtMs + doneDisplayMsRef.current;
+    return { order, completedAtMs, removeAtMs };
   }, []);
 
-  const applySnapshot = useCallback((payload: PublicBoardDto) => {
-    const now = Date.now();
-    const cutoff = now - DONE_RETENTION_MS;
-    const snapshotOrders = Array.isArray(payload.orders) ? payload.orders : [];
+  const upsertOrder = useCallback(
+    (order: PublicOrderDto) => {
+      setOrdersByNumber((prev) => {
+        const next = { ...prev };
 
-    setOrdersByNumber((prev) => {
-      const next: Record<number, BoardEntry> = {};
-
-      for (const [rawKey, entry] of Object.entries(prev)) {
-        const key = Number(rawKey);
-        if (entry.order.status === "DONE" && (entry.completedAtMs ?? 0) >= cutoff) {
-          next[key] = entry;
+        if (order.status === "PENDING" || order.status === "IN_PROGRESS") {
+          next[order.orderNumber] = { order };
+          return next;
         }
-      }
-
-      for (const order of snapshotOrders) {
-        if (!isBoardOrder(order) || !isDisplayStatus(order.status)) continue;
 
         if (order.status === "DONE") {
-          next[order.orderNumber] = {
-            order,
-            completedAtMs: prev[order.orderNumber]?.completedAtMs ?? now,
-          };
-          continue;
+          next[order.orderNumber] = toDoneEntry(order, prev[order.orderNumber]);
+          return next;
         }
 
-        next[order.orderNumber] = { order };
+        delete next[order.orderNumber];
+        return next;
+      });
+    },
+    [toDoneEntry],
+  );
+
+  // The snapshot is the whole truth: the server has already left out expired DONE orders.
+  const applySnapshot = useCallback(
+    (payload: PublicBoardDto) => {
+      const serverMs = payload.serverTime ? Date.parse(payload.serverTime) : Number.NaN;
+      if (Number.isFinite(serverMs)) clockOffsetMsRef.current = serverMs - Date.now();
+      if (typeof payload.doneDisplayMinutes === "number" && payload.doneDisplayMinutes >= 0) {
+        doneDisplayMsRef.current = payload.doneDisplayMinutes * 60 * 1000;
       }
 
-      return next;
-    });
-  }, []);
+      const snapshotOrders = Array.isArray(payload.orders) ? payload.orders : [];
+
+      setOrdersByNumber((prev) => {
+        const next: Record<number, BoardEntry> = {};
+
+        for (const order of snapshotOrders) {
+          if (!isBoardOrder(order) || !isDisplayStatus(order.status)) continue;
+          next[order.orderNumber] =
+            order.status === "DONE" ? toDoneEntry(order, prev[order.orderNumber]) : { order };
+        }
+
+        return next;
+      });
+    },
+    [toDoneEntry],
+  );
 
   const fetchSnapshot = useCallback(async (): Promise<boolean> => {
     try {
@@ -165,25 +183,18 @@ export function PublicDisplayBoard() {
   }, [applySnapshot]);
 
   const pruneDoneOrders = useCallback(() => {
-    const cutoff = Date.now() - DONE_RETENTION_MS;
+    const now = Date.now();
 
     setOrdersByNumber((prev) => {
       let changed = false;
       const next: Record<number, BoardEntry> = {};
 
       for (const [rawKey, entry] of Object.entries(prev)) {
-        const key = Number(rawKey);
-        if (entry.order.status !== "DONE") {
-          next[key] = entry;
+        if (entry.order.status === "DONE" && (entry.removeAtMs ?? 0) <= now) {
+          changed = true;
           continue;
         }
-
-        if ((entry.completedAtMs ?? 0) >= cutoff) {
-          next[key] = entry;
-          continue;
-        }
-
-        changed = true;
+        next[Number(rawKey)] = entry;
       }
 
       return changed ? next : prev;
@@ -234,7 +245,7 @@ export function PublicDisplayBoard() {
                   return;
                 }
 
-                upsertOrder(order, Date.now());
+                upsertOrder(order);
               } catch {
                 // Ignore malformed events and continue.
               }
@@ -259,13 +270,19 @@ export function PublicDisplayBoard() {
     };
   }, [fetchSnapshot, upsertOrder]);
 
+  // One timer for the next DONE order due to drop off; it is re-armed whenever the board changes.
   useEffect(() => {
-    const pruneTimer = window.setInterval(() => {
-      pruneDoneOrders();
-    }, 15000);
+    let nextRemoveAtMs = Number.POSITIVE_INFINITY;
+    for (const entry of Object.values(ordersByNumber)) {
+      if (entry.order.status === "DONE" && entry.removeAtMs !== undefined) {
+        nextRemoveAtMs = Math.min(nextRemoveAtMs, entry.removeAtMs);
+      }
+    }
+    if (!Number.isFinite(nextRemoveAtMs)) return;
 
-    return () => window.clearInterval(pruneTimer);
-  }, [pruneDoneOrders]);
+    const timer = window.setTimeout(pruneDoneOrders, Math.max(0, nextRemoveAtMs - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [ordersByNumber, pruneDoneOrders]);
 
   useEffect(() => {
     if (!Number.isFinite(KIOSK_RELOAD_MS) || KIOSK_RELOAD_MS <= 0) return;
@@ -296,10 +313,8 @@ export function PublicDisplayBoard() {
   );
 
   const done = useMemo(() => {
-    const cutoff = Date.now() - DONE_RETENTION_MS;
-
     return Object.values(ordersByNumber)
-      .filter((entry) => entry.order.status === "DONE" && (entry.completedAtMs ?? 0) >= cutoff)
+      .filter((entry) => entry.order.status === "DONE")
       .sort((a, b) => (b.completedAtMs ?? 0) - (a.completedAtMs ?? 0))
       .map((entry) => entry.order);
   }, [ordersByNumber]);

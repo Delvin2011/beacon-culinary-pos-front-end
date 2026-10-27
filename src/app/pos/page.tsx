@@ -62,7 +62,7 @@ const MAX_CASH_WHOLE_DIGITS = 7; // up to R9,999,999.99
 
 const VARIANCE_REASON_OPTIONS: Array<{ value: VarianceReasonCode; label: string }> = [
   { value: "CASH_COUNTING_ERROR", label: "Cash Counting Error" },
-  { value: "THEFT_SUSPECTED", label: "Theft Suspected" },
+  { value: "THEFT_SUSPECTED", label: "Shortage" },
   { value: "UNRECORDED_TRANSACTION", label: "Unrecorded Transaction" },
   { value: "OTHER", label: "Other" },
 ];
@@ -671,17 +671,19 @@ function PosMainContent() {
       )}
 
       {confirmClose && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
-          <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-800 p-6 flex flex-col gap-5">
-            <div>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          {/* Capped at 85% of the screen: header and buttons stay put, the middle scrolls if needed. */}
+          <div className="flex max-h-[85dvh] w-full max-w-4xl flex-col rounded-2xl border border-slate-800 bg-slate-900">
+            <div className="shrink-0 px-5 pt-5">
               <h2 className="text-xl font-bold text-white">Cash Reconciliation</h2>
-              <p className="mt-1 text-sm text-slate-400">
+              <p className="mt-0.5 text-sm text-slate-400">
                 Count cash in drawer and reconcile against expected cash before closing.
               </p>
             </div>
 
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
             {closeError && (
-              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
                 {closeError}
               </div>
             )}
@@ -690,32 +692,55 @@ function PosMainContent() {
               <p className="text-sm text-slate-300">Loading shift summary...</p>
             ) : closeSummary ? (
               <>
-                <div className="grid gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-4 text-sm text-slate-200 sm:grid-cols-2">
-                  <p>Opening Float: {formatZarCurrency(closeSummary.openingFloat)}</p>
-                  <p>Cash Sales: {formatZarCurrency(closeSummary.cashSalesTotal)}</p>
-                  <p>Adjustments: {formatZarCurrency(closeSummary.adjustmentsTotal)}</p>
-                  <p className="text-base font-semibold text-emerald-200">Expected Cash: {formatZarCurrency(closeSummary.expectedCash)}</p>
-                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-3">
+                    <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-2 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-lg text-slate-200">
+                      <dt>Opening Float</dt>
+                      <dd className="text-right tabular-nums">{formatZarCurrency(closeSummary.openingFloat)}</dd>
+                      <dt>Cash Sales</dt>
+                      <dd className="text-right tabular-nums">{formatZarCurrency(closeSummary.cashSalesTotal)}</dd>
+                      <dt>Adjustments</dt>
+                      <dd className="text-right tabular-nums">{formatZarCurrency(closeSummary.adjustmentsTotal)}</dd>
+                      <dt className="font-semibold text-emerald-200">Expected Cash</dt>
+                      <dd className="text-right font-semibold tabular-nums text-emerald-200">{formatZarCurrency(closeSummary.expectedCash)}</dd>
+                    </dl>
 
-                <div>
-                  <p className="mb-2 text-sm text-slate-300">Enter Counted Cash</p>
-                  <div className="mb-3 rounded-xl border border-slate-700 bg-slate-950 p-3 text-center text-4xl font-black text-white">
-                    {formatAmountInput(countedCashInput)}
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <p className="text-sm text-slate-300">Counted Cash</p>
+                        {showVarianceReview && (
+                          <button
+                            type="button"
+                            disabled={closing}
+                            onClick={() => setShowVarianceReview(false)}
+                            className="rounded-md border border-slate-700 px-2 py-0.5 text-xs text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            Edit count
+                          </button>
+                        )}
+                      </div>
+                      <div className="rounded-xl border border-slate-700 bg-slate-950 px-3 py-4 text-center text-5xl font-black tabular-nums text-white">
+                        {formatAmountInput(countedCashInput)}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="flex justify-center">
-                    <NumericKeypad
-                      value={countedCashInput}
-                      onChange={setCountedCashInput}
-                      maxLength={MAX_CASH_WHOLE_DIGITS}
-                      disabled={closing}
-                      decimal
-                    />
-                  </div>
-                </div>
+                  {/* The count is fixed while reviewing; "Edit count" brings the keypad back. */}
+                  {!showVarianceReview && (
+                    <div className="flex justify-center">
+                      <NumericKeypad
+                        value={countedCashInput}
+                        onChange={setCountedCashInput}
+                        maxLength={MAX_CASH_WHOLE_DIGITS}
+                        disabled={closing}
+                        size="small"
+                        decimal
+                      />
+                    </div>
+                  )}
 
                 {showVarianceReview && currentVariance && (
-                  <div className="rounded-xl border border-amber-300/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+                  <div className="rounded-xl border border-amber-300/30 bg-amber-400/10 p-3 text-sm text-amber-100">
                     <p className="font-semibold">
                       {currentVariance.direction === "OVER"
                         ? "Overage detected"
@@ -727,8 +752,8 @@ function PosMainContent() {
 
                     {!currentVariance.isZero && (
                       <>
-                        <p className="mt-3 text-xs uppercase tracking-wide">Variance Reason</p>
-                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <p className="mt-2 text-xs uppercase tracking-wide">Variance Reason</p>
+                        <div className="mt-1.5 grid grid-cols-2 gap-1.5">
                           {VARIANCE_REASON_OPTIONS.map((option) => {
                             const active = option.value === varianceReasonCode;
                             return (
@@ -739,7 +764,7 @@ function PosMainContent() {
                                   setVarianceReasonCode(option.value);
                                   if (option.value !== "OTHER") setVarianceFormError(null);
                                 }}
-                                className={`rounded-lg border px-3 py-2 text-left text-sm font-semibold ${
+                                className={`rounded-lg border px-2 py-1.5 text-left text-xs font-semibold ${
                                   active
                                     ? "border-amber-200 bg-amber-300/30 text-amber-50"
                                     : "border-slate-700 bg-slate-900 text-slate-200 hover:bg-slate-800"
@@ -751,13 +776,13 @@ function PosMainContent() {
                           })}
                         </div>
 
-                        <div className="mt-3">
+                        <div className="mt-2">
                           <label htmlFor="variance-note" className="text-xs text-slate-200">
                             Note {varianceReasonCode === "OTHER" ? "(required)" : "(optional)"}
                           </label>
                           <textarea
                             id="variance-note"
-                            rows={3}
+                            rows={2}
                             value={varianceNote}
                             onChange={(event) => {
                               setVarianceNote(event.target.value);
@@ -771,7 +796,7 @@ function PosMainContent() {
                         </div>
 
                         {varianceFormError && (
-                          <div className="mt-3 rounded-lg border border-rose-500/40 bg-rose-500/15 p-2 text-xs text-rose-200">
+                          <div className="mt-2 rounded-lg border border-rose-500/40 bg-rose-500/15 p-2 text-xs text-rose-200">
                             {varianceFormError}
                           </div>
                         )}
@@ -779,10 +804,12 @@ function PosMainContent() {
                     )}
                   </div>
                 )}
+                </div>
               </>
             ) : null}
+            </div>
 
-            <div className="flex gap-3">
+            <div className="flex shrink-0 gap-3 border-t border-slate-800 px-5 py-4">
               <button
                 type="button"
                 disabled={closing}
