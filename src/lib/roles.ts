@@ -1,4 +1,4 @@
-// Roles: ADMIN, CASHIER, KITCHEN, HEAD_CHEF, STOCK_ADMIN, STOCK_CLERK (possibly prefixed "ROLE_").
+// Roles: ADMIN, CASHIER, KITCHEN, HEAD_CHEF, STOCK_ADMIN, STOCK_CLERK, BARISTA (possibly prefixed "ROLE_").
 // Match exactly: STOCK_ADMIN contains "ADMIN" but is not an admin.
 function normaliseRole(role?: string): string {
   return (role ?? "").toUpperCase().replace(/^ROLE_/, "");
@@ -11,6 +11,17 @@ export function isAdminRole(role?: string): boolean {
 export function isKitchenAccessRole(role?: string): boolean {
   const normalised = normaliseRole(role);
   return normalised === "KITCHEN" || normalised === "HEAD_CHEF" || normalised === "ADMIN";
+}
+
+// The bar display (BAR_DISPLAY).
+export function isBarAccessRole(role?: string): boolean {
+  const normalised = normaliseRole(role);
+  return normalised === "BARISTA" || normalised === "ADMIN";
+}
+
+// A Barista only works the bar display: no back-office menus, no selling, no shifts.
+export function isBaristaRole(role?: string): boolean {
+  return normaliseRole(role) === "BARISTA";
 }
 
 // The stock-movement station: issue, order and waste requests. Head Chefs report waste here.
@@ -54,6 +65,18 @@ export function canEditInventoryRecords(role?: string): boolean {
 export function canViewReports(role?: string): boolean {
   const normalised = normaliseRole(role);
   return normalised === "ADMIN" || normalised === "HEAD_CHEF";
+}
+
+// Light meal stock Review button and panel (MENU_VIEW + STOCK_VIEW once U2 lands).
+export function canReviewMealStock(role?: string): boolean {
+  const normalised = normaliseRole(role);
+  return normalised === "ADMIN" || normalised === "HEAD_CHEF";
+}
+
+// Raising an Issue request, Main Store → Kitchen (REQUEST_ISSUE once U2 lands).
+export function canRequestIssue(role?: string): boolean {
+  const normalised = normaliseRole(role);
+  return normalised === "ADMIN" || normalised === "HEAD_CHEF" || normalised === "STOCK_ADMIN" || normalised === "STOCK_CLERK";
 }
 
 // Creating or editing catalog items (components, meals, recipes). Head Chefs view the catalog.

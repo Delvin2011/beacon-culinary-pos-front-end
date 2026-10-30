@@ -12,6 +12,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatZarCurrency } from "@/lib/utils";
+import type { CatalogGroup, CategoryRef, Station } from "@/lib/catalog";
+import { type OrderStation, orderStatusLabel, stationLabel, stationStatusLabel } from "@/lib/stations";
 import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import {
   COMPLIMENTARY_REASONS,
@@ -27,18 +29,35 @@ type MealPeriod = {
   name: string;
   startTime: string;
   endTime: string;
+  // false for All Day: its items are always available, not planned.
+  plannable?: boolean;
 };
 
 type DailyMealOption = {
   id: number;
-  mealPeriodId: number;
+  // null for beverages, which have no period.
+  mealPeriodId: number | null;
   optionDate: string;
   name: string;
   description?: string;
   price: number;
-  plannedPortions: number;
-  portionsRemaining: number;
+  // null means unlimited (always-available items): no counter, never capped.
+  plannedPortions: number | null;
+  portionsRemaining: number | null;
+  mealCatalogId?: number;
+  group?: CatalogGroup;
+  category?: CategoryRef | null;
+  period?: { id: number; name: string } | null;
+  outToday?: boolean;
+  // Always-on options only (null on planned ones). A warning: a LOW or OUT light meal can still be sold.
+  stockStatus?: "OK" | "LOW" | "OUT" | "NOT_TRACKED" | null;
+  unitsAvailable?: number | null;
 };
+
+// Light meals and beverages: unlimited, no extras, one tap adds one.
+function isAlwaysOnOption(option: DailyMealOption): boolean {
+  return option.group ? option.group !== "SET_MEALS" : option.portionsRemaining === null;
+}
 
 type DailyComponentStock = {
   id: number;
@@ -73,6 +92,8 @@ type DraftLine = {
   quantity: number;
   extras: DraftExtra[];
   invalid?: boolean;
+  // Set for always-on lines (light meals, beverages), which take no extras.
+  alwaysOn?: boolean;
 };
 
 type OrderStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" | "REFUNDED";
@@ -176,6 +197,8 @@ type OrderDto = {
   lines?: OrderLineDto[];
   adjustments?: OrderAdjustmentDto[];
   payments?: OrderPaymentDto[];
+  // Kitchen first, then Bar; [] for a cold-drinks-only order.
+  stations?: OrderStation[];
 };
 
 type AccountDto = {
@@ -197,6 +220,8 @@ type DraftPaymentEntry = {
 type OrderLineDto = {
   id: number;
   dailyMealOptionId: number;
+  // NONE: a cold drink, handed over at the till.
+  station?: Station;
   name: string;
   unitPrice: number;
   quantity: number;
@@ -416,6 +441,9 @@ export function PosOrderBuilder({
   const [menu, setMenu] = useState<MenuTodayResponse>({ options: [], availableExtras: [] });
   const [isLoadingMenu, setIsLoadingMenu] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
+  // The Beverages tab isn't a meal period: its items come from the full till menu (no period).
+  const [beveragesTab, setBeveragesTab] = useState(false);
+  const [beverageOptions, setBeverageOptions] = useState<DailyMealOption[]>([]);
 
   const [selectedOption, setSelectedOption] = useState<DailyMealOption | null>(null);
   const [lineQty, setLineQty] = useState(1);
@@ -476,6 +504,12 @@ export function PosOrderBuilder({
           {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
           {renderRungBy(order)}
         </p>
+        {(order.status || (order.stations ?? []).length > 0) && (
+          <p className="mt-1 text-xs text-slate-400">
+            {order.status ? orderStatusLabel(order.status) : ""}
+            {(order.stations ?? []).map((entry) => ` · ${stationLabel(entry.station)}: ${stationStatusLabel(entry.status)}`).join("")}
+          </p>
+        )}
       </>
     );
   };
@@ -575,9 +609,10 @@ export function PosOrderBuilder({
     setSelectedPeriodId(active?.id ?? payload[0].id);
   }, [authFetch]);
 
+  // silent: refresh in the background (tab refocus, after an order error) without the loading placeholder.
   const loadMenuForPeriod = useCallback(
-    async (periodName: string) => {
-      setIsLoadingMenu(true);
+    async (periodName: string, silent = false) => {
+      if (!silent) setIsLoadingMenu(true);
       setMenuError(null);
       try {
         const res = await authFetch(`/menu/today?period=${periodName.toUpperCase()}`);
@@ -600,6 +635,38 @@ export function PosOrderBuilder({
       }
     },
     [authFetch],
+  );
+
+  // GET /menu/today with no period: every open period, light meals and beverages. Beverages have no period.
+  const loadBeverages = useCallback(
+    async (silent = false) => {
+      if (!silent) setIsLoadingMenu(true);
+      setMenuError(null);
+      try {
+        const res = await authFetch("/menu/today");
+        const payload = (await res.json().catch(() => null)) as MenuTodayResponse | null;
+        if (!res.ok || !payload) {
+          throw new Error(parseMessage(payload, "Unable to load beverages."));
+        }
+        const options = Array.isArray(payload.options) ? payload.options : [];
+        setBeverageOptions(options.filter((option) => option.group === "BEVERAGES"));
+      } catch (err) {
+        setBeverageOptions([]);
+        setMenuError(err instanceof Error ? err.message : "Unable to load beverages.");
+      } finally {
+        setIsLoadingMenu(false);
+      }
+    },
+    [authFetch],
+  );
+
+  // Reloads whichever tab is showing.
+  const refreshShownMenu = useCallback(
+    (silent = false) => {
+      if (beveragesTab) void loadBeverages(silent);
+      else if (selectedPeriod) void loadMenuForPeriod(selectedPeriod.name, silent);
+    },
+    [beveragesTab, loadBeverages, loadMenuForPeriod, selectedPeriod],
   );
 
   useEffect(() => {
@@ -626,10 +693,49 @@ export function PosOrderBuilder({
     return menu.availableExtras.filter((e) => e.mealPeriodId === selectedPeriod.id);
   }, [menu.availableExtras, selectedPeriod]);
 
+  // The tiles on screen: the Beverages tab, or the selected period's menu.
   const periodOptions = useMemo(() => {
+    if (beveragesTab) return beverageOptions;
     if (!selectedPeriod) return [];
-    return menu.options.filter((o) => o.mealPeriodId === selectedPeriod.id);
-  }, [menu.options, selectedPeriod]);
+    return menu.options.filter((o) => o.mealPeriodId === selectedPeriod.id || o.period?.id === selectedPeriod.id);
+  }, [beveragesTab, beverageOptions, menu.options, selectedPeriod]);
+
+  // Planned set meals keep today's tiles; always-on items are grouped into sections by category
+  // (sections by category sortOrder, tiles by name). The server returns them in id order.
+  const plannedPeriodOptions = useMemo(() => periodOptions.filter((o) => !isAlwaysOnOption(o)), [periodOptions]);
+  const alwaysOnSections = useMemo(() => {
+    const sections = new Map<string, { name: string; sortOrder: number; options: DailyMealOption[] }>();
+    for (const option of periodOptions.filter(isAlwaysOnOption)) {
+      const name = option.category?.name ?? "Other";
+      const section = sections.get(name) ?? { name, sortOrder: option.category?.sortOrder ?? Number.MAX_SAFE_INTEGER, options: [] };
+      section.options.push(option);
+      sections.set(name, section);
+    }
+    return Array.from(sections.values())
+      .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+      .map((section) => ({ ...section, options: [...section.options].sort((a, b) => a.name.localeCompare(b.name)) }));
+  }, [periodOptions]);
+
+  // The till isn't pushed Out today changes: refetch when the window regains focus.
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") refreshShownMenu(true);
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [refreshShownMenu]);
+
+  // Light meal stock chips change with every sale: refresh about every minute while the till is visible.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refreshShownMenu(true);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [refreshShownMenu]);
 
   const draftSubtotal = useMemo(
     () => draftLines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
@@ -727,8 +833,36 @@ export function PosOrderBuilder({
     !isSubmitting &&
     ((paymentEntries.length > 0 && remainingToPayCents === 0) || singlePaymentDraft !== null);
 
+  // One tap adds one. Always-on lines never carry extras, so repeat taps just raise the quantity.
+  const addAlwaysOnOption = (option: DailyMealOption) => {
+    if (option.outToday) return;
+    setDraftLines((prev) => {
+      const existing = prev.find((line) => line.alwaysOn && line.dailyMealOptionId === option.id);
+      if (existing) {
+        return prev.map((line) => (line.id === existing.id ? { ...line, quantity: line.quantity + 1, invalid: false } : line));
+      }
+      return [
+        ...prev,
+        {
+          id: `${option.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          dailyMealOptionId: option.id,
+          name: option.name,
+          unitPrice: option.price,
+          quantity: 1,
+          extras: [],
+          alwaysOn: true,
+        },
+      ];
+    });
+    setSubmissionError(null);
+  };
+
   const openBuilderForOption = (option: DailyMealOption) => {
-    if (option.portionsRemaining <= 0) return;
+    if (isAlwaysOnOption(option)) {
+      addAlwaysOnOption(option);
+      return;
+    }
+    if ((option.portionsRemaining ?? 0) <= 0) return;
     setSelectedOption(option);
     setLineQty(1);
     setSelectedExtraQty({});
@@ -1202,6 +1336,48 @@ export function PosOrderBuilder({
     await loadMenuForPeriod(selectedPeriod?.name ?? "");
   };
 
+  // 400 ITEM_UNAVAILABLE ("'Beef Burger' is not available right now."): the message names the item but not its id.
+  // Drop the named line, and any always-on line that is now out today or off the menu; keep the rest of the cart.
+  const handleItemUnavailable = async (serverMessage: string) => {
+    const namedItem = /'([^']+)'/.exec(serverMessage)?.[1]?.toLowerCase();
+
+    // The full till menu (no period) covers lines from every tab.
+    let onSale: Map<number, DailyMealOption> | null = null;
+    try {
+      const res = await authFetch("/menu/today");
+      const body = (await res.json().catch(() => null)) as MenuTodayResponse | null;
+      if (res.ok && body && Array.isArray(body.options)) onSale = new Map(body.options.map((option) => [option.id, option]));
+    } catch {
+      // Fall back to the name in the message.
+    }
+
+    const removedNames: string[] = [];
+    const keptLines = draftLines.filter((line) => {
+      const option = onSale?.get(line.dailyMealOptionId);
+      // Set-meal lines are only dropped by name: the full menu may leave out a period that isn't open right now.
+      const unavailable =
+        line.name.toLowerCase() === namedItem || (line.alwaysOn === true && onSale !== null && (!option || option.outToday === true));
+      if (unavailable) removedNames.push(line.name);
+      return !unavailable;
+    });
+
+    setDraftLines(keptLines);
+    // The total changed, so payment starts again; the discount stays.
+    setShowPayment(false);
+    setPaymentEntries([]);
+    setPaymentAmountInput("");
+    setCashTenderedInput("");
+    setPaymentEntryError(null);
+    refreshShownMenu(true);
+
+    const names = Array.from(new Set(removedNames));
+    setSubmissionError(
+      names.length > 0
+        ? `${names.join(", ")} ${names.length === 1 ? "is" : "are"} out today and ${names.length === 1 ? "was" : "were"} removed. ${keptLines.length > 0 ? "The rest of the order is kept: check it and charge again." : ""}`.trim()
+        : serverMessage,
+    );
+  };
+
   // approvalSessionToken: the manager session approving a discount and/or an account charge.
   // It is a session token, so one PIN covers both and a rejected order doesn't use it up.
   const submitOrder = async (approvalSessionToken?: string) => {
@@ -1295,6 +1471,13 @@ export function PosOrderBuilder({
         if (errorCode === "ACCOUNT_PAYMENT_INVALID") {
           throw new Error(parseMessage(body, "The account payment was refused. Check the account and try again."));
         }
+        if (errorCode === "ITEM_UNAVAILABLE") {
+          await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
+          return;
+        }
+        if (errorCode === "EXTRAS_NOT_ALLOWED") {
+          throw new Error(parseMessage(body, "Extras can't be added to light meals or beverages. Remove them and try again."));
+        }
         if (errorCode === "DISCOUNT_INVALID" || errorCode === "DISCOUNT_TOO_LARGE") {
           setSaleDiscountError(parseMessage(body, "This discount isn't allowed. Change or remove it."));
           throw new Error("The discount was refused. Change or remove it, then charge again.");
@@ -1313,6 +1496,8 @@ export function PosOrderBuilder({
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Order submission failed.";
       setSubmissionError(msg);
+      // Out today changes aren't pushed to the till: refresh the menu after any order error.
+      refreshShownMenu(true);
     } finally {
       setIsSubmitting(false);
     }
@@ -1366,6 +1551,12 @@ export function PosOrderBuilder({
             description: "Manager approval failed. Enter the PIN again.",
             submitLabel: "Approve Complimentary",
           });
+          return;
+        }
+        if (errorCode === "ITEM_UNAVAILABLE") {
+          // The order rolled back, so the approval is still valid for the trimmed cart.
+          setComplimentaryToken(sessionToken);
+          await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
           return;
         }
         if (errorCode === "COMPLIMENTARY_INVALID") {
@@ -1623,6 +1814,14 @@ export function PosOrderBuilder({
       .reduce((sum, payment) => sum + (payment.changeDue ?? 0), 0);
     const recentAdjustment = latestAdjustment(shownOrder);
     const terminalOrder = isTerminalOrderStatus(shownOrder.status);
+    const shownStations = shownOrder.stations ?? [];
+    const routing = [
+      shownStations.some((entry) => entry.station === "KITCHEN") ? "Meals → Kitchen" : null,
+      shownStations.some((entry) => entry.station === "BAR") ? "Drinks → Bar" : null,
+    ].filter((entry): entry is string => entry !== null);
+    const handOverLines = (shownOrder.lines ?? []).filter((line) => line.station === "NONE");
+    // Void only while every station is still Pending; after that the server takes the refund path.
+    const voidable = shownOrder.status === "PENDING";
     // A discounted sale can only be voided while PENDING; refunds and removing extras are refused.
     const discountedAtSale = (shownOrder.saleDiscount ?? 0) > 0;
     // A complimentary order can only be voided, and only while PENDING. Refund and Remove extras are never offered.
@@ -1634,7 +1833,7 @@ export function PosOrderBuilder({
     const selectedActionLabel = complimentaryOrder
       ? "Void Order"
       : adjustmentScope === "WHOLE_ORDER"
-        ? "Cancel Order"
+        ? voidable ? "Void Order" : "Refund Order"
         : "Remove Extras";
     return (
       <>
@@ -1673,8 +1872,35 @@ export function PosOrderBuilder({
             </>
           )}
 
+          {/* Where each part of the order goes. A cold-drinks-only order is COLLECTED at once with no stations. */}
+          {shownOrder.status === "COLLECTED" && shownStations.length === 0 ? (
+            <p className="mt-6 inline-flex rounded-xl bg-sky-400 px-4 py-2 text-2xl font-black text-slate-900">Ready now</p>
+          ) : (routing.length > 0 || handOverLines.length > 0) && (
+            <div className="mt-6 space-y-1 rounded-xl border border-emerald-200/30 bg-slate-950/30 p-3 text-base font-semibold text-white">
+              {routing.length > 0 && <p>{routing.join(" · ")}</p>}
+              {handOverLines.length > 0 && (
+                <p className="text-sky-200">
+                  Hand over now: {handOverLines.map((line) => (line.quantity > 1 ? `${line.quantity} × ${line.name}` : line.name)).join(", ")}
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="mt-8 grid gap-2 text-sm text-emerald-100">
-            {shownOrder.status && <p>Status: {shownOrder.status.replace("_", " ")}</p>}
+            {shownOrder.status && <p>Status: {orderStatusLabel(shownOrder.status)}</p>}
+            {shownStations.length > 0 && (
+              <p className="flex flex-wrap gap-1.5">
+                {shownStations.map((entry) => (
+                  <span
+                    key={entry.station}
+                    className="rounded-full border border-emerald-200/30 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold"
+                    title={entry.updatedBy ? `Updated by ${entry.updatedBy.name}` : undefined}
+                  >
+                    {stationLabel(entry.station)}: {stationStatusLabel(entry.status)}
+                  </span>
+                ))}
+              </p>
+            )}
             {complimentaryOrder ? (
               shownOrder.complimentary && (
                 <>
@@ -1879,7 +2105,7 @@ export function PosOrderBuilder({
                   onClick={() => beginAdjustment("WHOLE_ORDER")}
                   className="rounded-lg border border-rose-300/40 bg-rose-500/20 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {complimentaryOrder ? "Void Order" : "Cancel Order"}
+                  {complimentaryOrder || voidable ? "Void Order" : "Refund Order"}
                 </button>
                 {!complimentaryOrder && (
                   <button
@@ -2029,12 +2255,16 @@ export function PosOrderBuilder({
               Today&apos;s Orders
             </button>
             {periods.map((period) => {
-              const isActive = period.id === selectedPeriodId;
+              const isActive = !beveragesTab && period.id === selectedPeriodId;
               return (
                 <button
                   key={period.id}
                   type="button"
-                  onClick={() => setSelectedPeriodId(period.id)}
+                  onClick={() => {
+                    if (beveragesTab && period.id === selectedPeriodId) void loadMenuForPeriod(period.name);
+                    setBeveragesTab(false);
+                    setSelectedPeriodId(period.id);
+                  }}
                   className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                     isActive
                       ? "bg-emerald-500 text-white"
@@ -2047,7 +2277,22 @@ export function PosOrderBuilder({
             })}
             <button
               type="button"
-              onClick={() => selectedPeriod && void loadMenuForPeriod(selectedPeriod.name)}
+              onClick={() => {
+                setBeveragesTab(true);
+                setSelectedOption(null);
+                void loadBeverages();
+              }}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                beveragesTab
+                  ? "bg-emerald-500 text-white"
+                  : "border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              Beverages
+            </button>
+            <button
+              type="button"
+              onClick={() => refreshShownMenu()}
               className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-700"
             >
               <RefreshCw className="h-3.5 w-3.5" />
@@ -2066,9 +2311,15 @@ export function PosOrderBuilder({
           <p className="text-sm text-slate-400">Loading menu...</p>
         ) : periodOptions.length === 0 ? (
           <p className="text-sm text-slate-400">
-            No meals are ready for sale in this period yet. They appear once the kitchen records actual portions on the Daily Planning page.
+            {beveragesTab
+              ? "No beverages are on sale right now. They're added in Catalogue Management."
+              : selectedPeriod?.plannable === false
+              ? "Nothing is on sale in this period right now. Items are added in Catalogue Management."
+              : "No meals are ready for sale in this period yet. They appear once the kitchen records actual portions on the Daily Planning page."}
           </p>
         ) : (
+          <>
+          {plannedPeriodOptions.length > 0 && (
           <>
             <ul className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-400" aria-label="Stock colours">
               <li className="flex items-center gap-1.5">
@@ -2085,9 +2336,10 @@ export function PosOrderBuilder({
               </li>
             </ul>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {periodOptions.map((option) => {
-                const soldOut = option.portionsRemaining <= 0;
-                const lowStock = option.portionsRemaining > 0 && option.portionsRemaining <= LOW_STOCK_THRESHOLD;
+              {plannedPeriodOptions.map((option) => {
+                const remaining = option.portionsRemaining ?? 0;
+                const soldOut = remaining <= 0;
+                const lowStock = remaining > 0 && remaining <= LOW_STOCK_THRESHOLD;
                 // The card's colour shows its stock: green good, amber low, slate sold out.
                 const stockStyle = soldOut
                   ? { card: "cursor-not-allowed border-slate-700 bg-slate-800/40 text-slate-500", remaining: "text-slate-500" }
@@ -2117,13 +2369,57 @@ export function PosOrderBuilder({
                       <p className="text-2xl font-black">{toMoney(option.price)}</p>
                       {/* Text as well as colour, so the state never depends on colour alone. */}
                       <p className={`text-right text-xs ${stockStyle.remaining}`}>
-                        {soldOut ? "Sold out" : lowStock ? `Low · ${option.portionsRemaining} left` : `${option.portionsRemaining} left`}
+                        {soldOut ? "Sold out" : lowStock ? `Low · ${remaining} left` : `${remaining} left`}
                       </p>
                     </div>
                   </button>
                 );
               })}
             </div>
+          </>
+          )}
+
+          {alwaysOnSections.map((section) => (
+            <section key={section.name} className="mt-4 first:mt-0">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">{section.name}</h3>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {section.options.map((option) => {
+                  const out = Boolean(option.outToday);
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      disabled={out}
+                      onClick={() => addAlwaysOnOption(option)}
+                      className={`rounded-2xl border p-4 text-left transition active:scale-[0.98] ${
+                        out
+                          ? "cursor-not-allowed border-slate-700 bg-slate-800/40 text-slate-500"
+                          : "border-sky-400/40 bg-sky-500/10 text-slate-100 hover:border-sky-300/70 hover:bg-sky-500/20"
+                      }`}
+                    >
+                      <p className="text-base font-semibold">{option.name}</p>
+                      <div className="mt-4 flex items-end justify-between gap-2">
+                        <p className="text-2xl font-black">{toMoney(option.price)}</p>
+                        {out ? (
+                          <span className="rounded-full border border-slate-600 px-2 py-0.5 text-xs font-semibold uppercase text-slate-400">
+                            Out
+                          </span>
+                        ) : option.stockStatus === "LOW" ? (
+                          <span className="rounded-full border border-amber-400/60 bg-amber-500/15 px-2 py-0.5 text-xs font-semibold text-amber-300">
+                            Low
+                          </span>
+                        ) : option.stockStatus === "OUT" ? (
+                          <span className="rounded-full border border-rose-400/60 bg-rose-500/15 px-2 py-0.5 text-xs font-semibold text-rose-300">
+                            No stock
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ))}
           </>
         )}
 

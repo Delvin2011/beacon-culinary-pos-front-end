@@ -35,6 +35,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
     "Runs the kitchen display (with a PIN, if set). In the back office: plans daily meals, views the catalog and inventory, and approves stock requests. Raises issue, order and waste requests at the stock-movement station.",
   STOCK_ADMIN: "Manages inventory, GRVs, purchase orders, stock requests and their approvals, and stock takes.",
   STOCK_CLERK: "Uses the stock-movement station to submit stock requests, issues, waste and stock-take counts.",
+  BARISTA: "Works the bar display with a PIN: prepares drinks and marks beverages out for the day. Can't sell or open a shift.",
 }
 
 export function roleDescription(role: string): string | undefined {

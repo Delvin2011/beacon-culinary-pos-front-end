@@ -58,6 +58,8 @@ function matchesSalesFilter(order: ShiftActivityOrder, filter: SalesFilter): boo
 }
 
 const ORDER_STATUS_STYLES: Record<string, string> = {
+  // A cold-drinks-only order: handed over at the till straight away.
+  COLLECTED: "text-sky-700 dark:text-sky-400",
   VOIDED: "text-red-600 dark:text-red-400",
   REFUNDED: "text-amber-700 dark:text-amber-400",
 }

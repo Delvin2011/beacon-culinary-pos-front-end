@@ -14,7 +14,7 @@ import {
 } from "@tanstack/react-table"
 import { ArrowUpDown } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
-import { canEditCatalog, canManageMenu } from "@/lib/roles"
+import { canEditCatalog, canManageMenu, canReviewMealStock } from "@/lib/roles"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
@@ -24,10 +24,28 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { CategoriesDialog } from "@/components/catalog/categories-dialog"
+import { OutTodaySwitch } from "@/components/catalog/out-today-switch"
+import { StockStatusChip } from "@/components/catalog/stock-status-chip"
+import { type StockReviewMeal, type StockRowPatch, StockReviewPanel } from "@/components/catalog/stock-review-panel"
 import { toast } from "@/hooks/use-toast"
-import { formatZarCurrency } from "@/lib/utils"
+import {
+  type Availability,
+  type CatalogGroup,
+  type CategoryNode,
+  type CategoryRef,
+  type Station,
+  availabilityForGroup,
+  availabilityLabel,
+  canToggleOutToday,
+  flattenCategories,
+  isSelectableCategory,
+  parseApiError,
+} from "@/lib/catalog"
+import { DEFAULT_LOW_STOCK_UNITS, MAX_LOW_STOCK_UNITS, type StockStatus, parseLowStockUnits } from "@/lib/light-meal-stock"
+import { cn, formatZarCurrency } from "@/lib/utils"
 
 interface ComponentEntry {
   id: number
@@ -44,7 +62,21 @@ interface MealEntry {
   active: boolean
   componentIds?: number[]
   components?: { id: number; name: string }[]
+  category?: CategoryRef | null
+  group?: CatalogGroup
+  availability?: Availability
+  station?: Station
+  // Always-available items only; clears itself at midnight.
+  outToday?: boolean
+  // Light meals: warn when the Kitchen can make fewer than this many.
+  lowStockUnits?: number
+  // null on set meals; NOT_TRACKED for beverages and light meals with no recipe.
+  stockStatus?: StockStatus | null
+  // null unless the meal is tracked.
+  unitsAvailable?: number | null
 }
+
+type MealGroupFilter = "ALL" | "SET_MEALS" | "LIGHT_MEALS"
 
 interface IngredientEntry {
   id: number
@@ -84,6 +116,7 @@ type MealTableRow = {
   id: number
   name: string
   description: string
+  categoryName: string
   price: number
   linkedNames: string
   active: boolean
@@ -103,7 +136,18 @@ interface BulkComponentImportResultDto {
   ingredientsUpdated: number
 }
 
-type Tab = "components" | "meals"
+type Tab = "components" | "meals" | "beverages"
+
+// Beverages are made at the bar, or handed over at the counter with no preparation.
+const PREPARED_BY_OPTIONS: Array<{ value: Extract<Station, "BAR" | "NONE">; label: string }> = [
+  { value: "BAR", label: "Bar" },
+  { value: "NONE", label: "Counter (no preparation)" },
+]
+
+// Same default as the server: Counter for "Cold beverages", Bar for any other beverage category.
+function defaultStationFor(categoryName: string | undefined): "BAR" | "NONE" {
+  return categoryName?.trim().toLowerCase() === "cold beverages" ? "NONE" : "BAR"
+}
 
 const BULK_COMPONENT_HEADERS = ["COMPONENT", "INGREDIENT (NAME)", "UNIT", "COUNT SHEET", "Quantities", "Batch Size", "Per Portion Price (R)"] as const
 
@@ -195,12 +239,27 @@ export default function CatalogPage() {
   const [mealsLoading, setMealsLoading] = useState(true)
   const [mealDialogOpen, setMealDialogOpen] = useState(false)
   const [editingMeal, setEditingMeal] = useState<MealEntry | null>(null)
-  const [mealForm, setMealForm] = useState({ name: "", description: "", price: "", componentIds: [] as number[], active: true })
+  const [mealForm, setMealForm] = useState({ name: "", description: "", price: "", categoryId: "", componentIds: [] as number[], active: true, lowStockUnits: String(DEFAULT_LOW_STOCK_UNITS) })
   const [mealSaving, setMealSaving] = useState(false)
   const [mealError, setMealError] = useState<string | null>(null)
   const [mealSearch, setMealSearch] = useState("")
   const [mealSorting, setMealSorting] = useState<SortingState>([])
   const [mealColumnFilters, setMealColumnFilters] = useState<ColumnFiltersState>([])
+  const [mealGroupFilter, setMealGroupFilter] = useState<MealGroupFilter>("ALL")
+  const [mealCategoryFilter, setMealCategoryFilter] = useState("all")
+
+  // The light meal whose stock Review panel is open.
+  const [reviewMeal, setReviewMeal] = useState<StockReviewMeal | null>(null)
+
+  const [categories, setCategories] = useState<CategoryNode[]>([])
+  const [categoriesDialogOpen, setCategoriesDialogOpen] = useState(false)
+
+  const [beverageCategoryFilter, setBeverageCategoryFilter] = useState("all")
+  const [beverageDialogOpen, setBeverageDialogOpen] = useState(false)
+  const [editingBeverage, setEditingBeverage] = useState<MealEntry | null>(null)
+  const [beverageForm, setBeverageForm] = useState({ name: "", price: "", categoryId: "", station: "BAR" as "BAR" | "NONE", active: true })
+  const [beverageSaving, setBeverageSaving] = useState(false)
+  const [beverageError, setBeverageError] = useState<string | null>(null)
 
   useEffect(() => {
     if (authLoading) return
@@ -263,13 +322,139 @@ export default function CatalogPage() {
     }
   }, [authFetch])
 
+  const fetchCategories = useCallback(async () => {
+    try {
+      const res = await authFetch("/admin/catalog/categories")
+      if (res.ok) {
+        const body = (await res.json().catch(() => null)) as unknown
+        setCategories(Array.isArray(body) ? (body as CategoryNode[]) : [])
+      }
+    } catch {
+      setCategories([])
+    }
+  }, [authFetch])
+
   useEffect(() => {
     if (isAuthenticated && canManageMenu(user?.role)) {
       void fetchComponents()
       void fetchMeals()
       void fetchIngredients()
+      void fetchCategories()
     }
-  }, [isAuthenticated, user, fetchComponents, fetchMeals, fetchIngredients])
+  }, [isAuthenticated, user, fetchComponents, fetchMeals, fetchIngredients, fetchCategories])
+
+  // Every category node with its group, for lookups by id.
+  const categoryById = useMemo(
+    () => new Map(flattenCategories(categories).map((node) => [node.id, node])),
+    [categories],
+  )
+  // Meal form and filter: set meals and light meals only (beverages have their own tab).
+  const mealCategoryGroups = useMemo(
+    () => [...categories].filter((node) => node.group !== "BEVERAGES").sort((a, b) => a.sortOrder - b.sortOrder),
+    [categories],
+  )
+  const selectedMealCategory = mealForm.categoryId ? categoryById.get(Number(mealForm.categoryId)) : undefined
+  // Before saving, availability follows the chosen category's group; after saving, the server's value.
+  const mealFormAvailability: Availability | null = selectedMealCategory
+    ? availabilityForGroup(selectedMealCategory.group)
+    : editingMeal?.availability ?? null
+  const mealFormIsLightMeal = (selectedMealCategory?.group ?? editingMeal?.group) === "LIGHT_MEALS"
+
+  const updateMealInList = (updated: MealEntry) => {
+    setMeals((prev) => prev.map((meal) => (meal.id === updated.id ? { ...meal, ...updated } : meal)))
+  }
+
+  // The Review panel patches the row's chip from each review it loads and from Mark out today.
+  const patchMealStock = useCallback((mealId: number, patch: StockRowPatch) => {
+    setMeals((prev) => prev.map((meal) => (meal.id === mealId ? { ...meal, ...patch } : meal)))
+  }, [])
+
+  // Beverage subcategories (Hot, Cold, and any added later), for the form and the filter chips.
+  const beverageCategories = useMemo(
+    () =>
+      flattenCategories(categories.filter((node) => node.group === "BEVERAGES")).filter((node) => node.assignable),
+    [categories],
+  )
+  // No per-item sort order: by category, then name.
+  const beverages = useMemo(
+    () =>
+      meals
+        .filter((meal) => meal.group === "BEVERAGES")
+        .filter((meal) => beverageCategoryFilter === "all" || String(meal.category?.id) === beverageCategoryFilter)
+        .sort(
+          (a, b) =>
+            (a.category?.sortOrder ?? 0) - (b.category?.sortOrder ?? 0) ||
+            (a.category?.name ?? "").localeCompare(b.category?.name ?? "") ||
+            a.name.localeCompare(b.name),
+        ),
+    [meals, beverageCategoryFilter],
+  )
+
+  const openNewBeverage = () => {
+    setEditingBeverage(null)
+    const firstCategory = beverageCategories.find(isSelectableCategory)
+    setBeverageForm({
+      name: "",
+      price: "",
+      categoryId: firstCategory ? String(firstCategory.id) : "",
+      station: defaultStationFor(firstCategory?.name),
+      active: true,
+    })
+    setBeverageError(null)
+    setBeverageDialogOpen(true)
+  }
+
+  const openEditBeverage = (beverage: MealEntry) => {
+    setEditingBeverage(beverage)
+    setBeverageForm({
+      name: beverage.name,
+      price: String(beverage.price),
+      categoryId: beverage.category ? String(beverage.category.id) : "",
+      station: beverage.station === "NONE" ? "NONE" : beverage.station === "BAR" ? "BAR" : defaultStationFor(beverage.category?.name),
+      active: beverage.active,
+    })
+    setBeverageError(null)
+    setBeverageDialogOpen(true)
+  }
+
+  const handleSaveBeverage = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!beverageForm.name.trim() || !beverageForm.price) return
+    if (!beverageForm.categoryId) {
+      setBeverageError("Choose a category.")
+      return
+    }
+    setBeverageSaving(true)
+    setBeverageError(null)
+    try {
+      // Price is VAT-inclusive, like every price. No components or recipe: beverages are sold as they are.
+      const payload = {
+        name: beverageForm.name.trim(),
+        price: parseFloat(beverageForm.price),
+        categoryId: Number(beverageForm.categoryId),
+        station: beverageForm.station,
+        componentIds: [] as number[],
+        ...(editingBeverage ? { active: beverageForm.active } : {}),
+      }
+      const res = await authFetch(editingBeverage ? `/admin/meal-catalog/${editingBeverage.id}` : "/admin/meal-catalog", {
+        method: editingBeverage ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as unknown
+        throw new Error(parseApiError(body, "Save failed.").message)
+      }
+      setBeverageDialogOpen(false)
+      void fetchMeals()
+      void fetchCategories()
+      toast({ title: editingBeverage ? "Beverage updated" : "Beverage created", description: `${payload.name} has been saved.` })
+    } catch (err) {
+      setBeverageError(err instanceof Error ? err.message : "Save failed.")
+    } finally {
+      setBeverageSaving(false)
+    }
+  }
 
   const activeIngredients = useMemo(() => ingredients.filter((ingredient) => ingredient.active), [ingredients])
 
@@ -579,14 +764,22 @@ export default function CatalogPage() {
 
   const openNewMeal = () => {
     setEditingMeal(null)
-    setMealForm({ name: "", description: "", price: "", componentIds: [], active: true })
+    setMealForm({ name: "", description: "", price: "", categoryId: "", componentIds: [], active: true, lowStockUnits: String(DEFAULT_LOW_STOCK_UNITS) })
     setMealError(null)
     setMealDialogOpen(true)
   }
 
   const openEditMeal = (meal: MealEntry) => {
     setEditingMeal(meal)
-    setMealForm({ name: meal.name, description: meal.description ?? "", price: String(meal.price), componentIds: extractComponentIds(meal), active: meal.active })
+    setMealForm({
+      name: meal.name,
+      description: meal.description ?? "",
+      price: String(meal.price),
+      categoryId: meal.category ? String(meal.category.id) : "",
+      componentIds: extractComponentIds(meal),
+      active: meal.active,
+      lowStockUnits: meal.lowStockUnits != null ? String(meal.lowStockUnits) : String(DEFAULT_LOW_STOCK_UNITS),
+    })
     setMealError(null)
     setMealDialogOpen(true)
   }
@@ -601,10 +794,29 @@ export default function CatalogPage() {
   const handleSaveMeal = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!mealForm.name.trim() || !mealForm.price) return
+    if (!mealForm.categoryId) {
+      setMealError("Choose a category.")
+      return
+    }
+    // Light meals only; blank leaves it out (a PUT keeps the current value).
+    const lowStockUnits = mealFormIsLightMeal ? parseLowStockUnits(mealForm.lowStockUnits) : null
+    if (lowStockUnits === "invalid") {
+      setMealError(`Low-stock level must be a whole number from 0 to ${MAX_LOW_STOCK_UNITS}.`)
+      return
+    }
     setMealSaving(true)
     setMealError(null)
     try {
-      const payload = { name: mealForm.name.trim(), description: mealForm.description.trim() || null, price: parseFloat(mealForm.price), componentIds: mealForm.componentIds, active: mealForm.active }
+      // categoryId is required on create and edit. station is never sent: set and light meals are always KITCHEN.
+      const payload = {
+        name: mealForm.name.trim(),
+        description: mealForm.description.trim() || null,
+        price: parseFloat(mealForm.price),
+        categoryId: Number(mealForm.categoryId),
+        componentIds: mealForm.componentIds,
+        active: mealForm.active,
+        ...(lowStockUnits !== null ? { lowStockUnits } : {}),
+      }
       const res = editingMeal
         ? await authFetch(`/admin/meal-catalog/${editingMeal.id}`, {
             method: "PUT",
@@ -614,14 +826,23 @@ export default function CatalogPage() {
         : await authFetch("/admin/meal-catalog", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: payload.name, description: payload.description, price: payload.price, componentIds: payload.componentIds }),
+            body: JSON.stringify({
+              name: payload.name,
+              description: payload.description,
+              price: payload.price,
+              categoryId: payload.categoryId,
+              componentIds: payload.componentIds,
+              ...(lowStockUnits !== null ? { lowStockUnits } : {}),
+            }),
           })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as unknown
-        throw new Error(parseError(body, "Save failed."))
+        // MEAL_HAS_PLANNED_OPTIONS (moving a planned meal to another group) and CATEGORY_INVALID: show the server's message.
+        throw new Error(parseApiError(body, "Save failed.").message)
       }
       setMealDialogOpen(false)
       void fetchMeals()
+      void fetchCategories()
       toast({ title: editingMeal ? "Meal updated" : "Meal created", description: `${payload.name} has been saved.` })
     } catch (err) {
       setMealError(err instanceof Error ? err.message : "Save failed.")
@@ -630,22 +851,37 @@ export default function CatalogPage() {
     }
   }
 
+  // The Meals tab lists set meals and light meals; beverages are left out. Group and subcategory filter client-side.
   const mealTableRows: MealTableRow[] = useMemo(
     () =>
-      meals.map((meal) => {
-        const linkedIds = extractComponentIds(meal)
-        const linkedNames = components.filter((component) => linkedIds.includes(component.id)).map((component) => component.name).join(", ")
-        return {
-          id: meal.id,
-          name: meal.name,
-          description: meal.description ?? "",
-          price: meal.price,
-          linkedNames,
-          active: meal.active,
-          meal,
-        }
-      }),
-    [meals, components],
+      meals
+        .filter((meal) => meal.group !== "BEVERAGES")
+        .filter((meal) => mealGroupFilter === "ALL" || meal.group === mealGroupFilter)
+        .filter((meal) => mealCategoryFilter === "all" || String(meal.category?.id) === mealCategoryFilter)
+        .map((meal) => {
+          const linkedIds = extractComponentIds(meal)
+          const linkedNames = components.filter((component) => linkedIds.includes(component.id)).map((component) => component.name).join(", ")
+          return {
+            id: meal.id,
+            name: meal.name,
+            description: meal.description ?? "",
+            categoryName: meal.category?.name ?? "",
+            price: meal.price,
+            linkedNames,
+            active: meal.active,
+            meal,
+          }
+        }),
+    [meals, components, mealGroupFilter, mealCategoryFilter],
+  )
+
+  // Subcategory filter: assignable categories in the chosen group (inactive ones too, the list includes their meals).
+  const mealFilterCategories = useMemo(
+    () =>
+      flattenCategories(mealCategoryGroups).filter(
+        (node) => node.assignable && (mealGroupFilter === "ALL" || node.group === mealGroupFilter),
+      ),
+    [mealCategoryGroups, mealGroupFilter],
   )
 
   const mealTableColumns: ColumnDef<MealTableRow>[] = useMemo(
@@ -671,6 +907,16 @@ export default function CatalogPage() {
         cell: ({ row }) => <span className="text-sm text-muted-foreground">{row.original.description || "—"}</span>,
       },
       {
+        accessorKey: "categoryName",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Category
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) => <span className="text-sm">{row.original.categoryName || "—"}</span>,
+      },
+      {
         accessorKey: "price",
         header: ({ column }) => (
           <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
@@ -689,6 +935,49 @@ export default function CatalogPage() {
           </Button>
         ),
         cell: ({ row }) => <span className="text-sm">{row.original.linkedNames || "—"}</span>,
+      },
+      {
+        id: "availability",
+        header: "Availability",
+        // Set meals are planned daily; always-available ones get the Out today switch (never on a set meal).
+        cell: ({ row }) => {
+          const meal = row.original.meal
+          if (meal.availability !== "ALWAYS" || !meal.group) {
+            return <span className="text-xs text-muted-foreground">{availabilityLabel("PLANNED")}</span>
+          }
+          return (
+            <OutTodaySwitch
+              mealCatalogId={meal.id}
+              name={meal.name}
+              outToday={Boolean(meal.outToday)}
+              canToggle={canToggleOutToday(user?.role, meal.group)}
+              onChange={(updated) => updateMealInList({ ...meal, ...(updated as Partial<MealEntry>) })}
+            />
+          )
+        },
+      },
+      {
+        id: "stock",
+        header: "Stock",
+        // Light meals only: set meals have planning's review, beverages aren't tracked. Chips come from the list.
+        cell: ({ row }) => {
+          const meal = row.original.meal
+          if (meal.group !== "LIGHT_MEALS") return <span className="text-xs text-muted-foreground">—</span>
+          return (
+            <div className="flex items-center gap-2">
+              <StockStatusChip status={meal.stockStatus} unitsAvailable={meal.unitsAvailable} />
+              {canReviewMealStock(user?.role) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setReviewMeal({ id: meal.id, name: meal.name, categoryName: meal.category?.name, price: meal.price })}
+                >
+                  Review
+                </Button>
+              )}
+            </div>
+          )
+        },
       },
       {
         accessorKey: "active",
@@ -711,7 +1000,7 @@ export default function CatalogPage() {
       },
     ],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [readOnly],
+    [readOnly, user?.role],
   )
 
   const mealTable = useReactTable({
@@ -755,7 +1044,7 @@ export default function CatalogPage() {
 
         <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
           <div className="flex gap-1 border-b">
-            {(["components", "meals"] as Tab[]).map((tab) => (
+            {(["components", "meals", "beverages"] as Tab[]).map((tab) => (
               <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`px-4 py-2 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${activeTab === tab ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>
                 {tab}
               </button>
@@ -863,17 +1152,60 @@ export default function CatalogPage() {
                   <p className="text-sm text-muted-foreground">Predefined meals with agreed prices. Price here is the source of truth.</p>
                 </div>
                 {readOnly ? (
-                  <span className="text-xs text-muted-foreground">View only</span>
+                  <span className="text-xs text-muted-foreground">View only · you can review light meal stock and switch light meals out for today</span>
                 ) : (
-                  <Button size="sm" onClick={openNewMeal}>+ Add Meal</Button>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setCategoriesDialogOpen(true)}>Categories</Button>
+                    <Button size="sm" onClick={openNewMeal}>+ Add Meal</Button>
+                  </div>
                 )}
               </div>
 
               {components.length === 0 && (
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">No components exist yet. Add components before linking them to meals.</div>
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">No components exist yet. Add components before linking them to set meals.</div>
               )}
 
+              <div className="flex flex-wrap gap-1" role="group" aria-label="Meal group">
+                {([
+                  ["ALL", "All"],
+                  ["SET_MEALS", "Set meals"],
+                  ["LIGHT_MEALS", "Light meals"],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    aria-pressed={mealGroupFilter === value}
+                    onClick={() => {
+                      setMealGroupFilter(value)
+                      setMealCategoryFilter("all")
+                    }}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-sm transition-colors",
+                      mealGroupFilter === value ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
               <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1">
+                  <Label>Category</Label>
+                  <Select value={mealCategoryFilter} onValueChange={setMealCategoryFilter}>
+                    <SelectTrigger className="w-[200px]">
+                      <SelectValue placeholder="All categories" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All categories</SelectItem>
+                      {mealFilterCategories.map((node) => (
+                        <SelectItem key={node.id} value={String(node.id)}>
+                          {node.name}{node.active ? "" : " (inactive)"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="space-y-1 w-[220px]">
                   <Label htmlFor="meal-search">Search</Label>
                   <Input
@@ -948,7 +1280,165 @@ export default function CatalogPage() {
               )}
             </div>
           )}
+
+          {activeTab === "beverages" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Beverages</h2>
+                  <p className="text-sm text-muted-foreground">Always available. Prices include VAT. Hot drinks go to the bar; cold drinks are handed over at the counter.</p>
+                </div>
+                {readOnly ? (
+                  <span className="text-xs text-muted-foreground">View only</span>
+                ) : (
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setCategoriesDialogOpen(true)}>Categories</Button>
+                    <Button size="sm" onClick={openNewBeverage} disabled={!beverageCategories.some(isSelectableCategory)}>+ Add Beverage</Button>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap gap-1" role="group" aria-label="Beverage category">
+                {[{ id: "all", name: "All" }, ...beverageCategories.map((node) => ({ id: String(node.id), name: node.name }))].map((chip) => (
+                  <button
+                    key={chip.id}
+                    type="button"
+                    aria-pressed={beverageCategoryFilter === chip.id}
+                    onClick={() => setBeverageCategoryFilter(chip.id)}
+                    className={cn(
+                      "rounded-full border px-3 py-1 text-sm transition-colors",
+                      beverageCategoryFilter === chip.id ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {chip.name}
+                  </button>
+                ))}
+              </div>
+
+              {mealsLoading ? (
+                <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
+              ) : (
+                <div className="max-h-[65vh] overflow-y-auto rounded-md border">
+                  <table className="w-full caption-bottom text-sm">
+                    <TableHeader>
+                      <TableRow className="sticky top-0 z-10 bg-background">
+                        <TableHead>Name</TableHead>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Price</TableHead>
+                        <TableHead>Prepared by</TableHead>
+                        <TableHead>Out today</TableHead>
+                        <TableHead>Active</TableHead>
+                        <TableHead />
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {beverages.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={7} className="py-8 text-center text-sm text-muted-foreground">
+                            No beverages yet{readOnly ? "." : " — add one above."}
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        beverages.map((beverage) => (
+                          <TableRow key={beverage.id}>
+                            <TableCell className="font-medium">{beverage.name}</TableCell>
+                            <TableCell>{beverage.category?.name ?? "—"}</TableCell>
+                            <TableCell>{formatZarCurrency(beverage.price)}</TableCell>
+                            <TableCell>{beverage.station === "NONE" ? "Counter" : "Bar"}</TableCell>
+                            <TableCell>
+                              <OutTodaySwitch
+                                mealCatalogId={beverage.id}
+                                name={beverage.name}
+                                outToday={Boolean(beverage.outToday)}
+                                canToggle={canToggleOutToday(user?.role, "BEVERAGES")}
+                                onChange={(updated) => updateMealInList({ ...beverage, ...(updated as Partial<MealEntry>) })}
+                              />
+                            </TableCell>
+                            <TableCell>{beverage.active ? "Yes" : "No"}</TableCell>
+                            <TableCell>
+                              {!readOnly && (
+                                <Button size="sm" variant="outline" onClick={() => openEditBeverage(beverage)}>Edit</Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
         </div>
+
+        <Dialog open={beverageDialogOpen} onOpenChange={setBeverageDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{editingBeverage ? "Edit Beverage" : "New Beverage"}</DialogTitle>
+            </DialogHeader>
+            <form onSubmit={handleSaveBeverage} className="space-y-4 pt-2">
+              <div className="space-y-1">
+                <Label htmlFor="b-name">Name</Label>
+                <Input id="b-name" value={beverageForm.name} onChange={(e) => setBeverageForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="e.g. Cappuccino" required />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="b-category">Category</Label>
+                <Select
+                  value={beverageForm.categoryId}
+                  onValueChange={(value) => {
+                    // Prepared by follows the category's default; the admin can still change it.
+                    const node = categoryById.get(Number(value))
+                    setBeverageForm((prev) => ({ ...prev, categoryId: value, station: defaultStationFor(node?.name) }))
+                  }}
+                >
+                  <SelectTrigger id="b-category">
+                    <SelectValue placeholder="Choose a category…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {beverageCategories
+                      .filter((node) => isSelectableCategory(node) || String(node.id) === beverageForm.categoryId)
+                      .map((node) => (
+                        <SelectItem key={node.id} value={String(node.id)} disabled={!isSelectableCategory(node)}>
+                          {node.name}{node.active ? "" : " (inactive)"}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="b-price">Price (R, incl. VAT)</Label>
+                <Input id="b-price" type="number" min="0" step="0.01" value={beverageForm.price} onChange={(e) => setBeverageForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="0.00" required />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="b-station">Prepared by</Label>
+                <Select value={beverageForm.station} onValueChange={(value) => setBeverageForm((prev) => ({ ...prev, station: value as "BAR" | "NONE" }))}>
+                  <SelectTrigger id="b-station">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PREPARED_BY_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {beverageForm.station === "BAR" ? "Goes to the bar display to be made." : "Handed over at the till straight away; never on a display."}
+                </p>
+              </div>
+              {editingBeverage && (
+                <div className="flex items-center gap-2">
+                  <Checkbox id="b-active" checked={beverageForm.active} onCheckedChange={(value) => setBeverageForm((prev) => ({ ...prev, active: Boolean(value) }))} />
+                  <Label htmlFor="b-active">Active</Label>
+                </div>
+              )}
+              {beverageError && <p className="text-sm text-destructive">{beverageError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => setBeverageDialogOpen(false)}>Cancel</Button>
+                <Button type="submit" disabled={beverageSaving}>{beverageSaving ? "Saving…" : "Save"}</Button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={componentDialogOpen} onOpenChange={setComponentDialogOpen}>
           <DialogContent>
@@ -1144,8 +1634,77 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
                 <Label htmlFor="m-price">Price (R)</Label>
                 <Input id="m-price" type="number" min="0" step="0.01" value={mealForm.price} onChange={(e) => setMealForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="0.00" required />
               </div>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <Label htmlFor="m-category">Category</Label>
+                  {mealFormAvailability && (
+                    <span
+                      className={cn(
+                        "rounded-full border px-2 py-0.5 text-xs font-medium",
+                        mealFormAvailability === "PLANNED"
+                          ? "border-sky-200 bg-sky-50 text-sky-800"
+                          : "border-emerald-200 bg-emerald-50 text-emerald-800",
+                      )}
+                    >
+                      {availabilityLabel(mealFormAvailability)}
+                    </span>
+                  )}
+                </div>
+                {/* Only assignable && active nodes are selectable: "Set meals" itself, and the subcategories under the other groups. */}
+                <Select value={mealForm.categoryId} onValueChange={(value) => setMealForm((prev) => ({ ...prev, categoryId: value }))}>
+                  <SelectTrigger id="m-category">
+                    <SelectValue placeholder="Choose a category…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {mealCategoryGroups.map((group) =>
+                      group.assignable ? (
+                        <SelectItem key={group.id} value={String(group.id)} disabled={!group.active}>
+                          {group.name}
+                        </SelectItem>
+                      ) : (
+                        <SelectGroup key={group.id}>
+                          <SelectLabel>{group.name}</SelectLabel>
+                          {[...(group.children ?? [])]
+                            .sort((a, b) => a.sortOrder - b.sortOrder)
+                            // An inactive category stays listed (disabled) only when this meal already uses it.
+                            .filter((child) => isSelectableCategory(child) || String(child.id) === mealForm.categoryId)
+                            .map((child) => (
+                              <SelectItem key={child.id} value={String(child.id)} disabled={!isSelectableCategory(child)} className="pl-6">
+                                {child.name}{child.active ? "" : " (inactive)"}
+                              </SelectItem>
+                            ))}
+                        </SelectGroup>
+                      ),
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              {mealFormAvailability === "ALWAYS" && (
+                <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                  Always available: no portions or planning needed, and components are optional. Extras aren&apos;t available on this
+                  meal. Create an add-on as its own meal (for example &apos;Cheese Burger&apos;).
+                  {mealFormIsLightMeal && " Add components with recipes so stock can be tracked and deducted on every sale."}
+                </p>
+              )}
+              {mealFormIsLightMeal && (
+                <div className="space-y-1">
+                  <Label htmlFor="m-low-stock">Low-stock level (units)</Label>
+                  <Input
+                    id="m-low-stock"
+                    type="number"
+                    min="0"
+                    max={MAX_LOW_STOCK_UNITS}
+                    step="1"
+                    inputMode="numeric"
+                    value={mealForm.lowStockUnits}
+                    onChange={(e) => setMealForm((prev) => ({ ...prev, lowStockUnits: e.target.value }))}
+                    className="w-32"
+                  />
+                  <p className="text-xs text-muted-foreground">Warn when the Kitchen can make fewer than this many.</p>
+                </div>
+              )}
               <div className="space-y-2">
-                <Label>Components</Label>
+                <Label>Components{mealFormAvailability === "ALWAYS" ? " (optional)" : ""}</Label>
                 {components.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No components available — add them first.</p>
                 ) : (
@@ -1173,6 +1732,17 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
             </form>
           </DialogContent>
         </Dialog>
+
+        <StockReviewPanel meal={reviewMeal} onOpenChange={(open) => !open && setReviewMeal(null)} onStockChange={patchMealStock} />
+
+        {!readOnly && (
+          <CategoriesDialog
+            open={categoriesDialogOpen}
+            onOpenChange={setCategoriesDialogOpen}
+            categories={categories}
+            onChanged={fetchCategories}
+          />
+        )}
       </SidebarInset>
     </SidebarProvider>
   )

@@ -111,9 +111,12 @@ export function PublicDisplayBoard() {
     return { order, completedAtMs, removeAtMs };
   }, []);
 
+  // onlyIfShown: a status change for a number the board never showed (a cold-drinks-only order being
+  // refunded, say) is ignored rather than added.
   const upsertOrder = useCallback(
-    (order: PublicOrderDto) => {
+    (order: PublicOrderDto, onlyIfShown = false) => {
       setOrdersByNumber((prev) => {
+        if (onlyIfShown && !prev[order.orderNumber]) return prev;
         const next = { ...prev };
 
         if (order.status === "PENDING" || order.status === "IN_PROGRESS") {
@@ -245,7 +248,7 @@ export function PublicDisplayBoard() {
                   return;
                 }
 
-                upsertOrder(order);
+                upsertOrder(order, eventPayload.eventType !== "ORDER_CREATED");
               } catch {
                 // Ignore malformed events and continue.
               }

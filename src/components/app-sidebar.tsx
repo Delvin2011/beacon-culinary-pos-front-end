@@ -13,7 +13,7 @@ import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
 import { useAuth } from "@/hooks/use-auth"
-import { canManageInventory, canManageMenu, canManageStockTakes, canViewReports, isAdminRole } from "@/lib/roles"
+import { canManageInventory, canManageMenu, canManageStockTakes, canViewReports, isAdminRole, isBaristaRole } from "@/lib/roles"
 import {
   Sidebar,
   SidebarContent,
@@ -128,6 +128,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { user } = useAuth()
   const role = user?.role
   const navMain = React.useMemo(() => {
+    // A Barista only works the bar display: no back-office menus at all.
+    if (isBaristaRole(role)) return []
     // Each tag maps to a role helper in lib/roles. Untagged: everyone.
     const allowed = (entry: object) => {
       const access = "access" in entry ? entry.access : undefined

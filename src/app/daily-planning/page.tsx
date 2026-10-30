@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { CheckCircle2, Circle } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
-import { canManageMenu } from "@/lib/roles"
+import { canManageMenu, canReviewMealStock } from "@/lib/roles"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
@@ -17,7 +17,12 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { OutTodaySwitch } from "@/components/catalog/out-today-switch"
+import { StockStatusChip } from "@/components/catalog/stock-status-chip"
+import { type StockReviewMeal, type StockRowPatch, StockReviewPanel } from "@/components/catalog/stock-review-panel"
 import { toast } from "@/hooks/use-toast"
+import { type CatalogGroup, type CategoryRef, canToggleOutToday } from "@/lib/catalog"
+import type { StockStatus } from "@/lib/light-meal-stock"
 import { formatZarCurrency } from "@/lib/utils"
 
 interface MealPeriod {
@@ -25,6 +30,8 @@ interface MealPeriod {
   name: string
   startTime: string | null
   endTime: string | null
+  // Only plannable periods (Breakfast, Lunch) are planned. All Day items are always available.
+  plannable?: boolean
 }
 
 interface MealCatalogEntry {
@@ -32,6 +39,12 @@ interface MealCatalogEntry {
   name: string
   price: number
   active: boolean
+  group?: CatalogGroup
+  category?: CategoryRef | null
+  outToday?: boolean
+  // Light meals: the stock chip. null unless tracked; beverages are NOT_TRACKED.
+  stockStatus?: StockStatus | null
+  unitsAvailable?: number | null
 }
 
 interface ComponentCatalogEntry {
@@ -262,8 +275,19 @@ export default function DailyPlanningPage() {
 
   const [periods, setPeriods] = useState<MealPeriod[]>([])
   const [selectedPeriod, setSelectedPeriod] = useState<MealPeriod | null>(null)
+  // True when the server has periods that can't be planned (All Day), to explain where they went.
+  const [hasUnplannablePeriods, setHasUnplannablePeriods] = useState(false)
 
+  // Meals the selected period can plan (GET /admin/meal-catalog?periodId=).
   const [mealCatalog, setMealCatalog] = useState<MealCatalogEntry[]>([])
+  // Always-available items, each with its Out today switch.
+  const [alwaysOnItems, setAlwaysOnItems] = useState<MealCatalogEntry[]>([])
+  const [alwaysOnLoading, setAlwaysOnLoading] = useState(false)
+  // The light meal whose stock Review panel is open (same panel as Catalogue Management).
+  const [reviewMeal, setReviewMeal] = useState<StockReviewMeal | null>(null)
+  const patchAlwaysOnStock = useCallback((mealId: number, patch: StockRowPatch) => {
+    setAlwaysOnItems((prev) => prev.map((entry) => (entry.id === mealId ? { ...entry, ...patch } : entry)))
+  }, [])
   const [componentCatalog, setComponentCatalog] = useState<ComponentCatalogEntry[]>([])
 
   const [todayPlan, setTodayPlan] = useState<TodayPlan | null>(null)
@@ -320,8 +344,11 @@ export default function DailyPlanningPage() {
       const res = await authFetch("/meal-periods")
       if (!res.ok) return
       const data = (await res.json()) as MealPeriod[]
-      setPeriods(data)
-      if (data.length > 0) setSelectedPeriod(data[0])
+      // Older servers don't send plannable: treat those periods as plannable.
+      const plannable = data.filter((period) => period.plannable !== false)
+      setHasUnplannablePeriods(plannable.length < data.length)
+      setPeriods(plannable)
+      if (plannable.length > 0) setSelectedPeriod(plannable[0])
     } catch {
       // no-op
     }
@@ -329,14 +356,44 @@ export default function DailyPlanningPage() {
 
   const fetchCatalogs = useCallback(async () => {
     try {
-      const [mRes, cRes] = await Promise.all([
-        authFetch("/admin/meal-catalog"),
-        authFetch("/admin/component-catalog"),
-      ])
-      if (mRes.ok) setMealCatalog((await mRes.json()) as MealCatalogEntry[])
+      const cRes = await authFetch("/admin/component-catalog")
       if (cRes.ok) setComponentCatalog((await cRes.json()) as ComponentCatalogEntry[])
     } catch {
       // no-op
+    }
+  }, [authFetch])
+
+  // The server returns only meals this period can plan; inactive ones are hidden here.
+  const fetchPeriodMeals = useCallback(async (period: MealPeriod) => {
+    try {
+      const res = await authFetch(`/admin/meal-catalog?periodId=${period.id}`)
+      if (!res.ok) return
+      const body = (await res.json().catch(() => null)) as unknown
+      setMealCatalog(Array.isArray(body) ? (body as MealCatalogEntry[]).filter((meal) => meal.active) : [])
+    } catch {
+      // no-op
+    }
+  }, [authFetch])
+
+  const fetchAlwaysOnItems = useCallback(async () => {
+    setAlwaysOnLoading(true)
+    try {
+      // Light meals, then beverages (read-only for the Head Chef: only Admins and Baristas switch those).
+      const responses = await Promise.all(
+        ["LIGHT_MEALS", "BEVERAGES"].map((group) => authFetch(`/admin/meal-catalog?group=${group}`)),
+      )
+      const lists = await Promise.all(
+        responses.map(async (res) => {
+          if (!res.ok) return []
+          const body = (await res.json().catch(() => null)) as unknown
+          return Array.isArray(body) ? (body as MealCatalogEntry[]) : []
+        }),
+      )
+      setAlwaysOnItems(lists.flat().filter((meal) => meal.active))
+    } catch {
+      // no-op
+    } finally {
+      setAlwaysOnLoading(false)
     }
   }, [authFetch])
 
@@ -456,12 +513,16 @@ export default function DailyPlanningPage() {
     if (isAuthenticated && canManageMenu(user?.role)) {
       void fetchPeriods()
       void fetchCatalogs()
+      void fetchAlwaysOnItems()
     }
-  }, [isAuthenticated, user, fetchPeriods, fetchCatalogs])
+  }, [isAuthenticated, user, fetchPeriods, fetchCatalogs, fetchAlwaysOnItems])
 
   useEffect(() => {
-    if (selectedPeriod) void fetchTodayPlan(selectedPeriod)
-  }, [selectedPeriod, fetchTodayPlan])
+    if (!selectedPeriod) return
+    void fetchTodayPlan(selectedPeriod)
+    setSelectedMealId("")
+    void fetchPeriodMeals(selectedPeriod)
+  }, [selectedPeriod, fetchTodayPlan, fetchPeriodMeals])
 
   useEffect(() => {
     if (periods.length > 0) void fetchAllPeriodProgress(periods)
@@ -821,6 +882,12 @@ export default function DailyPlanningPage() {
               {periods.length === 0 && <span className="px-3 py-1.5 text-sm text-muted-foreground animate-pulse">Loading periods…</span>}
             </div>
           </div>
+          {hasUnplannablePeriods && (
+            <p className="-mt-4 text-xs text-muted-foreground">
+              All Day meals and beverages are always available. Manage them in{" "}
+              <Link href="/catalog" className="underline underline-offset-2 hover:text-foreground">Catalogue Management</Link>.
+            </p>
+          )}
 
           {progress && selectedPeriod && (
             progress.complete ? (
@@ -1086,7 +1153,71 @@ export default function DailyPlanningPage() {
               )}
             </div>
           </div>
+
+          {/* Always-on items aren't planned: the chef only marks what has run out for today. */}
+          <section aria-labelledby="always-available" className="space-y-3 rounded-lg border p-4">
+            <div>
+              <h2 id="always-available" className="font-semibold">Always available today</h2>
+              <p className="text-sm text-muted-foreground">Unlimited all day. Switch an item off when it runs out; it comes back automatically tomorrow.</p>
+            </div>
+            {alwaysOnLoading && alwaysOnItems.length === 0 ? (
+              <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
+            ) : alwaysOnItems.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No always-available items yet. Add them in Catalogue Management.</p>
+            ) : (
+              <ul className="grid gap-x-6 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+                {[...alwaysOnItems]
+                  .sort(
+                    (a, b) =>
+                      // Light meals before beverages, then by category, then name.
+                      Number(a.group === "BEVERAGES") - Number(b.group === "BEVERAGES") ||
+                      (a.category?.sortOrder ?? 0) - (b.category?.sortOrder ?? 0) ||
+                      (a.category?.name ?? "").localeCompare(b.category?.name ?? "") ||
+                      a.name.localeCompare(b.name),
+                  )
+                  .map((item) => (
+                    <li key={item.id} className="flex items-center justify-between gap-3 border-b py-1.5 last:border-b-0 sm:last:border-b">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{item.name}</p>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          {item.category && <p className="text-xs text-muted-foreground">{item.category.name}</p>}
+                          {/* Chips come from the one ?group=LIGHT_MEALS list call, not per row. */}
+                          {item.group === "LIGHT_MEALS" && (
+                            <>
+                              <StockStatusChip status={item.stockStatus} unitsAvailable={item.unitsAvailable} />
+                              {canReviewMealStock(user?.role) && (
+                                <button
+                                  type="button"
+                                  onClick={() => setReviewMeal({ id: item.id, name: item.name, categoryName: item.category?.name, price: item.price })}
+                                  className="text-xs font-medium underline underline-offset-2 hover:text-foreground"
+                                >
+                                  Review
+                                </button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <OutTodaySwitch
+                        mealCatalogId={item.id}
+                        name={item.name}
+                        outToday={Boolean(item.outToday)}
+                        canToggle={canToggleOutToday(user?.role, item.group ?? "LIGHT_MEALS")}
+                        onChange={(updated) =>
+                          patchAlwaysOnStock(item.id, {
+                            outToday: updated.outToday,
+                            ...("stockStatus" in updated ? { stockStatus: updated.stockStatus as StockStatus | null } : {}),
+                          })
+                        }
+                      />
+                    </li>
+                  ))}
+              </ul>
+            )}
+          </section>
         </div>
+
+        <StockReviewPanel meal={reviewMeal} onOpenChange={(open) => !open && setReviewMeal(null)} onStockChange={patchAlwaysOnStock} />
 
         <Dialog open={requirementsDialogOpen} onOpenChange={setRequirementsDialogOpen}>
           <DialogContent className="flex max-h-[85vh] max-w-5xl flex-col">

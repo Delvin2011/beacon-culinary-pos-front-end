@@ -6,6 +6,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { columnShellClass, DONE_RETENTION_MS, statusPillClass } from "@/components/orders/status-visuals";
+import type { Station } from "@/lib/catalog";
+import { type OtherStation, stationChipClass, stationStatusLabel } from "@/lib/stations";
 
 type OrderStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" | "REFUNDED";
 
@@ -17,15 +19,19 @@ type OrderSummaryLineExtraDto = {
 type OrderSummaryLineDto = {
   optionName: string;
   quantity: number;
+  station?: Station;
   extras?: OrderSummaryLineExtraDto[];
 };
 
+// status is the kitchen's own part; orderStatus is the whole order's. lines are kitchen items only.
 type OrderSummaryDto = {
   orderId: number;
   orderNumber: number;
   status: OrderStatus;
+  orderStatus?: OrderStatus;
   createdAt: string;
   lines: OrderSummaryLineDto[];
+  otherStations?: OtherStation[];
 };
 
 type KitchenStreamPayload = {
@@ -576,6 +582,7 @@ type OrderCardProps = {
 };
 
 function OrderCard({ order, canAdvance, isUpdating, isRecentlyUpdated, onTap }: OrderCardProps) {
+  const drinks = order.otherStations?.find((entry) => entry.station === "BAR");
   const cardShell = canAdvance
     ? "cursor-pointer hover:border-slate-500 hover:bg-slate-800 active:scale-[0.99]"
     : "cursor-default";
@@ -630,6 +637,13 @@ function OrderCard({ order, canAdvance, isUpdating, isRecentlyUpdated, onTap }: 
           </div>
         ))}
       </div>
+
+      {/* The bar's part of a mixed order, for information only: no actions on bar items here. */}
+      {drinks && (
+        <span className={cn("mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ring-1", stationChipClass(drinks.status))}>
+          Drinks: {stationStatusLabel(drinks.status)}
+        </span>
+      )}
 
       {canAdvance && (
         <p className="mt-3 text-xs font-medium text-slate-400">
