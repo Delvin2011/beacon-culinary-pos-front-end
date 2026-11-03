@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { OutTodaySwitch } from "@/components/catalog/out-today-switch"
@@ -536,6 +536,22 @@ export default function DailyPlanningPage() {
   }, [todayPlan, planPeriodId])
 
   const selectedMeal = mealCatalog.find((meal) => String(meal.id) === selectedMealId)
+  // The picker grouped by subcategory (Breakfast, Lunch, ...), so items are easy to find. Nothing is hidden: any set meal
+  // can be planned under any period. Meals not yet sorted sit under their own category's name (Set meals).
+  const mealPickerGroups = useMemo(() => {
+    const groups = new Map<string, { category: CategoryRef | null; meals: MealCatalogEntry[] }>()
+    for (const meal of mealCatalog.filter((entry) => entry.active)) {
+      const key = meal.category ? String(meal.category.id) : "none"
+      const group = groups.get(key) ?? { category: meal.category ?? null, meals: [] }
+      group.meals.push(meal)
+      groups.set(key, group)
+    }
+    return Array.from(groups.entries())
+      .sort(([, a], [, b]) =>
+        (a.category?.sortOrder ?? Number.MAX_SAFE_INTEGER) - (b.category?.sortOrder ?? Number.MAX_SAFE_INTEGER) ||
+        (a.category?.name ?? "").localeCompare(b.category?.name ?? ""))
+      .map(([key, group]) => ({ key, name: group.category?.name ?? "Other", meals: group.meals }))
+  }, [mealCatalog])
   const selectedComponent = componentCatalog.find((component) => String(component.id) === selectedComponentId)
 
   const hasPlannedItems = (todayPlan?.options.length ?? 0) > 0 || (todayPlan?.componentStock.length ?? 0) > 0
@@ -954,8 +970,13 @@ export default function DailyPlanningPage() {
                       <SelectValue placeholder="Select a meal…" />
                     </SelectTrigger>
                     <SelectContent>
-                      {mealCatalog.filter((meal) => meal.active).map((meal) => (
-                        <SelectItem key={meal.id} value={String(meal.id)}>{meal.name}</SelectItem>
+                      {mealPickerGroups.map((group) => (
+                        <SelectGroup key={group.key}>
+                          {mealPickerGroups.length > 1 && <SelectLabel>{group.name}</SelectLabel>}
+                          {group.meals.map((meal) => (
+                            <SelectItem key={meal.id} value={String(meal.id)}>{meal.name}</SelectItem>
+                          ))}
+                        </SelectGroup>
                       ))}
                     </SelectContent>
                   </Select>

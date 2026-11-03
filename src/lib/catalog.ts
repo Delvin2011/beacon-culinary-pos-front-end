@@ -21,7 +21,8 @@ export interface CategoryNode {
   active: boolean
   // Top-level groups are fixed: no rename, reorder or deactivate.
   topLevel: boolean
-  // Only assignable && active nodes can hold meals. "Set meals" is assignable; the other group rows are not.
+  // Only assignable && active nodes can hold meals. "Set meals" is assignable (meals not yet sorted into Breakfast,
+  // Lunch, ...); the other group rows are not. Every subcategory is assignable.
   assignable: boolean
   // Active meals; a group row's count includes its children.
   itemCount: number

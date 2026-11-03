@@ -1,7 +1,7 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import {
   type ColumnDef,
   type ColumnFiltersState,
@@ -24,9 +24,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { CategoriesDialog } from "@/components/catalog/categories-dialog"
+import { ComponentCategoriesDialog } from "@/components/catalog/component-categories-dialog"
 import { OutTodaySwitch } from "@/components/catalog/out-today-switch"
 import { StockStatusChip } from "@/components/catalog/stock-status-chip"
 import { type StockReviewMeal, type StockRowPatch, StockReviewPanel } from "@/components/catalog/stock-review-panel"
@@ -44,6 +45,16 @@ import {
   isSelectableCategory,
   parseApiError,
 } from "@/lib/catalog"
+import {
+  type ComponentCategoryRef,
+  type ComponentFilter,
+  UNCATEGORISED,
+  byComponentCategoryOrder,
+  componentFilterQuery,
+  groupByComponentCategory,
+  hasComponentFilter,
+  readComponentFilter,
+} from "@/lib/component-categories"
 import { DEFAULT_LOW_STOCK_UNITS, MAX_LOW_STOCK_UNITS, type StockStatus, parseLowStockUnits } from "@/lib/light-meal-stock"
 import { cn, formatZarCurrency } from "@/lib/utils"
 
@@ -52,6 +63,8 @@ interface ComponentEntry {
   name: string
   extraPrice: number
   active: boolean
+  // null = uncategorised.
+  category?: ComponentCategoryRef | null
 }
 
 interface MealEntry {
@@ -107,6 +120,7 @@ type ComponentTableRow = {
   id: number
   name: string
   extraPrice: number
+  categoryName: string
   recipeLabel: string
   active: boolean
   component: ComponentEntry
@@ -134,6 +148,8 @@ interface BulkComponentImportResultDto {
   componentsUpdated: number
   ingredientsCreated: number
   ingredientsUpdated: number
+  // One row per imported component; category is null when it is uncategorised.
+  components?: Array<{ componentCatalogId: number; componentName: string; category?: ComponentCategoryRef | null }>
 }
 
 type Tab = "components" | "meals" | "beverages"
@@ -150,6 +166,25 @@ function defaultStationFor(categoryName: string | undefined): "BAR" | "NONE" {
 }
 
 const BULK_COMPONENT_HEADERS = ["COMPONENT", "INGREDIENT (NAME)", "UNIT", "COUNT SHEET", "Quantities", "Batch Size", "Per Portion Price (R)"] as const
+// Optional column (shown after COMPONENT in the template): the component's category, matched by name.
+const BULK_COMPONENT_CATEGORY_HEADERS = ["CATEGORY", "COMPONENT CATEGORY"]
+const BULK_COMPONENT_TEMPLATE_HEADER = "COMPONENT,CATEGORY,INGREDIENT (NAME),UNIT,COUNT SHEET,Quantities,Batch Size,Per Portion Price (R)"
+const BULK_COMPONENT_SAMPLE = `${BULK_COMPONENT_TEMPLATE_HEADER}
+Beef Stew,Meat,Beef Chuck,kg,meat,2.5,10,25
+Beef Stew,,Onion,kg,fveg,0.8,10,25
+Pap,Starch,Maize Meal,kg,drystock,1.2,20,10`
+
+// Bulk import failures: 400 { errors: ["Row 3: ...", ...] }; anything else falls back to the single message.
+function parseBulkImportErrors(body: unknown, fallback: string): string[] {
+  if (body && typeof body === "object") {
+    const errors = (body as Record<string, unknown>).errors
+    if (Array.isArray(errors)) {
+      const messages = errors.filter((error): error is string => typeof error === "string" && error.trim().length > 0)
+      if (messages.length > 0) return messages
+    }
+  }
+  return [parseApiError(body, fallback).message]
+}
 
 function extractComponentIds(meal: MealEntry): number[] {
   if (meal.componentIds?.length) return meal.componentIds
@@ -200,8 +235,19 @@ function normalizeCsvHeader(header: string): string {
   return header.trim().replace(/\s+/g, " ").toUpperCase()
 }
 
+// useSearchParams needs a Suspense boundary: the Components tab filter lives in the URL.
 export default function CatalogPage() {
+  return (
+    <Suspense fallback={null}>
+      <CatalogPageContent />
+    </Suspense>
+  )
+}
+
+function CatalogPageContent() {
   const router = useRouter()
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth()
   // Head Chefs can view the catalog and recipes but not change them.
   const readOnly = !canEditCatalog(user?.role)
@@ -212,10 +258,23 @@ export default function CatalogPage() {
   const [componentsLoading, setComponentsLoading] = useState(true)
   const [componentDialogOpen, setComponentDialogOpen] = useState(false)
   const [editingComponent, setEditingComponent] = useState<ComponentEntry | null>(null)
-  const [componentForm, setComponentForm] = useState({ name: "", extraPrice: "", active: true })
+  const [componentForm, setComponentForm] = useState({ name: "", extraPrice: "", categoryId: "", active: true })
   const [componentSaving, setComponentSaving] = useState(false)
   const [componentError, setComponentError] = useState<string | null>(null)
-  const [componentSearch, setComponentSearch] = useState("")
+  // Components tab filter, from the URL (?category=&q=) so a refresh or back navigation keeps it.
+  const searchString = searchParams.toString()
+  const componentFilter = useMemo(() => readComponentFilter(new URLSearchParams(searchString)), [searchString])
+  const componentFilterActive = hasComponentFilter(componentFilter)
+  // The search box; written to the URL after a 300 ms pause.
+  const [componentSearchInput, setComponentSearchInput] = useState(componentFilter.name)
+  const lastPushedSearch = useRef(componentFilter.name)
+  // The server-filtered list; null when no filter is set (the full list is shown).
+  const [filteredComponents, setFilteredComponents] = useState<ComponentEntry[] | null>(null)
+  const [filteredComponentsLoading, setFilteredComponentsLoading] = useState(false)
+  const filterRequestId = useRef(0)
+  // Active component categories, for the filter and the component form (separate from meal categories).
+  const [componentCategories, setComponentCategories] = useState<ComponentCategoryRef[]>([])
+  const [componentCategoriesDialogOpen, setComponentCategoriesDialogOpen] = useState(false)
   const [componentSorting, setComponentSorting] = useState<SortingState>([])
   const [componentColumnFilters, setComponentColumnFilters] = useState<ColumnFiltersState>([])
 
@@ -232,6 +291,8 @@ export default function CatalogPage() {
   const [bulkImportDialogOpen, setBulkImportDialogOpen] = useState(false)
   const [bulkImportFile, setBulkImportFile] = useState<File | null>(null)
   const [bulkImportError, setBulkImportError] = useState<string | null>(null)
+  // Row errors from the server ("Row 3: ..."); the whole file was rejected.
+  const [bulkImportRowErrors, setBulkImportRowErrors] = useState<string[]>([])
   const [bulkImportResult, setBulkImportResult] = useState<BulkComponentImportResultDto | null>(null)
   const [bulkImportUploading, setBulkImportUploading] = useState(false)
 
@@ -310,6 +371,37 @@ export default function CatalogPage() {
     }
   }, [authFetch, fetchRecipeSummaries])
 
+  const fetchFilteredComponents = useCallback(async (filter: ComponentFilter) => {
+    const requestId = ++filterRequestId.current
+    if (!hasComponentFilter(filter)) {
+      setFilteredComponents(null)
+      setFilteredComponentsLoading(false)
+      return
+    }
+    setFilteredComponentsLoading(true)
+    try {
+      const res = await authFetch(`/admin/component-catalog?${componentFilterQuery(filter)}`)
+      const body = (await res.json().catch(() => null)) as unknown
+      // Ignore a response that a newer filter has overtaken.
+      if (requestId !== filterRequestId.current) return
+      setFilteredComponents(res.ok && Array.isArray(body) ? (body as ComponentEntry[]) : [])
+    } catch {
+      if (requestId === filterRequestId.current) setFilteredComponents([])
+    } finally {
+      if (requestId === filterRequestId.current) setFilteredComponentsLoading(false)
+    }
+  }, [authFetch])
+
+  const fetchComponentCategories = useCallback(async () => {
+    try {
+      const res = await authFetch("/admin/component-categories")
+      const body = (await res.json().catch(() => null)) as unknown
+      if (res.ok) setComponentCategories(Array.isArray(body) ? (body as ComponentCategoryRef[]) : [])
+    } catch {
+      setComponentCategories([])
+    }
+  }, [authFetch])
+
   const fetchMeals = useCallback(async () => {
     setMealsLoading(true)
     try {
@@ -340,8 +432,44 @@ export default function CatalogPage() {
       void fetchMeals()
       void fetchIngredients()
       void fetchCategories()
+      void fetchComponentCategories()
     }
-  }, [isAuthenticated, user, fetchComponents, fetchMeals, fetchIngredients, fetchCategories])
+  }, [isAuthenticated, user, fetchComponents, fetchMeals, fetchIngredients, fetchCategories, fetchComponentCategories])
+
+  useEffect(() => {
+    if (isAuthenticated && canManageMenu(user?.role)) void fetchFilteredComponents(componentFilter)
+  }, [isAuthenticated, user, componentFilter, fetchFilteredComponents])
+
+  const setComponentFilter = useCallback(
+    (changes: Partial<ComponentFilter>) => {
+      const next = { ...readComponentFilter(new URLSearchParams(searchString)), ...changes }
+      const params = new URLSearchParams(searchString)
+      if (next.category) params.set("category", next.category)
+      else params.delete("category")
+      if (next.name) params.set("q", next.name)
+      else params.delete("q")
+      lastPushedSearch.current = next.name
+      const query = params.toString()
+      if (query === searchString) return
+      router.replace(query ? `${pathname}?${query}` : pathname, { scroll: false })
+    },
+    [pathname, router, searchString],
+  )
+
+  // Debounced search box → URL. An empty box sends nothing.
+  useEffect(() => {
+    const name = componentSearchInput.trim()
+    if (name === componentFilter.name) return
+    const timer = setTimeout(() => setComponentFilter({ name }), 300)
+    return () => clearTimeout(timer)
+  }, [componentSearchInput, componentFilter.name, setComponentFilter])
+
+  // Back navigation changes the URL under the box: copy it in, unless it's the value the box just pushed.
+  useEffect(() => {
+    if (componentFilter.name === lastPushedSearch.current) return
+    lastPushedSearch.current = componentFilter.name
+    setComponentSearchInput(componentFilter.name)
+  }, [componentFilter.name])
 
   // Every category node with its group, for lookups by id.
   const categoryById = useMemo(
@@ -460,7 +588,7 @@ export default function CatalogPage() {
 
   const openNewComponent = () => {
     setEditingComponent(null)
-    setComponentForm({ name: "", extraPrice: "", active: true })
+    setComponentForm({ name: "", extraPrice: "", categoryId: "", active: true })
     setComponentError(null)
     setComponentDialogOpen(true)
   }
@@ -468,6 +596,7 @@ export default function CatalogPage() {
   const openBulkImportDialog = () => {
     setBulkImportFile(null)
     setBulkImportError(null)
+    setBulkImportRowErrors([])
     setBulkImportResult(null)
     setBulkImportDialogOpen(true)
   }
@@ -475,6 +604,7 @@ export default function CatalogPage() {
   const saveBulkImport = async (event: React.FormEvent) => {
     event.preventDefault()
     setBulkImportError(null)
+    setBulkImportRowErrors([])
     setBulkImportResult(null)
 
     if (!bulkImportFile) {
@@ -512,12 +642,16 @@ export default function CatalogPage() {
     const expectedHeaders = [...BULK_COMPONENT_HEADERS]
     const normalizedFoundHeaders = foundHeaders.map(normalizeCsvHeader)
     const normalizedExpectedHeaders = expectedHeaders.map(normalizeCsvHeader)
+    // The Category column is optional; the other columns keep their order around it.
+    const categoryColumns = normalizedFoundHeaders.filter((header) => BULK_COMPONENT_CATEGORY_HEADERS.includes(header))
+    const requiredFoundHeaders = normalizedFoundHeaders.filter((header) => !BULK_COMPONENT_CATEGORY_HEADERS.includes(header))
     const hasValidHeaders =
-      normalizedFoundHeaders.length === normalizedExpectedHeaders.length &&
-      normalizedFoundHeaders.every((header, index) => header === normalizedExpectedHeaders[index])
+      categoryColumns.length <= 1 &&
+      requiredFoundHeaders.length === normalizedExpectedHeaders.length &&
+      requiredFoundHeaders.every((header, index) => header === normalizedExpectedHeaders[index])
 
     if (!hasValidHeaders) {
-      setBulkImportError(`CSV header mismatch. Expected: ${expectedHeaders.join(",")}. Found: ${foundHeaders.join(",") || "(empty)"}.`)
+      setBulkImportError(`CSV header mismatch. Expected: ${BULK_COMPONENT_TEMPLATE_HEADER} (CATEGORY is optional). Found: ${foundHeaders.join(",") || "(empty)"}.`)
       return
     }
 
@@ -532,12 +666,19 @@ export default function CatalogPage() {
       })
       const body = (await res.json().catch(() => null)) as BulkComponentImportResultDto | unknown
       if (!res.ok || !body || typeof body !== "object") {
-        throw new Error(parseError(body, "Unable to bulk import components."))
+        // Nothing is saved when any row fails; list every row error.
+        const errors = res.status === 403 ? ["You don't have permission to import components."] : parseBulkImportErrors(body, "Unable to bulk import components.")
+        if (errors.length === 1) throw new Error(errors[0])
+        setBulkImportRowErrors(errors)
+        return
       }
 
       const result = body as BulkComponentImportResultDto
       setBulkImportResult(result)
       await fetchComponents()
+      void fetchFilteredComponents(componentFilter)
+      void fetchComponentCategories()
+      void fetchMeals()
       void fetchIngredients()
       toast({
         title: "Bulk import completed",
@@ -552,35 +693,65 @@ export default function CatalogPage() {
 
   const openEditComponent = (component: ComponentEntry) => {
     setEditingComponent(component)
-    setComponentForm({ name: component.name, extraPrice: String(component.extraPrice), active: component.active })
+    setComponentForm({
+      name: component.name,
+      extraPrice: String(component.extraPrice),
+      categoryId: component.category ? String(component.category.id) : "",
+      active: component.active,
+    })
     setComponentError(null)
     setComponentDialogOpen(true)
   }
 
+  // The form's category options: active categories, plus the edited component's current one if it is inactive.
+  const editingComponentCategoryInactive =
+    !!editingComponent?.category && !componentCategories.some((category) => category.id === editingComponent.category?.id)
+
   const handleSaveComponent = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!componentForm.name.trim() || !componentForm.extraPrice) return
+    // The server allows no category; the UI requires one so new components aren't left uncategorised.
+    if (!componentForm.categoryId) {
+      setComponentError("Choose a category.")
+      return
+    }
+    // Only send categoryId when it changes (or on create): leaving it out keeps the current category,
+    // so editing the name or price never touches it, even when that category has since been deactivated.
+    const categoryChanged = !editingComponent || componentForm.categoryId !== String(editingComponent.category?.id ?? "")
     setComponentSaving(true)
     setComponentError(null)
     try {
-      const payload = { name: componentForm.name.trim(), extraPrice: parseFloat(componentForm.extraPrice), active: componentForm.active }
+      const payload = {
+        name: componentForm.name.trim(),
+        extraPrice: parseFloat(componentForm.extraPrice),
+        ...(categoryChanged ? { categoryId: Number(componentForm.categoryId) } : {}),
+      }
       const res = editingComponent
         ? await authFetch(`/admin/component-catalog/${editingComponent.id}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({ ...payload, active: componentForm.active }),
           })
         : await authFetch("/admin/component-catalog", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: payload.name, extraPrice: payload.extraPrice }),
+            body: JSON.stringify(payload),
           })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as unknown
-        throw new Error(parseError(body, "Save failed."))
+        if (res.status === 403) throw new Error("You don't have permission to change components.")
+        const error = parseApiError(body, "Save failed.")
+        if (error.code === "CATEGORY_INVALID") {
+          // Deactivated (or removed) after the form loaded: reload the dropdown and ask for another.
+          void fetchComponentCategories()
+          setComponentForm((prev) => ({ ...prev, categoryId: "" }))
+          throw new Error("That category is no longer available. Choose another.")
+        }
+        throw new Error(error.message)
       }
       setComponentDialogOpen(false)
       await fetchComponents()
+      void fetchFilteredComponents(componentFilter)
       void fetchMeals()
       toast({ title: editingComponent ? "Component updated" : "Component created", description: `${payload.name} has been saved.` })
     } catch (err) {
@@ -617,9 +788,10 @@ export default function CatalogPage() {
     }
   }
 
+  // The server filters by category and name (sorted by name); recipe summaries come from the full list.
   const componentTableRows: ComponentTableRow[] = useMemo(
     () =>
-      components.map((component) => {
+      (filteredComponents ?? components).map((component) => {
         const recipeSummary = recipeSummaryByComponentId[component.id]
         const recipeLabel =
           recipeSummary?.status === "configured"
@@ -631,12 +803,13 @@ export default function CatalogPage() {
           id: component.id,
           name: component.name,
           extraPrice: component.extraPrice,
+          categoryName: component.category?.name ?? "",
           recipeLabel,
           active: component.active,
           component,
         }
       }),
-    [components, recipeSummaryByComponentId],
+    [filteredComponents, components, recipeSummaryByComponentId],
   )
 
   const componentTableColumns: ColumnDef<ComponentTableRow>[] = useMemo(
@@ -650,6 +823,21 @@ export default function CatalogPage() {
           </Button>
         ),
         cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      },
+      {
+        accessorKey: "categoryName",
+        header: ({ column }) => (
+          <Button variant="ghost" size="sm" className="-ml-3" onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}>
+            Category
+            <ArrowUpDown className="ml-2 h-3.5 w-3.5" />
+          </Button>
+        ),
+        cell: ({ row }) =>
+          row.original.categoryName ? (
+            <span className="text-sm">{row.original.categoryName}</span>
+          ) : (
+            <span className="text-sm text-muted-foreground">Uncategorised</span>
+          ),
       },
       {
         accessorKey: "extraPrice",
@@ -708,11 +896,9 @@ export default function CatalogPage() {
     state: {
       sorting: componentSorting,
       columnFilters: componentColumnFilters,
-      globalFilter: componentSearch,
     },
     onSortingChange: setComponentSorting,
     onColumnFiltersChange: setComponentColumnFilters,
-    onGlobalFilterChange: setComponentSearch,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -783,6 +969,9 @@ export default function CatalogPage() {
     setMealError(null)
     setMealDialogOpen(true)
   }
+
+  // Meal form component picker, grouped by component category (Uncategorised last).
+  const mealComponentGroups = useMemo(() => groupByComponentCategory(components), [components])
 
   const toggleMealComponent = (id: number) => {
     setMealForm((prev) => ({
@@ -1062,6 +1251,7 @@ export default function CatalogPage() {
                   <span className="text-xs text-muted-foreground">View only</span>
                 ) : (
                   <div className="flex gap-2">
+                    <Button size="sm" variant="outline" onClick={() => setComponentCategoriesDialogOpen(true)}>Categories</Button>
                     <Button size="sm" variant="outline" onClick={openBulkImportDialog}>Bulk Upload CSV</Button>
                     <Button size="sm" onClick={openNewComponent}>+ Add Component</Button>
                   </div>
@@ -1069,12 +1259,30 @@ export default function CatalogPage() {
               </div>
 
               <div className="flex flex-wrap items-end gap-3">
+                <div className="space-y-1">
+                  <Label htmlFor="component-category-filter">Category</Label>
+                  <Select
+                    value={componentFilter.category || "all"}
+                    onValueChange={(value) => setComponentFilter({ category: value === "all" ? "" : value })}
+                  >
+                    <SelectTrigger id="component-category-filter" className="w-[200px]">
+                      <SelectValue placeholder="All" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      {[...componentCategories].sort(byComponentCategoryOrder).map((category) => (
+                        <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>
+                      ))}
+                      <SelectItem value={UNCATEGORISED}>Uncategorised</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="space-y-1 w-[220px]">
                   <Label htmlFor="component-search">Search</Label>
                   <Input
                     id="component-search"
-                    value={componentSearch}
-                    onChange={(event) => setComponentSearch(event.target.value)}
+                    value={componentSearchInput}
+                    onChange={(event) => setComponentSearchInput(event.target.value)}
                     placeholder="Search components"
                   />
                 </div>
@@ -1105,10 +1313,10 @@ export default function CatalogPage() {
                 </span>
               </div>
 
-              {componentsLoading ? (
+              {componentsLoading || (filteredComponentsLoading && filteredComponents === null) ? (
                 <p className="text-sm text-muted-foreground animate-pulse">Loading…</p>
               ) : (
-                <div className="max-h-[65vh] overflow-y-auto rounded-md border">
+                <div className={cn("max-h-[65vh] overflow-y-auto rounded-md border transition-opacity", filteredComponentsLoading && "opacity-60")}>
                   <table className="w-full caption-bottom text-sm">
                     <TableHeader>
                       {componentTable.getHeaderGroups().map((headerGroup) => (
@@ -1125,7 +1333,24 @@ export default function CatalogPage() {
                       {componentTable.getRowModel().rows.length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={componentTableColumns.length} className="py-8 text-center text-sm text-muted-foreground">
-                            No components yet — add one to get started.
+                            {componentFilterActive || componentColumnFilters.length > 0 ? (
+                              <>
+                                No components match.{" "}
+                                <button
+                                  type="button"
+                                  className="font-medium text-foreground underline underline-offset-4"
+                                  onClick={() => {
+                                    setComponentSearchInput("")
+                                    setComponentColumnFilters([])
+                                    setComponentFilter({ category: "", name: "" })
+                                  }}
+                                >
+                                  Clear filters
+                                </button>
+                              </>
+                            ) : (
+                              "No components yet — add one to get started."
+                            )}
                           </TableCell>
                         </TableRow>
                       ) : (
@@ -1200,7 +1425,8 @@ export default function CatalogPage() {
                       <SelectItem value="all">All categories</SelectItem>
                       {mealFilterCategories.map((node) => (
                         <SelectItem key={node.id} value={String(node.id)}>
-                          {node.name}{node.active ? "" : " (inactive)"}
+                          {/* A group row that holds meals (Set meals): only meals not yet sorted into a subcategory. */}
+                          {node.topLevel ? `Not sorted (${node.name})` : node.name}{node.active ? "" : " (inactive)"}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -1451,6 +1677,25 @@ export default function CatalogPage() {
                 <Input id="c-name" value={componentForm.name} onChange={(e) => setComponentForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="e.g. Chicken" required />
               </div>
               <div className="space-y-1">
+                <Label htmlFor="c-category">Category</Label>
+                <Select value={componentForm.categoryId} onValueChange={(value) => setComponentForm((prev) => ({ ...prev, categoryId: value }))}>
+                  <SelectTrigger id="c-category">
+                    <SelectValue placeholder="Choose a category…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[...componentCategories].sort(byComponentCategoryOrder).map((category) => (
+                      <SelectItem key={category.id} value={String(category.id)}>{category.name}</SelectItem>
+                    ))}
+                    {/* An inactive current category stays listed (disabled) so the form doesn't look empty. */}
+                    {editingComponentCategoryInactive && editingComponent?.category && (
+                      <SelectItem value={String(editingComponent.category.id)} disabled>
+                        {editingComponent.category.name} (inactive)
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
                 <Label htmlFor="c-price">Extra portion price (R)</Label>
                 <Input id="c-price" type="number" min="0" step="0.01" value={componentForm.extraPrice} onChange={(e) => setComponentForm((prev) => ({ ...prev, extraPrice: e.target.value }))} placeholder="0.00" required />
               </div>
@@ -1476,16 +1721,17 @@ export default function CatalogPage() {
             if (!open) {
               setBulkImportFile(null)
               setBulkImportError(null)
+              setBulkImportRowErrors([])
               setBulkImportResult(null)
             }
           }}
         >
-          <DialogContent className="sm:max-w-2xl">
+          <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-2xl">
             <DialogHeader>
               <DialogTitle>Bulk Upload Components (CSV)</DialogTitle>
             </DialogHeader>
 
-            <form onSubmit={saveBulkImport} className="space-y-4 text-sm">
+            <form onSubmit={saveBulkImport} className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 text-sm">
               <p className="text-muted-foreground">
                 Prepare a CSV file using the exact column order below, then upload it to import components and their recipes in bulk.
                 Rows sharing the same COMPONENT are grouped into that component&apos;s recipe, which is replaced wholesale on import.
@@ -1501,6 +1747,7 @@ export default function CatalogPage() {
                     const file = event.target.files?.[0] ?? null
                     setBulkImportFile(file)
                     setBulkImportError(null)
+                    setBulkImportRowErrors([])
                     setBulkImportResult(null)
                   }}
                 />
@@ -1511,17 +1758,22 @@ export default function CatalogPage() {
 
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="mb-2 font-medium">Required header order:</p>
-                <p className="font-mono text-xs">COMPONENT,INGREDIENT (NAME),UNIT,COUNT SHEET,Quantities,Batch Size,Per Portion Price (R)</p>
+                <p className="font-mono text-xs">{BULK_COMPONENT_TEMPLATE_HEADER}</p>
+                <p className="mt-1 text-xs text-muted-foreground">CATEGORY is optional (COMPONENT CATEGORY also works).</p>
               </div>
 
               <div className="rounded-md border bg-muted/40 p-3">
                 <p className="mb-2 font-medium">Sample CSV:</p>
-                <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">
-{`COMPONENT,INGREDIENT (NAME),UNIT,COUNT SHEET,Quantities,Batch Size,Per Portion Price (R)
-Beef Stew,Beef Chuck,kg,bulk,2.5,10,25
-Beef Stew,Onion,kg,fveg,0.8,10,25
-Beef Stew,Garlic,kg,fveg,0.1,10,25`}
-                </pre>
+                <pre className="overflow-x-auto whitespace-pre-wrap font-mono text-xs leading-relaxed">{BULK_COMPONENT_SAMPLE}</pre>
+              </div>
+
+              <div className="rounded-md border bg-muted/40 p-3">
+                <p className="mb-2 font-medium">Valid categories:</p>
+                {componentCategories.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No active component categories. Leave CATEGORY blank.</p>
+                ) : (
+                  <p className="text-xs">{[...componentCategories].sort(byComponentCategoryOrder).map((category) => category.name).join(" · ")}</p>
+                )}
               </div>
 
               <div className="rounded-md border bg-muted/40 p-3">
@@ -1530,16 +1782,57 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
                   <li>Comma or tab-delimited; header names are matched loosely.</li>
                   <li>Components and ingredients are upserted by name (case-insensitive) — no need to pre-create either.</li>
                   <li>Batch Size and Per Portion Price must match across every row for the same component.</li>
+                  <li>
+                    Category is the component&apos;s category (e.g. Meat, Starch). It&apos;s matched by name, ignoring case. You only need it
+                    on one row per component.
+                  </li>
+                  <li>Leave it blank to keep a component&apos;s current category; new components without one are Uncategorised.</li>
+                  <li>Count Sheet is the ingredient&apos;s count sheet category, not the component&apos;s.</li>
                   <li>The whole file is validated before anything is saved — one bad row fails the entire import.</li>
                 </ul>
               </div>
 
               {bulkImportError && <p className="text-sm text-destructive">{bulkImportError}</p>}
 
+              {bulkImportRowErrors.length > 0 && (
+                <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                  <p className="mb-1 font-medium">Nothing was imported. Fix these rows and upload again:</p>
+                  <ul className="list-disc space-y-1 pl-4 text-xs">
+                    {bulkImportRowErrors.map((error, index) => (
+                      <li key={index}>{error}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
               {bulkImportResult && (
-                <div className="rounded-md border bg-emerald-50 p-3 text-sm text-emerald-900">
-                  Imported successfully: {bulkImportResult.componentsCreated} components created, {bulkImportResult.componentsUpdated} updated
-                  {" "}· {bulkImportResult.ingredientsCreated} ingredients created, {bulkImportResult.ingredientsUpdated} updated.
+                <div className="space-y-2">
+                  <div className="rounded-md border bg-emerald-50 p-3 text-sm text-emerald-900">
+                    Imported successfully: {bulkImportResult.componentsCreated} components created, {bulkImportResult.componentsUpdated} updated
+                    {" "}· {bulkImportResult.ingredientsCreated} ingredients created, {bulkImportResult.ingredientsUpdated} updated.
+                  </div>
+                  {Array.isArray(bulkImportResult.components) && bulkImportResult.components.length > 0 && (
+                    <div className="max-h-56 overflow-y-auto rounded-md border">
+                      <table className="w-full text-sm">
+                        <TableHeader>
+                          <TableRow className="sticky top-0 bg-background">
+                            <TableHead>Component</TableHead>
+                            <TableHead>Category</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {bulkImportResult.components.map((component) => (
+                            <TableRow key={component.componentCatalogId}>
+                              <TableCell className="font-medium">{component.componentName}</TableCell>
+                              <TableCell>
+                                {component.category ? component.category.name : <span className="text-muted-foreground">Uncategorised</span>}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1650,32 +1943,31 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
                     </span>
                   )}
                 </div>
-                {/* Only assignable && active nodes are selectable: "Set meals" itself, and the subcategories under the other groups. */}
+                {/* Only assignable && active nodes are selectable: "Set meals" itself and every subcategory (Set meals › Breakfast,
+                    Light meals › Burgers, ...). A group row may be selectable and have children at the same time. */}
                 <Select value={mealForm.categoryId} onValueChange={(value) => setMealForm((prev) => ({ ...prev, categoryId: value }))}>
                   <SelectTrigger id="m-category">
                     <SelectValue placeholder="Choose a category…" />
                   </SelectTrigger>
                   <SelectContent>
-                    {mealCategoryGroups.map((group) =>
-                      group.assignable ? (
-                        <SelectItem key={group.id} value={String(group.id)} disabled={!group.active}>
-                          {group.name}
-                        </SelectItem>
-                      ) : (
-                        <SelectGroup key={group.id}>
-                          <SelectLabel>{group.name}</SelectLabel>
-                          {[...(group.children ?? [])]
-                            .sort((a, b) => a.sortOrder - b.sortOrder)
-                            // An inactive category stays listed (disabled) only when this meal already uses it.
-                            .filter((child) => isSelectableCategory(child) || String(child.id) === mealForm.categoryId)
-                            .map((child) => (
-                              <SelectItem key={child.id} value={String(child.id)} disabled={!isSelectableCategory(child)} className="pl-6">
-                                {child.name}{child.active ? "" : " (inactive)"}
-                              </SelectItem>
-                            ))}
-                        </SelectGroup>
-                      ),
-                    )}
+                    {mealCategoryGroups.map((group) => (
+                      <SelectGroup key={group.id}>
+                        {group.assignable && (
+                          <SelectItem value={String(group.id)} disabled={!isSelectableCategory(group)}>
+                            {group.name}
+                          </SelectItem>
+                        )}
+                        {[...(group.children ?? [])]
+                          .sort((a, b) => a.sortOrder - b.sortOrder)
+                          // An inactive category stays listed (disabled) only when this meal already uses it.
+                          .filter((child) => isSelectableCategory(child) || String(child.id) === mealForm.categoryId)
+                          .map((child) => (
+                            <SelectItem key={child.id} value={String(child.id)} disabled={!isSelectableCategory(child)}>
+                              {group.name} › {child.name}{child.active ? "" : " (inactive)"}
+                            </SelectItem>
+                          ))}
+                      </SelectGroup>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -1708,11 +2000,16 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
                 {components.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No components available — add them first.</p>
                 ) : (
-                  <div className="max-h-44 overflow-y-auto space-y-2 rounded-md border p-3">
-                    {components.map((component) => (
-                      <div key={component.id} className="flex items-center gap-2">
-                        <Checkbox id={`comp-${component.id}`} checked={mealForm.componentIds.includes(component.id)} onCheckedChange={() => toggleMealComponent(component.id)} />
-                        <label htmlFor={`comp-${component.id}`} className="cursor-pointer text-sm">{component.name}</label>
+                  <div className="max-h-56 overflow-y-auto space-y-3 rounded-md border p-3">
+                    {mealComponentGroups.map((group) => (
+                      <div key={group.key} className="space-y-2">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{group.name}</p>
+                        {group.items.map((component) => (
+                          <div key={component.id} className="flex items-center gap-2">
+                            <Checkbox id={`comp-${component.id}`} checked={mealForm.componentIds.includes(component.id)} onCheckedChange={() => toggleMealComponent(component.id)} />
+                            <label htmlFor={`comp-${component.id}`} className="cursor-pointer text-sm">{component.name}</label>
+                          </div>
+                        ))}
                       </div>
                     ))}
                   </div>
@@ -1741,6 +2038,20 @@ Beef Stew,Garlic,kg,fveg,0.1,10,25`}
             onOpenChange={setCategoriesDialogOpen}
             categories={categories}
             onChanged={fetchCategories}
+          />
+        )}
+
+        {!readOnly && (
+          <ComponentCategoriesDialog
+            open={componentCategoriesDialogOpen}
+            onOpenChange={setComponentCategoriesDialogOpen}
+            onChanged={() => {
+              // Names and active state feed the filter, the form, the Category column and the meal picker.
+              void fetchComponentCategories()
+              void fetchComponents()
+              void fetchFilteredComponents(componentFilter)
+              void fetchMeals()
+            }}
           />
         )}
       </SidebarInset>

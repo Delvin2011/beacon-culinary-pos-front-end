@@ -20,7 +20,7 @@ interface CategoriesDialogProps {
 
 const bySortOrder = (a: CategoryNode, b: CategoryNode) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name)
 
-// Top-level groups are fixed. Subcategories under a group can be added, renamed, reordered and
+// Top-level groups are fixed. Subcategories under any group (Set meals included) can be added, renamed, reordered and
 // deactivated; there is no delete. An inactive one stays in the tree, dimmed, with "Reactivate".
 export function CategoriesDialog({ open, onOpenChange, categories, onChanged }: CategoriesDialogProps) {
   const { authFetch } = useAuth()
@@ -138,8 +138,6 @@ export function CategoriesDialog({ open, onOpenChange, categories, onChanged }: 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           {groups.map((group) => {
             const children = [...(group.children ?? [])].sort(bySortOrder)
-            // "Set meals" holds meals itself; groups that aren't assignable hold subcategories.
-            const takesSubcategories = !group.assignable
             return (
               <section key={group.id} className="rounded-lg border">
                 <div className="flex items-center justify-between gap-2 border-b bg-muted/40 px-3 py-2">
@@ -147,11 +145,11 @@ export function CategoriesDialog({ open, onOpenChange, categories, onChanged }: 
                     {group.name}
                     <span className="ml-2 text-xs font-normal text-muted-foreground">{group.itemCount} active</span>
                   </p>
-                  <span className="text-xs text-muted-foreground">Fixed group</span>
+                  {/* Set meals also holds meals directly (not yet sorted into a subcategory). */}
+                  <span className="text-xs text-muted-foreground">Fixed group{group.assignable ? " · also holds meals" : ""}</span>
                 </div>
 
-                {takesSubcategories && (
-                  <ul className="divide-y">
+                <ul className="divide-y">
                     {children.length === 0 && <li className="px-3 py-2 text-sm text-muted-foreground">No subcategories yet.</li>}
                     {children.map((child, index) => (
                       <li key={child.id} className={cn("flex flex-wrap items-center gap-2 px-3 py-2", !child.active && "opacity-60")}>
@@ -232,7 +230,6 @@ export function CategoriesDialog({ open, onOpenChange, categories, onChanged }: 
                       )}
                     </li>
                   </ul>
-                )}
               </section>
             )
           })}
