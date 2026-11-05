@@ -252,7 +252,11 @@ function CatalogPageContent() {
   // Head Chefs can view the catalog and recipes but not change them.
   const readOnly = !canEditCatalog(user?.role)
 
-  const [activeTab, setActiveTab] = useState<Tab>("components")
+  // ?tab=meals&group=LIGHT_MEALS opens the Meals tab on light meals (the dashboard's light meal stock link).
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const tab = searchParams.get("tab")
+    return tab === "meals" || tab === "beverages" ? tab : "components"
+  })
 
   const [components, setComponents] = useState<ComponentEntry[]>([])
   const [componentsLoading, setComponentsLoading] = useState(true)
@@ -306,7 +310,10 @@ function CatalogPageContent() {
   const [mealSearch, setMealSearch] = useState("")
   const [mealSorting, setMealSorting] = useState<SortingState>([])
   const [mealColumnFilters, setMealColumnFilters] = useState<ColumnFiltersState>([])
-  const [mealGroupFilter, setMealGroupFilter] = useState<MealGroupFilter>("ALL")
+  const [mealGroupFilter, setMealGroupFilter] = useState<MealGroupFilter>(() => {
+    const group = searchParams.get("group")
+    return group === "SET_MEALS" || group === "LIGHT_MEALS" ? group : "ALL"
+  })
   const [mealCategoryFilter, setMealCategoryFilter] = useState("all")
 
   // The light meal whose stock Review panel is open.

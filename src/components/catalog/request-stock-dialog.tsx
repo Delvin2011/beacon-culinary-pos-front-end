@@ -36,10 +36,12 @@ interface RequestStockDialogProps {
   onOpenChange: (open: boolean) => void
   // The review already loaded in the panel: no extra call.
   review: StockReview
+  // Called once the request is created (the dashboard refreshes its stock and attention cards).
+  onSubmitted?: () => void
 }
 
 // Batch prompt: "How many more units?" → units × per unit for each ingredient, editable, sent as an Issue request.
-export function RequestStockDialog({ open, onOpenChange, review }: RequestStockDialogProps) {
+export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: RequestStockDialogProps) {
   const { authFetch } = useAuth()
   const [unitsChoice, setUnitsChoice] = useState<UnitsChoice>(20)
   const [customUnits, setCustomUnits] = useState("")
@@ -99,6 +101,7 @@ export function RequestStockDialog({ open, onOpenChange, review }: RequestStockD
         ) : undefined,
       })
       onOpenChange(false)
+      onSubmitted?.()
     } catch (err) {
       // Keep the dialog open so the chef can fix the quantities.
       setError(err instanceof Error ? err.message : "Unable to submit the stock request.")

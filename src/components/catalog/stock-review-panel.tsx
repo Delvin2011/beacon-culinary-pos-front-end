@@ -34,6 +34,8 @@ interface StockReviewPanelProps {
   meal: StockReviewMeal | null
   onOpenChange: (open: boolean) => void
   onStockChange: (mealId: number, patch: StockRowPatch) => void
+  // Called after a stock request is sent from the panel.
+  onRequestSent?: () => void
 }
 
 const STATUS_TITLES: Record<StockStatus, string> = { OK: "OK", LOW: "Low", OUT: "Out", NOT_TRACKED: "Not tracked" }
@@ -44,7 +46,7 @@ function signedClass(value: number): string | undefined {
 
 // A light meal's stock: per-unit ingredients, Kitchen and Main Store amounts, how many units can be made. Opened by
 // the Review button in Catalogue Management and Daily Planning.
-export function StockReviewPanel({ meal, onOpenChange, onStockChange }: StockReviewPanelProps) {
+export function StockReviewPanel({ meal, onOpenChange, onStockChange, onRequestSent }: StockReviewPanelProps) {
   const { authFetch, user } = useAuth()
   const [review, setReview] = useState<StockReview | null>(null)
   const [loading, setLoading] = useState(false)
@@ -257,7 +259,7 @@ export function StockReviewPanel({ meal, onOpenChange, onStockChange }: StockRev
         )}
 
         {review?.tracked && canRequest && (
-          <RequestStockDialog open={requestOpen} onOpenChange={setRequestOpen} review={review} />
+          <RequestStockDialog open={requestOpen} onOpenChange={setRequestOpen} review={review} onSubmitted={onRequestSent} />
         )}
       </SheetContent>
     </Sheet>

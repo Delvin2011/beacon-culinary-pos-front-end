@@ -13,7 +13,7 @@ import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
 import { useAuth } from "@/hooks/use-auth"
-import { canManageInventory, canManageMenu, canManageStockTakes, canViewReports, isAdminRole, isBaristaRole } from "@/lib/roles"
+import { canManageInventory, canManageMenu, canManageStockTakes, canViewDashboard, canViewReports, isAdminRole, isBaristaRole } from "@/lib/roles"
 import {
   Sidebar,
   SidebarContent,
@@ -23,11 +23,6 @@ import {
 } from "@/components/ui/sidebar"
 
 const data = {
-  user: {
-    name: "Admin",
-    email: "admin@beaconculinary.com",
-    avatar: "",
-  },
   teams: [
     {
       name: "Beacon Culinary",
@@ -45,6 +40,7 @@ const data = {
         {
           title: "Dashboard",
           url: "/dashboard",
+          access: "dashboard" as const,
         },
       ],
     },
@@ -138,6 +134,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       if (access === "stockTakes") return canManageStockTakes(role)
       if (access === "menu") return canManageMenu(role)
       if (access === "reports") return canViewReports(role)
+      if (access === "dashboard") return canViewDashboard(role)
       return true
     }
     return data.navMain
@@ -155,7 +152,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <NavMain items={navMain} />
       </SidebarContent>
       <SidebarFooter>
-        <NavUser user={data.user} />
+        <NavUser />
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

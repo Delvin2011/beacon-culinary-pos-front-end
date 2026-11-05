@@ -83,3 +83,22 @@ export function canRequestIssue(role?: string): boolean {
 export function canEditCatalog(role?: string): boolean {
   return normaliseRole(role) === "ADMIN";
 }
+
+// The back-office dashboard (DASHBOARD_VIEW once U2 lands). Decides only the landing page and the menu entry:
+// which dashboard sections show is decided by the server's layout.
+export function canViewDashboard(role?: string): boolean {
+  const normalised = normaliseRole(role);
+  return normalised === "ADMIN" || normalised === "HEAD_CHEF";
+}
+
+// Where a user lands after login (and where the dashboard sends them if its layout answers 403).
+export function landingPathFor(role?: string): string {
+  const normalised = normaliseRole(role);
+  if (canViewDashboard(normalised)) return "/dashboard";
+  if (normalised === "BARISTA") return "/bar";
+  if (normalised === "KITCHEN") return "/kitchen";
+  if (normalised === "CASHIER") return "/pos/login";
+  if (normalised === "STOCK_ADMIN") return "/inventory";
+  if (normalised.startsWith("STOCK")) return "/stock-movement";
+  return "/dashboard";
+}

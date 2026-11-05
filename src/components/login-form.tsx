@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import Image from "next/image"
 import { useAuth } from "@/hooks/use-auth"
+import { landingPathFor } from "@/lib/roles"
 import loginImage from "../app/assets/images/beacon_login_image.png"
 
 export function LoginForm({
@@ -16,22 +17,24 @@ export function LoginForm({
   ...props
 }: React.ComponentProps<"div">) {
   const router = useRouter()
-  const { login, isLoading, error, clearError, isAuthenticated } = useAuth()
+  const { login, isLoading, error, clearError, isAuthenticated, user } = useAuth()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
 
+  // Signed in (now or from an earlier visit): go to the user's landing page. Until U2 the dashboard is the landing
+  // page for Admin and Head Chef only; everyone else goes to the screen they work on.
   useEffect(() => {
     if (isAuthenticated) {
-      router.push("/dashboard")
+      router.push(landingPathFor(user?.role))
     }
-  }, [isAuthenticated, router])
+  }, [isAuthenticated, user?.role, router])
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
     try {
       await login({ email, password })
-      router.push("/dashboard")
+      // The effect above routes once the session is stored.
     } catch {
       // Error is stored in auth context for rendering.
     }
