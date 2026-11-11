@@ -15,6 +15,7 @@ import { ManagementSessionProvider } from "@/contexts/management-session-context
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
+import { readLoginBlock } from "@/lib/login-protection";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -110,6 +111,9 @@ function PosMainContent() {
     isActive: isManagementActive,
     runWithManagementSession,
     invalidateManagementSession,
+    managerPinBlock,
+    reportManagerPinBlock,
+    clearManagerPinBlock,
   } = useManagementSession();
 
   const isAdmin = isAdminRole(user?.role);
@@ -387,6 +391,7 @@ function PosMainContent() {
 
   const submitVarianceClose = async () => {
     if (!closeSummary) return;
+    if (managerPinBlock?.active) return;
     if (!PIN_PATTERN.test(managerPinInput)) {
       setManagerPinError("Enter the 6-digit manager PIN.");
       return;
@@ -396,6 +401,7 @@ function PosMainContent() {
     setClosing(true);
     setManagerPinError(null);
     setCloseError(null);
+    clearManagerPinBlock();
 
     try {
       const authRes = await authFetch("/admin/authorize", {
@@ -405,6 +411,14 @@ function PosMainContent() {
         },
         body: JSON.stringify({ pin: managerPinInput }),
       });
+
+      // Before the body is read: readLoginBlock reads its own copy.
+      const block = await readLoginBlock(authRes);
+      if (block) {
+        reportManagerPinBlock(block);
+        setManagerPinInput("");
+        return;
+      }
 
       const authBody = (await authRes.json().catch(() => null)) as
         | { authorizationToken?: string }
@@ -466,6 +480,7 @@ function PosMainContent() {
         return;
       }
 
+      setManagerPinInput("");
       setManagerPinError(message);
     } finally {
       setClosing(false);
@@ -913,7 +928,8 @@ function PosMainContent() {
         description="Enter admin PIN to authorize this shift variance."
         pin={managerPinInput}
         onPinChange={setManagerPinInput}
-        error={managerPinError}
+        error={managerPinBlock?.message ?? managerPinError}
+        blocked={managerPinBlock?.active}
         submitting={closing}
         submitLabel="Authorize & Close"
         canSubmit={PIN_PATTERN.test(managerPinInput)}

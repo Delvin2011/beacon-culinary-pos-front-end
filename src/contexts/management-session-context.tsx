@@ -10,6 +10,8 @@ import {
   type ReactNode,
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { useLoginBlocks, type LoginBlockState } from "@/hooks/use-login-blocks";
+import { readLoginBlock, type LoginBlock } from "@/lib/login-protection";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 
@@ -30,6 +32,11 @@ type ManagementSessionContextValue = {
     prompt?: Partial<AuthorizationPrompt>,
   ) => void;
   invalidateManagementSession: () => void;
+  // The 429 block on entering manager PINs from this session. Both /admin/authorize-session and
+  // /admin/authorize (shift-close variance) use it, so one countdown covers both popups.
+  managerPinBlock: LoginBlockState | null;
+  reportManagerPinBlock: (block: LoginBlock) => void;
+  clearManagerPinBlock: () => void;
 };
 
 type AuthorizeSessionResponse = {
@@ -62,7 +69,17 @@ function parseError(payload: unknown, fallback: string): string {
 }
 
 export function ManagementSessionProvider({ children }: { children: ReactNode }) {
-  const { authFetch } = useAuth();
+  const { authFetch, user } = useAuth();
+  const { block: blockPin, clear: clearPinBlock, clearAll: clearAllPinBlocks, get: getPinBlock } = useLoginBlocks<"self">();
+  const managerPinBlock = getPinBlock("self");
+  const reportManagerPinBlock = useCallback((block: LoginBlock) => blockPin("self", block), [blockPin]);
+  const clearManagerPinBlock = useCallback(() => clearPinBlock("self"), [clearPinBlock]);
+
+  // The block belongs to whoever is signed in; a different user starts clean.
+  const userKey = user?.id ?? user?.cashierId ?? user?.email ?? null;
+  useEffect(() => {
+    clearAllPinBlocks();
+  }, [userKey, clearAllPinBlocks]);
 
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
@@ -120,6 +137,7 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
   );
 
   const handleAuthorize = useCallback(async () => {
+    if (managerPinBlock?.active) return;
     if (!PIN_PATTERN.test(pin)) {
       setError("Enter the 6-digit manager PIN.");
       return;
@@ -127,6 +145,7 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
 
     setSubmitting(true);
     setError(null);
+    clearManagerPinBlock();
 
     try {
       const response = await authFetch("/admin/authorize-session", {
@@ -136,6 +155,14 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
         },
         body: JSON.stringify({ pin }),
       });
+
+      // Before the body is read: readLoginBlock reads its own copy.
+      const block = await readLoginBlock(response);
+      if (block) {
+        reportManagerPinBlock(block);
+        setPin("");
+        return;
+      }
 
       const payload = (await response.json().catch(() => null)) as AuthorizeSessionResponse | null;
 
@@ -166,11 +193,12 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
         await pendingAction(payload.sessionToken);
       }
     } catch (err) {
+      setPin("");
       setError(err instanceof Error ? err.message : "Unable to unlock management mode.");
     } finally {
       setSubmitting(false);
     }
-  }, [authFetch, pin]);
+  }, [authFetch, clearManagerPinBlock, managerPinBlock?.active, pin, reportManagerPinBlock]);
 
   const value = useMemo<ManagementSessionContextValue>(
     () => ({
@@ -181,8 +209,21 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
       adminId,
       runWithManagementSession,
       invalidateManagementSession,
+      managerPinBlock,
+      reportManagerPinBlock,
+      clearManagerPinBlock,
     }),
-    [adminId, expiresAt, invalidateManagementSession, remainingMs, runWithManagementSession, sessionToken],
+    [
+      adminId,
+      clearManagerPinBlock,
+      expiresAt,
+      invalidateManagementSession,
+      managerPinBlock,
+      remainingMs,
+      reportManagerPinBlock,
+      runWithManagementSession,
+      sessionToken,
+    ],
   );
 
   return (
@@ -194,7 +235,8 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
         description={prompt.description}
         pin={pin}
         onPinChange={setPin}
-        error={error}
+        error={managerPinBlock?.message ?? error}
+        blocked={managerPinBlock?.active}
         submitting={submitting}
         submitLabel={prompt.submitLabel}
         canSubmit={PIN_PATTERN.test(pin)}

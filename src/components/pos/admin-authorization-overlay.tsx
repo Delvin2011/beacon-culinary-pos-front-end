@@ -16,6 +16,8 @@ type AdminAuthorizationOverlayProps = {
   onSubmit: () => void;
   onBack: () => void;
   canSubmit?: boolean;
+  // A 429 countdown is running for the person entering manager PINs. Back still works.
+  blocked?: boolean;
   maxPinLength?: number;
   children?: ReactNode;
 };
@@ -32,6 +34,7 @@ export function AdminAuthorizationOverlay({
   onSubmit,
   onBack,
   canSubmit,
+  blocked = false,
   maxPinLength = PIN_LENGTH,
   children,
 }: AdminAuthorizationOverlayProps) {
@@ -61,7 +64,7 @@ export function AdminAuthorizationOverlay({
         )}
 
         <div className="mt-4 flex justify-center">
-          <NumericKeypad value={pin} onChange={onPinChange} maxLength={maxPinLength} disabled={submitting} />
+          <NumericKeypad value={pin} onChange={onPinChange} maxLength={maxPinLength} disabled={submitting || blocked} />
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
@@ -75,7 +78,7 @@ export function AdminAuthorizationOverlay({
           </button>
           <button
             type="button"
-            disabled={submitting || !submitAllowed}
+            disabled={submitting || blocked || !submitAllowed}
             onClick={onSubmit}
             className="rounded-lg bg-amber-400 px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
