@@ -1,6 +1,7 @@
 // Staff management (/admin/staff). The credential rules per role come from GET /admin/staff/roles,
 // so the form is driven by data rather than hard-coded roles.
 
+import { format, isSameDay } from "date-fns"
 import { PIN_PATTERN } from "@/lib/pin"
 
 export type CredentialRule = "REQUIRED" | "OPTIONAL" | "NONE"
@@ -12,6 +13,16 @@ export interface StaffRoleRule {
   pin: CredentialRule
 }
 
+export type LockScope = "PASSWORD" | "PIN"
+
+// From the backend: lockedUntil is a UTC instant, null when not locked or when an admin must unlock.
+// Short-term blocks (PIN per till, manager PIN, change password) aren't listed here.
+export interface StaffLock {
+  locked: boolean
+  lockedUntil: string | null
+  requiresAdminUnlock: boolean
+}
+
 export interface StaffMember {
   id: number
   name: string
@@ -20,6 +31,8 @@ export interface StaffMember {
   active: boolean
   hasPassword: boolean
   hasPin: boolean
+  // Absent from older backends; every lock is false until enforcement is switched on.
+  locks?: Partial<Record<LockScope, StaffLock>>
 }
 
 export { PIN_PATTERN }
@@ -125,4 +138,40 @@ export async function readStaffError(res: Response, fallback: string): Promise<S
     }
   }
   return { fieldErrors: {}, pageError: fallback }
+}
+
+const LOCK_SCOPES: LockScope[] = ["PASSWORD", "PIN"]
+const SCOPE_LABEL: Record<LockScope, string> = { PASSWORD: "Password", PIN: "PIN" }
+
+export function lockedScopes(member: StaffMember): { scope: LockScope; lock: StaffLock }[] {
+  return LOCK_SCOPES.flatMap((scope) => {
+    const lock = member.locks?.[scope]
+    return lock?.locked ? [{ scope, lock }] : []
+  })
+}
+
+export function isLocked(member: StaffMember): boolean {
+  return lockedScopes(member).length > 0
+}
+
+// "Password locked until 14:32" (local time; the date is added when it isn't today) or "PIN locked: needs unlock".
+export function lockLabel(scope: LockScope, lock: StaffLock, now: Date = new Date()): string {
+  const name = SCOPE_LABEL[scope]
+  if (lock.requiresAdminUnlock) return `${name} locked: needs unlock`
+  if (!lock.lockedUntil) return `${name} locked`
+  const until = new Date(lock.lockedUntil)
+  if (Number.isNaN(until.getTime())) return `${name} locked`
+  return `${name} locked until ${format(until, isSameDay(until, now) ? "HH:mm" : "d MMM HH:mm")}`
+}
+
+// POST /admin/staff/{id}/unlock with no body: unlocks every scope. Returns the updated staff record.
+export async function unlockStaff(
+  authFetch: (path: string, init?: RequestInit) => Promise<Response>,
+  id: number,
+): Promise<StaffMember> {
+  const res = await authFetch(`/admin/staff/${id}/unlock`, { method: "POST" })
+  if (res.ok) return (await res.json()) as StaffMember
+  if (res.status === 400) throw new Error("The unlock request was refused. Refresh the list and try again.")
+  const apiError = await readStaffError(res, "Unable to unlock this person. Try again.")
+  throw new Error(apiError.pageError ?? "Unable to unlock this person. Try again.")
 }

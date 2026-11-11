@@ -12,7 +12,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table"
-import { ArrowUpDown, Check, Minus } from "lucide-react"
+import { ArrowUpDown, Check, Lock, Minus } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
@@ -30,8 +30,12 @@ import { toast } from "@/hooks/use-toast"
 import { isAdminRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 import {
+  isLocked,
+  lockLabel,
+  lockedScopes,
   readStaffError,
   roleLabel,
+  unlockStaff,
   usesPassword,
   usesPin,
   type StaffMember,
@@ -51,6 +55,22 @@ function CredentialBadge({ label, set }: { label: string; set: boolean }) {
       {set ? <Check className="h-3 w-3" aria-hidden /> : <Minus className="h-3 w-3" aria-hidden />}
       {label} {set ? "set" : "not set"}
     </span>
+  )
+}
+
+function LockBadges({ member }: { member: StaffMember }) {
+  return (
+    <>
+      {lockedScopes(member).map(({ scope, lock }) => (
+        <span
+          key={scope}
+          className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+        >
+          <Lock className="h-3 w-3" aria-hidden />
+          {lockLabel(scope, lock)}
+        </span>
+      ))}
+    </>
   )
 }
 
@@ -99,6 +119,8 @@ export default function StaffPage() {
   const [credentialTarget, setCredentialTarget] = useState<{ staff: StaffMember; kind: CredentialKind } | null>(null)
   const [activeTarget, setActiveTarget] = useState<StaffMember | null>(null)
   const [togglingActive, setTogglingActive] = useState(false)
+  const [unlockTarget, setUnlockTarget] = useState<StaffMember | null>(null)
+  const [unlocking, setUnlocking] = useState(false)
 
   useEffect(() => {
     if (authLoading) return
@@ -185,6 +207,22 @@ export default function StaffPage() {
     }
   }
 
+  const unlock = async () => {
+    if (!unlockTarget) return
+    const member = unlockTarget
+    setUnlocking(true)
+    try {
+      const updated = await unlockStaff(authFetch, member.id)
+      upsert(updated)
+      toast({ title: "Staff member unlocked", description: `${updated.name} can sign in again.` })
+    } catch (err) {
+      setPageMessage(err instanceof Error ? err.message : "Unable to unlock this person. Try again.")
+    } finally {
+      setUnlocking(false)
+      setUnlockTarget(null)
+    }
+  }
+
   const columns: ColumnDef<StaffMember>[] = useMemo(
     () => [
       {
@@ -212,6 +250,7 @@ export default function StaffPage() {
             <div className="flex flex-wrap gap-1">
               {usesPassword(rule) && <CredentialBadge label="Password" set={row.original.hasPassword} />}
               {usesPin(rule) && <CredentialBadge label="PIN" set={row.original.hasPin} />}
+              <LockBadges member={row.original} />
             </div>
           )
         },
@@ -230,6 +269,18 @@ export default function StaffPage() {
           const rule = roles.find((candidate) => candidate.role === member.role)
           return (
             <div className="flex flex-wrap justify-end gap-1.5">
+              {isAdmin && isLocked(member) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setPageMessage(null)
+                    setUnlockTarget(member)
+                  }}
+                >
+                  Unlock
+                </Button>
+              )}
               <Button size="sm" variant="outline" onClick={() => openEdit(member)}>
                 Edit
               </Button>
@@ -259,7 +310,7 @@ export default function StaffPage() {
         },
       },
     ],
-    [openEdit, roles],
+    [isAdmin, openEdit, roles],
   )
 
   const table = useReactTable({
@@ -437,9 +488,16 @@ export default function StaffPage() {
           target={credentialTarget}
           onOpenChange={(open) => !open && setCredentialTarget(null)}
           onSaved={(member, kind) => {
+            // Setting a new PIN or password unlocks that scope; the returned record shows it.
+            const scope = kind === "pin" ? "PIN" : "PASSWORD"
+            const wasLocked = !!credentialTarget && lockedScopes(credentialTarget.staff).some((entry) => entry.scope === scope)
+            const stillLocked = lockedScopes(member).some((entry) => entry.scope === scope)
             upsert(member)
             setCredentialTarget(null)
-            toast({ title: kind === "pin" ? "PIN saved" : "Password saved", description: `${member.name}'s ${kind === "pin" ? "PIN" : "password"} has been updated.` })
+            toast({
+              title: kind === "pin" ? "PIN saved" : "Password saved",
+              description: `${member.name}'s ${kind === "pin" ? "PIN" : "password"} has been updated.${wasLocked && !stillLocked ? " Their sign-in lock has been cleared." : ""}`,
+            })
           }}
         />
 
@@ -465,6 +523,26 @@ export default function StaffPage() {
                 onClick={() => void toggleActive()}
               >
                 {togglingActive ? "Saving…" : activeTarget?.active ? "Deactivate" : "Activate"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={unlockTarget !== null} onOpenChange={(open) => !open && setUnlockTarget(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Unlock {unlockTarget?.name}?</DialogTitle>
+              <DialogDescription>
+                This clears all their sign-in blocks: password and PIN locks, and short blocks on PIN sign-in at a till,
+                manager-PIN approval and changing their password. They can try again straight away.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setUnlockTarget(null)}>
+                Cancel
+              </Button>
+              <Button disabled={unlocking} onClick={() => void unlock()}>
+                {unlocking ? "Unlocking…" : "Unlock"}
               </Button>
             </div>
           </DialogContent>
