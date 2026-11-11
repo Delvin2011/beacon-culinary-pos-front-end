@@ -10,12 +10,30 @@ import {
   type ReactNode,
 } from "react";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
+import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-protection";
 
 export const INCORRECT_PIN_MESSAGE = "Incorrect PIN.";
 export const PIN_LOGIN_FAILED_MESSAGE = "Couldn't sign in. Try again.";
 
 // Thrown by pinLogin. Its message is always safe to show: it never says whether the person exists.
 export class PinLoginError extends Error {}
+
+// Thrown by login and pinLogin on a 429. Its message comes from the code and wait only.
+export class LoginBlockedError extends Error {
+  constructor(readonly block: LoginBlock) {
+    super(loginBlockMessage(block.code, block.retryAfterSeconds));
+  }
+}
+
+// Change password (/users/{id}/change-password) has no screen yet. A wrong old password returns 401 with an
+// empty body, exactly like an expired token, so a future form must make sure the token is fresh before
+// submitting and must never go through authFetch's refresh-and-resend. Use readLoginBlock for its 429.
+
+type RefreshResult =
+  | { kind: "token"; token: string }
+  | { kind: "ended" }
+  // A 429 from /auth/refresh: the session is kept and the 429 goes to the caller (each gets a copy).
+  | { kind: "blocked"; response: Response };
 
 const AUTH_STORAGE_KEY = "bar-talk.auth";
 const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
@@ -170,7 +188,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const tokenRef = useRef<string | null>(null);
-  const refreshInFlightRef = useRef<Promise<string | null> | null>(null);
+  const refreshInFlightRef = useRef<Promise<RefreshResult> | null>(null);
   const logoutRequestedRef = useRef(false);
 
   const clearAuthState = useCallback(() => {
@@ -227,6 +245,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
       });
 
+      // Before the body is read: readLoginBlock reads its own copy.
+      const block = await readLoginBlock(response);
+      if (block) {
+        throw new LoginBlockedError(block);
+      }
+
       const responseBody = (await response.json().catch(() => null)) as unknown;
 
       if (!response.ok) {
@@ -275,6 +299,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ cashierId, pin }),
       });
 
+      // Before the body is read: readLoginBlock reads its own copy.
+      const block = await readLoginBlock(response);
+      if (block) {
+        throw new LoginBlockedError(block);
+      }
+
       const responseBody = (await response.json().catch(() => null)) as unknown;
 
       if (response.status === 401) {
@@ -308,7 +338,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       persistAuthState(nextState);
     } catch (err) {
       // Network errors and anything unexpected become the generic message.
-      const safe = err instanceof PinLoginError ? err : new PinLoginError(PIN_LOGIN_FAILED_MESSAGE);
+      const safe =
+        err instanceof PinLoginError || err instanceof LoginBlockedError ? err : new PinLoginError(PIN_LOGIN_FAILED_MESSAGE);
       clearAuthState();
       setError(safe.message);
       throw safe;
@@ -324,16 +355,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
   }, [clearAuthState]);
 
-  const refreshToken = useCallback(async (): Promise<string | null> => {
+  const refreshToken = useCallback(async (): Promise<RefreshResult> => {
     if (refreshInFlightRef.current) {
       return refreshInFlightRef.current;
     }
 
-    const refreshPromise = (async () => {
+    const refreshPromise = (async (): Promise<RefreshResult> => {
       try {
         if (logoutRequestedRef.current) {
           clearAuthState();
-          return null;
+          return { kind: "ended" };
         }
 
         const response = await fetch(`${AUTH_API_BASE_URL}/auth/refresh`, {
@@ -341,17 +372,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           credentials: "include",
         });
 
+        // Burst limit or a block: not a logout, and never retried here. The caller decides what to show.
+        if (response.status === 429) {
+          return { kind: "blocked", response };
+        }
+
         const payload = (await response.json().catch(() => null)) as unknown;
 
         if (!response.ok) {
+          // 401 (including while the account is locked): the session has ended, as before.
           clearAuthState();
-          return null;
+          return { kind: "ended" };
         }
 
         const refreshedToken = extractToken(payload);
         if (!refreshedToken) {
           clearAuthState();
-          return null;
+          return { kind: "ended" };
         }
 
         setState((prev) => {
@@ -364,10 +401,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return nextState;
         });
 
-        return refreshedToken;
+        return { kind: "token", token: refreshedToken };
       } catch {
         clearAuthState();
-        return null;
+        return { kind: "ended" };
       } finally {
         refreshInFlightRef.current = null;
       }
@@ -411,19 +448,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return initialResponse;
       }
 
-      // A 401 with a `code` (e.g. AUTHORIZATION_INVALID for a manager PIN) is a business error,
-      // not an expired login: refreshing can't fix it, and a second 401 would log the user out.
-      const errorBody = (await initialResponse.clone().json().catch(() => null)) as { code?: unknown } | null;
-      if (errorBody && typeof errorBody.code === "string") {
+      // A 401 with a JSON `code` or `error` is a business error, not an expired login: for example
+      // {"error":"Invalid PIN."} from /admin/authorize(-session). Refreshing can't fix it, and resending would
+      // count as another failed attempt. An expired access token returns 401 with an empty body.
+      const errorBody = (await initialResponse.clone().json().catch(() => null)) as { code?: unknown; error?: unknown } | null;
+      if (errorBody && (typeof errorBody.code === "string" || typeof errorBody.error === "string")) {
         return initialResponse;
       }
 
-      const refreshedToken = await refreshToken();
-      if (!refreshedToken) {
+      const refreshed = await refreshToken();
+      if (refreshed.kind === "blocked") {
+        // Keep the session; hand back the 429 so callers don't mistake it for "session expired".
+        return refreshed.response.clone();
+      }
+      if (refreshed.kind === "ended") {
         return initialResponse;
       }
 
-      const retryResponse = await execute(refreshedToken);
+      const retryResponse = await execute(refreshed.token);
       if (retryResponse.status === 401) {
         clearAuthState();
       }

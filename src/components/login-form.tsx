@@ -9,6 +9,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import Image from "next/image"
 import { useAuth } from "@/hooks/use-auth"
+import { useLoginBlocks } from "@/hooks/use-login-blocks"
+import { LoginBlockedError } from "@/contexts/auth-context"
 import { landingPathFor } from "@/lib/roles"
 import loginImage from "../app/assets/images/beacon_login_image.png"
 
@@ -20,6 +22,9 @@ export function LoginForm({
   const { login, isLoading, error, clearError, isAuthenticated, user } = useAuth()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
+  const blocks = useLoginBlocks<"self">()
+  const blockState = blocks.get("self")
+  const message = blockState?.message ?? error
 
   // Signed in (now or from an earlier visit): go to the user's landing page. Until U2 the dashboard is the landing
   // page for Admin and Head Chef only; everyone else goes to the screen they work on.
@@ -31,12 +36,20 @@ export function LoginForm({
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (blockState?.active) return
+    blocks.clear("self")
 
     try {
       await login({ email, password })
       // The effect above routes once the session is stored.
-    } catch {
-      // Error is stored in auth context for rendering.
+    } catch (err) {
+      // Other errors are stored in the auth context for rendering.
+      if (err instanceof LoginBlockedError) {
+        // The countdown shows the message; the context's copy would go stale when it ends.
+        blocks.block("self", err.block)
+        clearError()
+      }
+      setPassword("")
     }
   }
 
@@ -53,9 +66,9 @@ export function LoginForm({
                 </p>
               </div>
 
-              {error && (
+              {message && (
                 <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  {error}
+                  {message}
                 </div>
               )}
 
@@ -99,7 +112,7 @@ export function LoginForm({
                 />
               </div>
 
-              <Button type="submit" className="w-full" disabled={isLoading}>
+              <Button type="submit" className="w-full" disabled={isLoading || blockState?.active}>
                 {isLoading ? "Logging in..." : "Login"}
               </Button>
             </div>
