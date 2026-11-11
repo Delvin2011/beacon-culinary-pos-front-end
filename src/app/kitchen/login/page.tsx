@@ -6,7 +6,9 @@ import { ChevronLeft, ShieldCheck } from "lucide-react";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { useAuth } from "@/hooks/use-auth";
 import { isKitchenAccessRole } from "@/lib/roles";
-import { PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { useLoginBlocks } from "@/hooks/use-login-blocks";
+import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
 
 // Shape returned by GET /users/login-tiles?screen=KITCHEN: kitchen staff and the Head Chef with a PIN set.
@@ -37,6 +39,9 @@ export default function KitchenLoginPage() {
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
+  // One countdown per person: a block for one person never disables another's tile.
+  const blocks = useLoginBlocks<number>();
+  const selectedBlock = blocks.get(selected?.id);
 
   useEffect(() => {
     if (isLoading) return;
@@ -77,7 +82,7 @@ export default function KitchenLoginPage() {
   };
 
   const submit = async () => {
-    if (submitting || !selected) return;
+    if (submitting || !selected || selectedBlock?.active) return;
 
     if (!PIN_PATTERN.test(pin)) {
       setPinError(PIN_FORMAT_MESSAGE);
@@ -87,12 +92,19 @@ export default function KitchenLoginPage() {
     setSubmitting(true);
     setPinError(null);
     if (error) clearError();
+    blocks.clear(selected.id);
 
     try {
       await pinLogin({ cashierId: selected.id, pin });
       router.replace("/kitchen");
     } catch (err) {
-      setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
+      if (err instanceof LoginBlockedError) {
+        // The countdown shows the message; no automatic retry.
+        blocks.block(selected.id, err.block);
+        clearError();
+      } else {
+        setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
+      }
       setPin("");
     } finally {
       setSubmitting(false);
@@ -156,6 +168,7 @@ export default function KitchenLoginPage() {
                       {getInitials(tile.name)}
                     </span>
                     <span className="text-center text-sm font-medium leading-tight text-white">{tile.name}</span>
+                    <LoginBlockBadge state={blocks.get(tile.id)} />
                   </button>
                 ))}
               </div>
@@ -187,9 +200,9 @@ export default function KitchenLoginPage() {
               ))}
             </div>
 
-            {(pinError || error) && (
+            {(selectedBlock?.message ?? pinError ?? error) && (
               <p className="mb-4 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-center text-sm text-rose-200">
-                {pinError ?? error}
+                {selectedBlock?.message ?? pinError ?? error}
               </p>
             )}
 
@@ -202,14 +215,14 @@ export default function KitchenLoginPage() {
                   if (error) clearError();
                 }}
                 maxLength={PIN_LENGTH}
-                disabled={submitting}
+                disabled={submitting || selectedBlock?.active}
               />
             </div>
 
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={submitting || pin.length < PIN_LENGTH}
+              disabled={submitting || pin.length < PIN_LENGTH || selectedBlock?.active}
               className="mt-4 w-full rounded-2xl bg-blue-500 py-3.5 text-base font-semibold text-white transition hover:bg-blue-400 active:bg-blue-600 disabled:pointer-events-none disabled:opacity-50"
             >
               {submitting ? "Signing in..." : "Open Kitchen Queue"}

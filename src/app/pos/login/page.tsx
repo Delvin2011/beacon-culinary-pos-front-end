@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { ChevronLeft, User } from "lucide-react";
-import { PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { useLoginBlocks } from "@/hooks/use-login-blocks";
+import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
 
 // Shape returned by GET /users/cashiers
@@ -52,6 +54,9 @@ export default function PosLoginPage() {
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
+  // One countdown per cashier: a block for one person never disables another's tile.
+  const blocks = useLoginBlocks<number>();
+  const selectedBlock = blocks.get(selectedCashier?.id);
 
   // Already authenticated — let /pos handle shift routing
   useEffect(() => {
@@ -109,7 +114,7 @@ export default function PosLoginPage() {
   };
 
   const handleSubmitPin = async () => {
-    if (!selectedCashier || submitting) return;
+    if (!selectedCashier || submitting || selectedBlock?.active) return;
     if (!PIN_PATTERN.test(pin)) {
       setPinError(PIN_FORMAT_MESSAGE);
       return;
@@ -117,12 +122,19 @@ export default function PosLoginPage() {
 
     setSubmitting(true);
     setPinError(null);
+    blocks.clear(selectedCashier.id);
     try {
       await pinLogin({ cashierId: selectedCashier.id, pin });
       router.replace("/pos");
     } catch (err) {
-      // pinLogin's messages never reveal whether the cashier exists.
-      setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
+      if (err instanceof LoginBlockedError) {
+        // The countdown shows the message; no automatic retry.
+        blocks.block(selectedCashier.id, err.block);
+        clearError();
+      } else {
+        // pinLogin's messages never reveal whether the cashier exists.
+        setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
+      }
       setPin("");
     } finally {
       setSubmitting(false);
@@ -187,6 +199,7 @@ export default function PosLoginPage() {
                 <span className="text-sm font-medium text-white text-center leading-tight">
                   {cashier.name}
                 </span>
+                <LoginBlockBadge state={blocks.get(cashier.id)} />
               </button>
             ))}
           </div>
@@ -236,9 +249,9 @@ export default function PosLoginPage() {
       </div>
 
       {/* Error */}
-      {pinError && (
+      {(selectedBlock?.message ?? pinError) && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-5 py-3 text-sm text-rose-300 text-center max-w-xs">
-          {pinError}
+          {selectedBlock?.message ?? pinError}
         </div>
       )}
 
@@ -247,7 +260,7 @@ export default function PosLoginPage() {
         value={pin}
         onChange={handlePinChange}
         maxLength={PIN_LENGTH}
-        disabled={submitting}
+        disabled={submitting || selectedBlock?.active}
       />
     </div>
   );
