@@ -11,6 +11,7 @@ import {
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
+import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 
 type AuthorizationPrompt = {
   title: string;
@@ -119,8 +120,8 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
   );
 
   const handleAuthorize = useCallback(async () => {
-    if (pin.trim().length < 4) {
-      setError("Enter the manager PIN to continue.");
+    if (!PIN_PATTERN.test(pin)) {
+      setError("Enter the 6-digit manager PIN.");
       return;
     }
 
@@ -140,6 +141,12 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
 
       if (response.status === 401) {
         setError("Incorrect manager PIN. Try again.");
+        setPin("");
+        return;
+      }
+
+      if (response.status === 400 && isPinFormatError(payload)) {
+        setError(PIN_FORMAT_MESSAGE);
         setPin("");
         return;
       }
@@ -190,7 +197,7 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
         error={error}
         submitting={submitting}
         submitLabel={prompt.submitLabel}
-        canSubmit={pin.trim().length >= 4}
+        canSubmit={PIN_PATTERN.test(pin)}
         onBack={() => {
           setOverlayOpen(false);
           setPin("");

@@ -1,6 +1,8 @@
 // Staff management (/admin/staff). The credential rules per role come from GET /admin/staff/roles,
 // so the form is driven by data rather than hard-coded roles.
 
+import { PIN_PATTERN } from "@/lib/pin"
+
 export type CredentialRule = "REQUIRED" | "OPTIONAL" | "NONE"
 
 export interface StaffRoleRule {
@@ -20,7 +22,7 @@ export interface StaffMember {
   hasPin: boolean
 }
 
-export const PIN_PATTERN = /^\d{6}$/
+export { PIN_PATTERN }
 export const PASSWORD_MIN = 6
 export const PASSWORD_MAX = 25
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/

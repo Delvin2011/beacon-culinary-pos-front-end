@@ -14,6 +14,7 @@ import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
+import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -386,8 +387,8 @@ function PosMainContent() {
 
   const submitVarianceClose = async () => {
     if (!closeSummary) return;
-    if (managerPinInput.trim().length < 4) {
-      setManagerPinError("Enter the manager PIN to continue.");
+    if (!PIN_PATTERN.test(managerPinInput)) {
+      setManagerPinError("Enter the 6-digit manager PIN.");
       return;
     }
 
@@ -412,6 +413,12 @@ function PosMainContent() {
 
       if (authRes.status === 401) {
         setManagerPinError("Incorrect manager PIN. Try again.");
+        setManagerPinInput("");
+        return;
+      }
+
+      if (authRes.status === 400 && isPinFormatError(authBody)) {
+        setManagerPinError(PIN_FORMAT_MESSAGE);
         setManagerPinInput("");
         return;
       }
@@ -909,7 +916,7 @@ function PosMainContent() {
         error={managerPinError}
         submitting={closing}
         submitLabel="Authorize & Close"
-        canSubmit={managerPinInput.trim().length >= 4}
+        canSubmit={PIN_PATTERN.test(managerPinInput)}
         onBack={() => {
           setShowPinOverlay(false);
           setManagerPinInput("");

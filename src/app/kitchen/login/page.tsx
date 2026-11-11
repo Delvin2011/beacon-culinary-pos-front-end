@@ -6,6 +6,8 @@ import { ChevronLeft, ShieldCheck } from "lucide-react";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { useAuth } from "@/hooks/use-auth";
 import { isKitchenAccessRole } from "@/lib/roles";
+import { PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
 
 // Shape returned by GET /users/login-tiles?screen=KITCHEN: kitchen staff and the Head Chef with a PIN set.
 interface LoginTile {
@@ -14,7 +16,6 @@ interface LoginTile {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
-const PIN_LENGTH = 6;
 
 function getInitials(name: string): string {
   return name
@@ -78,8 +79,8 @@ export default function KitchenLoginPage() {
   const submit = async () => {
     if (submitting || !selected) return;
 
-    if (pin.length !== PIN_LENGTH) {
-      setPinError("PIN must be 6 digits.");
+    if (!PIN_PATTERN.test(pin)) {
+      setPinError(PIN_FORMAT_MESSAGE);
       return;
     }
 
@@ -90,8 +91,8 @@ export default function KitchenLoginPage() {
     try {
       await pinLogin({ cashierId: selected.id, pin });
       router.replace("/kitchen");
-    } catch {
-      setPinError("Incorrect PIN.");
+    } catch (err) {
+      setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
       setPin("");
     } finally {
       setSubmitting(false);

@@ -9,6 +9,13 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
+
+export const INCORRECT_PIN_MESSAGE = "Incorrect PIN.";
+export const PIN_LOGIN_FAILED_MESSAGE = "Couldn't sign in. Try again.";
+
+// Thrown by pinLogin. Its message is always safe to show: it never says whether the person exists.
+export class PinLoginError extends Error {}
 
 const AUTH_STORAGE_KEY = "bar-talk.auth";
 const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
@@ -256,6 +263,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
+      // The backend refuses anything but 6 digits; never send it.
+      if (!PIN_PATTERN.test(pin)) {
+        throw new PinLoginError(PIN_FORMAT_MESSAGE);
+      }
+
       const response = await fetch(`${AUTH_API_BASE_URL}/auth/pin-login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -267,16 +279,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (response.status === 401) {
         // Generic message regardless of whether cashier ID exists or PIN is wrong
-        throw new Error("Incorrect PIN.");
+        throw new PinLoginError(INCORRECT_PIN_MESSAGE);
+      }
+
+      if (response.status === 400 && isPinFormatError(responseBody)) {
+        throw new PinLoginError(PIN_FORMAT_MESSAGE);
       }
 
       if (!response.ok) {
-        throw new Error(extractErrorMessage(responseBody, "Login failed. Please try again."));
+        throw new PinLoginError(PIN_LOGIN_FAILED_MESSAGE);
       }
 
       const token = extractToken(responseBody);
       if (!token) {
-        throw new Error("Login succeeded but no token was returned by the server.");
+        throw new PinLoginError(PIN_LOGIN_FAILED_MESSAGE);
       }
 
       const baseUser = extractUser(responseBody, String(cashierId));
@@ -291,10 +307,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       persistAuthState(nextState);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to login right now.";
+      // Network errors and anything unexpected become the generic message.
+      const safe = err instanceof PinLoginError ? err : new PinLoginError(PIN_LOGIN_FAILED_MESSAGE);
       clearAuthState();
-      setError(message);
-      throw err;
+      setError(safe.message);
+      throw safe;
     } finally {
       setIsLoading(false);
     }

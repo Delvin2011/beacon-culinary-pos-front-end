@@ -2,6 +2,7 @@
 
 import { type ReactNode } from "react";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
+import { PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
 
 type AdminAuthorizationOverlayProps = {
   isOpen: boolean;
@@ -31,12 +32,12 @@ export function AdminAuthorizationOverlay({
   onSubmit,
   onBack,
   canSubmit,
-  maxPinLength = 6,
+  maxPinLength = PIN_LENGTH,
   children,
 }: AdminAuthorizationOverlayProps) {
   if (!isOpen) return null;
 
-  const submitAllowed = canSubmit ?? pin.trim().length >= 4;
+  const submitAllowed = canSubmit ?? PIN_PATTERN.test(pin);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
@@ -49,7 +50,7 @@ export function AdminAuthorizationOverlay({
         <div className="mt-4 rounded-xl border border-slate-700 bg-slate-950 p-3 text-center">
           <p className="text-xs uppercase tracking-wide text-slate-400">PIN</p>
           <p className="mt-1 text-3xl font-black text-white">
-            {pin.length === 0 ? "----" : "*".repeat(pin.length)}
+            {pin.length === 0 ? "-".repeat(maxPinLength) : "*".repeat(pin.length)}
           </p>
         </div>
 

@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { ChevronLeft, User } from "lucide-react";
+import { PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
 
 // Shape returned by GET /users/cashiers
 interface CashierSummary {
@@ -15,8 +17,6 @@ interface CashierSummary {
 const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
 type View = "select-cashier" | "enter-pin";
-
-const PIN_MAX_LENGTH = 6;
 
 function getInitials(name: string): string {
   return name
@@ -109,7 +109,11 @@ export default function PosLoginPage() {
   };
 
   const handleSubmitPin = async () => {
-    if (!selectedCashier || pin.length === 0 || submitting) return;
+    if (!selectedCashier || submitting) return;
+    if (!PIN_PATTERN.test(pin)) {
+      setPinError(PIN_FORMAT_MESSAGE);
+      return;
+    }
 
     setSubmitting(true);
     setPinError(null);
@@ -117,18 +121,17 @@ export default function PosLoginPage() {
       await pinLogin({ cashierId: selectedCashier.id, pin });
       router.replace("/pos");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Incorrect PIN.";
-      // Always surface as generic PIN error — never reveal cashier existence
-      setPinError(msg === "Incorrect PIN." ? msg : "Incorrect PIN.");
+      // pinLogin's messages never reveal whether the cashier exists.
+      setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
       setPin("");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Auto-submit once PIN reaches max length
+  // Auto-submit once all 6 digits are entered
   useEffect(() => {
-    if (pin.length === PIN_MAX_LENGTH && !submitting) {
+    if (pin.length === PIN_LENGTH && !submitting) {
       handleSubmitPin();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,7 +223,7 @@ export default function PosLoginPage() {
 
       {/* PIN dots */}
       <div className="flex gap-4">
-        {Array.from({ length: PIN_MAX_LENGTH }).map((_, i) => (
+        {Array.from({ length: PIN_LENGTH }).map((_, i) => (
           <div
             key={i}
             className={`h-4 w-4 rounded-full border-2 transition-colors ${
@@ -243,21 +246,9 @@ export default function PosLoginPage() {
       <NumericKeypad
         value={pin}
         onChange={handlePinChange}
-        maxLength={PIN_MAX_LENGTH}
+        maxLength={PIN_LENGTH}
         disabled={submitting}
       />
-
-      {/* Explicit submit for short PINs (< max length) */}
-      {pin.length > 0 && pin.length < PIN_MAX_LENGTH && (
-        <button
-          type="button"
-          onClick={handleSubmitPin}
-          disabled={submitting}
-          className="w-full max-w-xs rounded-2xl bg-white py-4 text-lg font-semibold text-slate-950 transition-colors hover:bg-slate-200 active:bg-slate-300 disabled:opacity-50"
-        >
-          {submitting ? "Checking…" : "Login"}
-        </button>
-      )}
     </div>
   );
 }
