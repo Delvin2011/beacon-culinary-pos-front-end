@@ -52,6 +52,7 @@ function json(status: number, body: unknown): Response {
 }
 
 let unlockResponse: () => Response
+let staffList: StaffMember[]
 
 function renderAs(role: string) {
   localStorage.setItem("bar-talk.auth", JSON.stringify({ token: "a.b.c", user: { email: "me@x.co", role } }))
@@ -68,10 +69,11 @@ beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
   fetchMock.mockReset()
+  staffList = [ann, bob]
   fetchMock.mockImplementation(async (input) => {
     const url = String(input)
     if (url.endsWith("/admin/staff/roles")) return json(200, roles)
-    if (url.endsWith("/admin/staff")) return json(200, [ann, bob])
+    if (url.endsWith("/admin/staff")) return json(200, staffList)
     if (url.endsWith("/admin/staff/1/unlock")) return unlockResponse()
     throw new Error(`Unexpected request ${url}`)
   })
@@ -114,6 +116,18 @@ describe("Staff page locks", () => {
     expect(unlockCall?.[1]?.body).toBeUndefined()
     expect(within(row("Ann Lee")).queryByText(/locked/)).not.toBeInTheDocument()
     expect(within(row("Ann Lee")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
+  })
+
+  it("hides Unlock on the signed-in admin's own locked row", async () => {
+    // renderAs signs in as me@x.co; the server has the email in a different case.
+    const me: StaffMember = { ...ann, id: 3, name: "Me Admin", email: "Me@X.co" }
+    staffList = [ann, me]
+    renderAs("ADMIN")
+
+    await screen.findByText("Me Admin")
+    expect(within(row("Me Admin")).getByText("PIN locked: needs unlock")).toBeInTheDocument()
+    expect(within(row("Me Admin")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
+    expect(within(row("Ann Lee")).getByRole("button", { name: "Unlock" })).toBeInTheDocument()
   })
 
   it("shows a 404 plainly", async () => {

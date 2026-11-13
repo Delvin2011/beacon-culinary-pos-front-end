@@ -105,7 +105,7 @@ export interface StaffApiError {
   pageError: string | null
 }
 
-// 400: a map of field -> message. 409: { error, code } with EMAIL_IN_USE, PIN_IN_USE or LAST_ADMIN.
+// 400: a map of field -> message. 409: { error, code } with EMAIL_IN_USE, PIN_IN_USE, LAST_ADMIN or SELF_UNLOCK.
 export async function readStaffError(res: Response, fallback: string): Promise<StaffApiError> {
   const body = (await res.json().catch(() => null)) as Record<string, unknown> | null
   if (res.status === 403) return { fieldErrors: {}, pageError: "Only admins can manage staff." }
@@ -122,6 +122,8 @@ export async function readStaffError(res: Response, fallback: string): Promise<S
           fieldErrors: {},
           pageError: "This is the only active admin, so they can't be deactivated or moved to another role. Make someone else an admin first.",
         }
+      case "SELF_UNLOCK":
+        return { fieldErrors: {}, pageError: "You can't unlock your own sign-in. Ask another admin to unlock it." }
       default:
         return { fieldErrors: {}, pageError: message }
     }
@@ -152,6 +154,13 @@ export function lockedScopes(member: StaffMember): { scope: LockScope; lock: Sta
 
 export function isLocked(member: StaffMember): boolean {
   return lockedScopes(member).length > 0
+}
+
+// The signed-in admin's own row. Password sign-in keeps the email that was typed; PIN sign-in keeps the cashier ID.
+export function isOwnRecord(member: StaffMember, user: { email?: string; cashierId?: number } | null | undefined): boolean {
+  if (!user) return false
+  if (user.cashierId !== undefined && user.cashierId === member.id) return true
+  return !!member.email && !!user.email && member.email.trim().toLowerCase() === user.email.trim().toLowerCase()
 }
 
 // "Password locked until 14:32" (local time; the date is added when it isn't today) or "PIN locked: needs unlock".

@@ -31,6 +31,7 @@ import { isAdminRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 import {
   isLocked,
+  isOwnRecord,
   lockLabel,
   lockedScopes,
   readStaffError,
@@ -269,7 +270,8 @@ export default function StaffPage() {
           const rule = roles.find((candidate) => candidate.role === member.role)
           return (
             <div className="flex flex-wrap justify-end gap-1.5">
-              {isAdmin && isLocked(member) && (
+              {/* Admins can't clear their own locks (the backend refuses with 409 SELF_UNLOCK). */}
+              {isAdmin && isLocked(member) && !isOwnRecord(member, user) && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -310,7 +312,7 @@ export default function StaffPage() {
         },
       },
     ],
-    [isAdmin, openEdit, roles],
+    [isAdmin, openEdit, roles, user],
   )
 
   const table = useReactTable({
@@ -492,11 +494,19 @@ export default function StaffPage() {
             const scope = kind === "pin" ? "PIN" : "PASSWORD"
             const wasLocked = !!credentialTarget && lockedScopes(credentialTarget.staff).some((entry) => entry.scope === scope)
             const stillLocked = lockedScopes(member).some((entry) => entry.scope === scope)
+            // Your own reset saves the new credential but keeps your lock.
+            const ownLockKept = stillLocked && isOwnRecord(member, user)
             upsert(member)
             setCredentialTarget(null)
             toast({
               title: kind === "pin" ? "PIN saved" : "Password saved",
-              description: `${member.name}'s ${kind === "pin" ? "PIN" : "password"} has been updated.${wasLocked && !stillLocked ? " Their sign-in lock has been cleared." : ""}`,
+              description: `${member.name}'s ${kind === "pin" ? "PIN" : "password"} has been updated.${
+                wasLocked && !stillLocked
+                  ? " Their sign-in lock has been cleared."
+                  : ownLockKept
+                    ? " Your sign-in lock stays until another admin unlocks it."
+                    : ""
+              }`,
             })
           }}
         />

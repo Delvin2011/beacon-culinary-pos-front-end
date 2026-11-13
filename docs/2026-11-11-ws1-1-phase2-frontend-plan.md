@@ -2,7 +2,9 @@
 
 Branch: `feature/ws1-1-phase2-frontend`. Built against the backend contract
 `docs/2026-11-11-login-protection-api-contract.md` (POS_BE, branch `feature/ws1-1-phase2-enforcement`).
-Approved 2026-11-11.
+Approved 2026-11-11. Checked on 2026-11-13 against the full contract and the backend change report
+(POS_BE commits `8ed1321` to `4a7a0a7`): every item in the contract's frontend checklist is covered, and
+no-self-unlock was added as commit 8.
 
 ## Decisions agreed with the backend owner
 
@@ -18,6 +20,10 @@ Approved 2026-11-11.
   tile, and a block for one person never disables the other tiles.
 - **Countdowns live in memory only.** After a reload the next attempt gets a fresh 429 with the correct
   remaining time; a refused attempt is not counted as a failure.
+- **No self-unlock.** The backend refuses an admin unlocking their own row (409 `SELF_UNLOCK`), and an
+  admin resetting their own PIN or password keeps their lock. The staff page hides Unlock on the signed-in
+  admin's own row (matched by email after password sign-in, or cashier ID after PIN sign-in), shows a plain
+  message if the 409 ever arrives, and says the lock stays after resetting your own credential.
 
 ## Defaults
 
@@ -54,6 +60,7 @@ control re-enables.
 | 5 | PIN sign-in countdowns | per tile on POS, bar and kitchen |
 | 6 | Manager-PIN countdowns | one block per signed-in user, shared by the session overlay and the variance overlay; Back always works; PIN cleared after every failure |
 | 7 | Staff locks and unlock | `locks` on `StaffMember`, Locked badge, admin-only Unlock with confirmation, toast after reset |
+| 8 | No self-unlock | Unlock hidden on your own row; 409 `SELF_UNLOCK` shown plainly; toast when your own reset keeps your lock |
 
 ## Not covered
 

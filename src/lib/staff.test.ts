@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { isLocked, lockLabel, lockedScopes, unlockStaff, type StaffLock, type StaffMember } from "@/lib/staff"
+import { isLocked, isOwnRecord, lockLabel, lockedScopes, unlockStaff, type StaffLock, type StaffMember } from "@/lib/staff"
 
 const ORIGINAL_TZ = process.env.TZ
 
@@ -27,6 +27,25 @@ describe("lockedScopes / isLocked", () => {
       { scope: "PIN", lock: pin },
     ])
     expect(isLocked(member({ PIN: pin }))).toBe(true)
+  })
+})
+
+describe("isOwnRecord", () => {
+  const admin: StaffMember = { ...member(), id: 10010, email: "Chef@Example.com", role: "ADMIN" }
+
+  it("matches the signed-in email, ignoring case and spaces", () => {
+    expect(isOwnRecord(admin, { email: " chef@example.com " })).toBe(true)
+  })
+
+  it("matches the cashier ID after a PIN sign-in", () => {
+    expect(isOwnRecord(admin, { email: "10010", cashierId: 10010 })).toBe(true)
+  })
+
+  it("doesn't match someone else, or nobody", () => {
+    expect(isOwnRecord(admin, { email: "other@example.com" })).toBe(false)
+    expect(isOwnRecord(admin, { email: "7", cashierId: 7 })).toBe(false)
+    expect(isOwnRecord({ ...admin, email: null }, { email: "chef@example.com" })).toBe(false)
+    expect(isOwnRecord(admin, null)).toBe(false)
   })
 })
 
@@ -66,6 +85,7 @@ describe("unlockStaff", () => {
     [404, null, "This staff member no longer exists. Refresh the list."],
     [400, { scope: "Unknown scope" }, "The unlock request was refused. Refresh the list and try again."],
     [403, null, "Only admins can manage staff."],
+    [409, { error: "Admins can't unlock themselves.", code: "SELF_UNLOCK" }, "You can't unlock your own sign-in. Ask another admin to unlock it."],
     [500, null, "Unable to unlock this person. Try again."],
   ])("explains a %i plainly", async (status, body, message) => {
     const authFetch = vi.fn().mockResolvedValue(new Response(body ? JSON.stringify(body) : null, { status }))
