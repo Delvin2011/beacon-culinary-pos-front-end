@@ -85,6 +85,11 @@ const data = {
           url: "/staff",
           access: "admin" as const,
         },
+        {
+          title: "Registered tills",
+          url: "/devices",
+          access: "admin" as const,
+        },
       ],
     },
     {
