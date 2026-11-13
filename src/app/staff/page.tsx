@@ -30,10 +30,12 @@ import { toast } from "@/hooks/use-toast"
 import { isAdminRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 import {
-  isLocked,
+  activeBlocks,
+  blockLabel,
   isOwnRecord,
   lockLabel,
   lockedScopes,
+  needsUnlock,
   readStaffError,
   roleLabel,
   unlockStaff,
@@ -59,20 +61,35 @@ function CredentialBadge({ label, set }: { label: string; set: boolean }) {
   )
 }
 
-function LockBadges({ member }: { member: StaffMember }) {
+// What an unlock would clear: account locks first, then short-term blocks.
+function signInProblems(member: StaffMember): { key: string; text: string }[] {
+  return [
+    ...lockedScopes(member).map(({ scope, lock }) => ({ key: `lock-${scope}`, text: lockLabel(scope, lock) })),
+    ...activeBlocks(member).map(({ scope, block }) => ({ key: `block-${scope}`, text: blockLabel(scope, block) })),
+  ]
+}
+
+// Red badges for account locks and short-term blocks. A cashier can have both a PIN lock and a PIN block.
+function SignInBadges({ member }: { member: StaffMember }) {
   return (
     <>
-      {lockedScopes(member).map(({ scope, lock }) => (
+      {signInProblems(member).map(({ key, text }) => (
         <span
-          key={scope}
+          key={key}
           className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
         >
           <Lock className="h-3 w-3" aria-hidden />
-          {lockLabel(scope, lock)}
+          {text}
         </span>
       ))}
     </>
   )
+}
+
+// Unlock when something is active. Without `blocks` (an older backend) short blocks can't be seen,
+// so every active row offers it, as before. Never on your own row (the backend refuses: 409 SELF_UNLOCK).
+function offersUnlock(member: StaffMember): boolean {
+  return needsUnlock(member) || (member.blocks === undefined && member.active)
 }
 
 function StatusBadge({ active }: { active: boolean }) {
@@ -251,7 +268,7 @@ export default function StaffPage() {
             <div className="flex flex-wrap gap-1">
               {usesPassword(rule) && <CredentialBadge label="Password" set={row.original.hasPassword} />}
               {usesPin(rule) && <CredentialBadge label="PIN" set={row.original.hasPin} />}
-              <LockBadges member={row.original} />
+              <SignInBadges member={row.original} />
             </div>
           )
         },
@@ -270,10 +287,7 @@ export default function StaffPage() {
           const rule = roles.find((candidate) => candidate.role === member.role)
           return (
             <div className="flex flex-wrap justify-end gap-1.5">
-              {/* Short-term blocks (PIN at one till, manager PIN, change password) aren't listed in `locks`,
-                  so Unlock is offered on every active row; unlocking with nothing to clear is harmless.
-                  Admins can't clear their own locks (the backend refuses with 409 SELF_UNLOCK). */}
-              {isAdmin && (member.active || isLocked(member)) && !isOwnRecord(member, user) && (
+              {isAdmin && offersUnlock(member) && !isOwnRecord(member, user) && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -460,7 +474,14 @@ export default function StaffPage() {
                     </TableRow>
                   ) : (
                     table.getRowModel().rows.map((row) => (
-                      <TableRow key={row.id} className={row.original.active ? undefined : "text-muted-foreground"}>
+                      <TableRow
+                        key={row.id}
+                        className={cn(
+                          !row.original.active && "text-muted-foreground",
+                          // Someone who needs unlocking stands out in a long list.
+                          needsUnlock(row.original) && "bg-red-50/70 hover:bg-red-50 dark:bg-red-950/30 dark:hover:bg-red-950/40",
+                        )}
+                      >
                         {row.getVisibleCells().map((cell) => (
                           <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
                         ))}
@@ -493,9 +514,14 @@ export default function StaffPage() {
           onOpenChange={(open) => !open && setCredentialTarget(null)}
           onSaved={(member, kind) => {
             // Setting a new PIN or password unlocks that scope; the returned record shows it.
-            const scope = kind === "pin" ? "PIN" : "PASSWORD"
-            const wasLocked = !!credentialTarget && lockedScopes(credentialTarget.staff).some((entry) => entry.scope === scope)
-            const stillLocked = lockedScopes(member).some((entry) => entry.scope === scope)
+            // A PIN reset clears the PIN lock and PIN block; a password reset clears the password lock and
+            // the change-password block.
+            const affected = (m: StaffMember) =>
+              kind === "pin"
+                ? lockedScopes(m).some((e) => e.scope === "PIN") || activeBlocks(m).some((e) => e.scope === "PIN")
+                : lockedScopes(m).some((e) => e.scope === "PASSWORD") || activeBlocks(m).some((e) => e.scope === "CHANGE_PASSWORD")
+            const wasLocked = !!credentialTarget && affected(credentialTarget.staff)
+            const stillLocked = affected(member)
             // Your own reset saves the new credential but keeps your lock.
             const ownLockKept = stillLocked && isOwnRecord(member, user)
             upsert(member)
@@ -545,8 +571,10 @@ export default function StaffPage() {
             <DialogHeader>
               <DialogTitle>Unlock {unlockTarget?.name}?</DialogTitle>
               <DialogDescription>
-                {unlockTarget && isLocked(unlockTarget)
-                  ? "This clears all their sign-in blocks: password and PIN locks, and short blocks on PIN sign-in at a till, manager-PIN approval and changing their password. They can try again straight away."
+                {unlockTarget && needsUnlock(unlockTarget)
+                  ? `This clears: ${signInProblems(unlockTarget)
+                      .map(({ text }) => text)
+                      .join("; ")}. They can try again straight away.`
                   : "No account lock is showing, but they may have a short block, for example after too many wrong PINs at a till. Unlocking ends any password, PIN, manager-PIN or change-password block now."}
               </DialogDescription>
             </DialogHeader>

@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AuthProvider } from "@/contexts/auth-context"
 import StaffPage from "@/app/staff/page"
-import { lockLabel, type StaffLock, type StaffMember } from "@/lib/staff"
+import { blockLabel, lockLabel, type StaffBlock, type StaffLock, type StaffMember } from "@/lib/staff"
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
 vi.mock("@/components/app-sidebar", () => ({ AppSidebar: () => null }))
@@ -84,7 +84,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe("Staff page locks", () => {
+describe("Staff page locks (backend without `blocks`)", () => {
   it("shows lock badges only on the locked row, and Unlock on every active row", async () => {
     const carl: StaffMember = { ...bob, id: 4, name: "Carl Inactive", active: false }
     staffList = [ann, bob, carl]
@@ -174,5 +174,78 @@ describe("Staff page locks", () => {
     await act(async () => {})
     expect(screen.queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/admin/staff"))).toBe(false)
+  })
+})
+
+describe("Staff page with short-term blocks from the backend", () => {
+  const notBlocked: StaffBlock = { blocked: false, blockedUntil: null }
+  const pinBlock: StaffBlock = { blocked: true, blockedUntil: new Date(Date.now() + 10 * 60_000).toISOString() }
+  const noBlocks = { PIN: notBlocked, MANAGER_PIN: notBlocked, CHANGE_PASSWORD: notBlocked }
+
+  // Canteen Cashier: blocked at a till, no account lock.
+  const cashier: StaffMember = {
+    ...bob,
+    id: 5,
+    name: "Canteen Cashier",
+    email: "cashier@canteen.local",
+    blocks: { ...noBlocks, PIN: pinBlock },
+  }
+  const clearMember: StaffMember = { ...bob, blocks: noBlocks }
+  const both: StaffMember = { ...ann, locks: { PASSWORD: unlocked, PIN: passwordLock }, blocks: { ...noBlocks, PIN: pinBlock } }
+
+  it("highlights and offers Unlock only where a lock or block is active", async () => {
+    staffList = [cashier, clearMember]
+    renderAs("ADMIN")
+
+    await screen.findByText("Canteen Cashier")
+    expect(within(row("Canteen Cashier")).getByText(blockLabel("PIN", pinBlock))).toBeInTheDocument()
+    expect(within(row("Canteen Cashier")).getByRole("button", { name: "Unlock" })).toBeInTheDocument()
+    expect(row("Canteen Cashier").className).toMatch(/bg-red-50/)
+
+    expect(within(row("Bob Ray")).queryByText(/blocked|locked/)).not.toBeInTheDocument()
+    expect(within(row("Bob Ray")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
+    expect(row("Bob Ray").className).not.toMatch(/bg-red-50/)
+  })
+
+  it("shows both a PIN lock and a PIN block", async () => {
+    staffList = [both]
+    renderAs("ADMIN")
+
+    await screen.findByText("Ann Lee")
+    expect(within(row("Ann Lee")).getByText(lockLabel("PIN", passwordLock))).toBeInTheDocument()
+    expect(within(row("Ann Lee")).getByText(blockLabel("PIN", pinBlock))).toBeInTheDocument()
+  })
+
+  it("lists what will be cleared in the confirmation, and unlocks with no body", async () => {
+    staffList = [cashier]
+    unlockResponse = () => json(200, { ...cashier, blocks: noBlocks })
+    renderAs("ADMIN")
+
+    await screen.findByText("Canteen Cashier")
+    await act(async () => {
+      fireEvent.click(within(row("Canteen Cashier")).getByRole("button", { name: "Unlock" }))
+    })
+    const dialog = screen.getByRole("dialog")
+    expect(within(dialog).getByText(`This clears: ${blockLabel("PIN", pinBlock)}. They can try again straight away.`)).toBeInTheDocument()
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Unlock" }))
+    })
+
+    const unlockCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/admin/staff/5/unlock"))
+    expect(unlockCall?.[1]?.body).toBeUndefined()
+    expect(within(row("Canteen Cashier")).queryByText(/blocked/)).not.toBeInTheDocument()
+    expect(within(row("Canteen Cashier")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
+    expect(row("Canteen Cashier").className).not.toMatch(/bg-red-50/)
+  })
+
+  it("highlights your own blocked row without offering Unlock", async () => {
+    const me: StaffMember = { ...ann, id: 3, name: "Me Admin", email: "me@x.co", locks: { PASSWORD: unlocked, PIN: unlocked }, blocks: { ...noBlocks, MANAGER_PIN: pinBlock } }
+    staffList = [me]
+    renderAs("ADMIN")
+
+    await screen.findByText("Me Admin")
+    expect(within(row("Me Admin")).getByText(blockLabel("MANAGER_PIN", pinBlock))).toBeInTheDocument()
+    expect(row("Me Admin").className).toMatch(/bg-red-50/)
+    expect(within(row("Me Admin")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
   })
 })

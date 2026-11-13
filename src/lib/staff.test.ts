@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { isLocked, isOwnRecord, lockLabel, lockedScopes, unlockStaff, type StaffLock, type StaffMember } from "@/lib/staff"
+import {
+  activeBlocks,
+  blockLabel,
+  isLocked,
+  isOwnRecord,
+  lockLabel,
+  lockedScopes,
+  needsUnlock,
+  unlockStaff,
+  type StaffBlock,
+  type StaffLock,
+  type StaffMember,
+} from "@/lib/staff"
 
 const ORIGINAL_TZ = process.env.TZ
 
@@ -27,6 +39,51 @@ describe("lockedScopes / isLocked", () => {
       { scope: "PIN", lock: pin },
     ])
     expect(isLocked(member({ PIN: pin }))).toBe(true)
+  })
+})
+
+describe("activeBlocks / needsUnlock", () => {
+  const notBlocked: StaffBlock = { blocked: false, blockedUntil: null }
+  const pinBlock: StaffBlock = { blocked: true, blockedUntil: "2026-11-13T10:41:00Z" }
+
+  it("finds nothing without blocks or when everything is false", () => {
+    expect(activeBlocks(member())).toEqual([])
+    expect(needsUnlock(member())).toBe(false)
+    const clear = { ...member(), blocks: { PIN: notBlocked, MANAGER_PIN: notBlocked, CHANGE_PASSWORD: notBlocked } }
+    expect(activeBlocks(clear)).toEqual([])
+    expect(needsUnlock(clear)).toBe(false)
+  })
+
+  it("lists active blocks in a fixed order", () => {
+    const managerBlock: StaffBlock = { blocked: true, blockedUntil: null }
+    const blocked = { ...member(), blocks: { MANAGER_PIN: managerBlock, PIN: pinBlock, CHANGE_PASSWORD: notBlocked } }
+    expect(activeBlocks(blocked)).toEqual([
+      { scope: "PIN", block: pinBlock },
+      { scope: "MANAGER_PIN", block: managerBlock },
+    ])
+  })
+
+  it("needs unlocking for a block alone or a lock alone", () => {
+    expect(needsUnlock({ ...member(), blocks: { PIN: pinBlock } })).toBe(true)
+    expect(needsUnlock(member({ PIN: { locked: true, lockedUntil: null, requiresAdminUnlock: true } }))).toBe(true)
+  })
+})
+
+describe("blockLabel", () => {
+  it("words each scope in local time", () => {
+    process.env.TZ = "Africa/Johannesburg"
+    const now = new Date("2026-11-13T10:00:00Z")
+    const block: StaffBlock = { blocked: true, blockedUntil: "2026-11-13T10:41:00Z" }
+    expect(blockLabel("PIN", block, now)).toBe("PIN blocked at a till until 12:41")
+    expect(blockLabel("MANAGER_PIN", block, now)).toBe("Manager PIN blocked until 12:41")
+    expect(blockLabel("CHANGE_PASSWORD", block, now)).toBe("Password change blocked until 12:41")
+  })
+
+  it("adds the date when it isn't today, and leaves out a missing time", () => {
+    process.env.TZ = "Africa/Johannesburg"
+    const lateBlock: StaffBlock = { blocked: true, blockedUntil: "2026-11-13T22:05:00Z" }
+    expect(blockLabel("PIN", lateBlock, new Date("2026-11-13T21:55:00Z"))).toBe("PIN blocked at a till until 14 Nov 00:05")
+    expect(blockLabel("PIN", { blocked: true, blockedUntil: null })).toBe("PIN blocked at a till")
   })
 })
 

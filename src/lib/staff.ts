@@ -14,6 +14,7 @@ export interface StaffRoleRule {
 }
 
 export type LockScope = "PASSWORD" | "PIN"
+export type BlockScope = "PIN" | "MANAGER_PIN" | "CHANGE_PASSWORD"
 
 // From the backend: lockedUntil is a UTC instant, null when not locked or when an admin must unlock.
 // Short-term blocks (PIN per till, manager PIN, change password) aren't listed here.
@@ -33,6 +34,15 @@ export interface StaffMember {
   hasPin: boolean
   // Absent from older backends; every lock is false until enforcement is switched on.
   locks?: Partial<Record<LockScope, StaffLock>>
+  // Absent from backends before the blocks change; the staff page can't see short blocks then.
+  blocks?: Partial<Record<BlockScope, StaffBlock>>
+}
+
+// Short-term blocks (contract 2.8): blockedUntil is a UTC instant, null when not blocked.
+// PIN covers a block on any till; blockedUntil is when the last one ends.
+export interface StaffBlock {
+  blocked: boolean
+  blockedUntil: string | null
 }
 
 export { PIN_PATTERN }
@@ -167,10 +177,41 @@ export function isOwnRecord(member: StaffMember, user: { email?: string; cashier
 export function lockLabel(scope: LockScope, lock: StaffLock, now: Date = new Date()): string {
   const name = SCOPE_LABEL[scope]
   if (lock.requiresAdminUnlock) return `${name} locked: needs unlock`
-  if (!lock.lockedUntil) return `${name} locked`
-  const until = new Date(lock.lockedUntil)
-  if (Number.isNaN(until.getTime())) return `${name} locked`
-  return `${name} locked until ${format(until, isSameDay(until, now) ? "HH:mm" : "d MMM HH:mm")}`
+  const until = untilText(lock.lockedUntil, now)
+  return until ? `${name} locked until ${until}` : `${name} locked`
+}
+
+const BLOCK_SCOPES: BlockScope[] = ["PIN", "MANAGER_PIN", "CHANGE_PASSWORD"]
+const BLOCK_LABEL: Record<BlockScope, string> = {
+  PIN: "PIN blocked at a till",
+  MANAGER_PIN: "Manager PIN blocked",
+  CHANGE_PASSWORD: "Password change blocked",
+}
+
+export function activeBlocks(member: StaffMember): { scope: BlockScope; block: StaffBlock }[] {
+  return BLOCK_SCOPES.flatMap((scope) => {
+    const block = member.blocks?.[scope]
+    return block?.blocked ? [{ scope, block }] : []
+  })
+}
+
+// Any account lock or short-term block is active: the row is highlighted and offers Unlock.
+export function needsUnlock(member: StaffMember): boolean {
+  return isLocked(member) || activeBlocks(member).length > 0
+}
+
+// "PIN blocked at a till until 12:41", "Manager PIN blocked until 12:41", "Password change blocked until 12:41".
+export function blockLabel(scope: BlockScope, block: StaffBlock, now: Date = new Date()): string {
+  const until = untilText(block.blockedUntil, now)
+  return until ? `${BLOCK_LABEL[scope]} until ${until}` : BLOCK_LABEL[scope]
+}
+
+// Local time, with the date when it isn't today; null for a missing or invalid instant.
+function untilText(iso: string | null, now: Date): string | null {
+  if (!iso) return null
+  const until = new Date(iso)
+  if (Number.isNaN(until.getTime())) return null
+  return format(until, isSameDay(until, now) ? "HH:mm" : "d MMM HH:mm")
 }
 
 // POST /admin/staff/{id}/unlock with no body: unlocks every scope. Returns the updated staff record.

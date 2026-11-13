@@ -62,10 +62,8 @@ control re-enables.
 | 7 | Staff locks and unlock | `locks` on `StaffMember`, Locked badge, admin-only Unlock with confirmation, toast after reset |
 | 8 | No self-unlock | Unlock hidden on your own row; 409 `SELF_UNLOCK` shown plainly; toast when your own reset keeps your lock |
 | 9 | Unlock short-term blocks | Unlock on every active row except your own, so an admin can end a cashier's 15-minute PIN block at a till; the backend's thresholds stay as they are |
+| 10 | Show who needs unlocking | Reads the staff record's new `blocks` (contract 2.8): red badge per active lock or block ("PIN blocked at a till until 12:41"), red row tint, Unlock only on those rows (never your own); the confirmation lists what it clears. Falls back to step 9 when the backend doesn't send `blocks` |
 
 ## Not covered
 
-- Short-term blocks (PIN per till, manager PIN, change password) aren't listed in `locks`, so the staff
-  page can't show a badge for them. Admins can still clear them with Unlock, which is offered on every
-  active row except their own (unlocking with nothing to clear is harmless).
 - No change-password screen.
