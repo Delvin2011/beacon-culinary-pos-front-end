@@ -14,6 +14,8 @@ import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
+import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
+import { readLoginBlock } from "@/lib/login-protection";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -109,6 +111,9 @@ function PosMainContent() {
     isActive: isManagementActive,
     runWithManagementSession,
     invalidateManagementSession,
+    managerPinBlock,
+    reportManagerPinBlock,
+    clearManagerPinBlock,
   } = useManagementSession();
 
   const isAdmin = isAdminRole(user?.role);
@@ -386,8 +391,9 @@ function PosMainContent() {
 
   const submitVarianceClose = async () => {
     if (!closeSummary) return;
-    if (managerPinInput.trim().length < 4) {
-      setManagerPinError("Enter the manager PIN to continue.");
+    if (managerPinBlock?.active) return;
+    if (!PIN_PATTERN.test(managerPinInput)) {
+      setManagerPinError("Enter the 6-digit manager PIN.");
       return;
     }
 
@@ -395,6 +401,7 @@ function PosMainContent() {
     setClosing(true);
     setManagerPinError(null);
     setCloseError(null);
+    clearManagerPinBlock();
 
     try {
       const authRes = await authFetch("/admin/authorize", {
@@ -405,6 +412,14 @@ function PosMainContent() {
         body: JSON.stringify({ pin: managerPinInput }),
       });
 
+      // Before the body is read: readLoginBlock reads its own copy.
+      const block = await readLoginBlock(authRes);
+      if (block) {
+        reportManagerPinBlock(block);
+        setManagerPinInput("");
+        return;
+      }
+
       const authBody = (await authRes.json().catch(() => null)) as
         | { authorizationToken?: string }
         | Record<string, unknown>
@@ -412,6 +427,12 @@ function PosMainContent() {
 
       if (authRes.status === 401) {
         setManagerPinError("Incorrect manager PIN. Try again.");
+        setManagerPinInput("");
+        return;
+      }
+
+      if (authRes.status === 400 && isPinFormatError(authBody)) {
+        setManagerPinError(PIN_FORMAT_MESSAGE);
         setManagerPinInput("");
         return;
       }
@@ -459,6 +480,7 @@ function PosMainContent() {
         return;
       }
 
+      setManagerPinInput("");
       setManagerPinError(message);
     } finally {
       setClosing(false);
@@ -906,10 +928,11 @@ function PosMainContent() {
         description="Enter admin PIN to authorize this shift variance."
         pin={managerPinInput}
         onPinChange={setManagerPinInput}
-        error={managerPinError}
+        error={managerPinBlock?.message ?? managerPinError}
+        blocked={managerPinBlock?.active}
         submitting={closing}
         submitLabel="Authorize & Close"
-        canSubmit={managerPinInput.trim().length >= 4}
+        canSubmit={PIN_PATTERN.test(managerPinInput)}
         onBack={() => {
           setShowPinOverlay(false);
           setManagerPinInput("");

@@ -12,7 +12,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table"
-import { ArrowUpDown, Check, Minus } from "lucide-react"
+import { ArrowUpDown, Check, Lock, Minus } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
@@ -30,8 +30,15 @@ import { toast } from "@/hooks/use-toast"
 import { isAdminRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 import {
+  activeBlocks,
+  blockLabel,
+  isOwnRecord,
+  lockLabel,
+  lockedScopes,
+  needsUnlock,
   readStaffError,
   roleLabel,
+  unlockStaff,
   usesPassword,
   usesPin,
   type StaffMember,
@@ -52,6 +59,37 @@ function CredentialBadge({ label, set }: { label: string; set: boolean }) {
       {label} {set ? "set" : "not set"}
     </span>
   )
+}
+
+// What an unlock would clear: account locks first, then short-term blocks.
+function signInProblems(member: StaffMember): { key: string; text: string }[] {
+  return [
+    ...lockedScopes(member).map(({ scope, lock }) => ({ key: `lock-${scope}`, text: lockLabel(scope, lock) })),
+    ...activeBlocks(member).map(({ scope, block }) => ({ key: `block-${scope}`, text: blockLabel(scope, block) })),
+  ]
+}
+
+// Red badges for account locks and short-term blocks. A cashier can have both a PIN lock and a PIN block.
+function SignInBadges({ member }: { member: StaffMember }) {
+  return (
+    <>
+      {signInProblems(member).map(({ key, text }) => (
+        <span
+          key={key}
+          className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+        >
+          <Lock className="h-3 w-3" aria-hidden />
+          {text}
+        </span>
+      ))}
+    </>
+  )
+}
+
+// Unlock when something is active. Without `blocks` (an older backend) short blocks can't be seen,
+// so every active row offers it, as before. Never on your own row (the backend refuses: 409 SELF_UNLOCK).
+function offersUnlock(member: StaffMember): boolean {
+  return needsUnlock(member) || (member.blocks === undefined && member.active)
 }
 
 function StatusBadge({ active }: { active: boolean }) {
@@ -99,6 +137,8 @@ export default function StaffPage() {
   const [credentialTarget, setCredentialTarget] = useState<{ staff: StaffMember; kind: CredentialKind } | null>(null)
   const [activeTarget, setActiveTarget] = useState<StaffMember | null>(null)
   const [togglingActive, setTogglingActive] = useState(false)
+  const [unlockTarget, setUnlockTarget] = useState<StaffMember | null>(null)
+  const [unlocking, setUnlocking] = useState(false)
 
   useEffect(() => {
     if (authLoading) return
@@ -185,6 +225,22 @@ export default function StaffPage() {
     }
   }
 
+  const unlock = async () => {
+    if (!unlockTarget) return
+    const member = unlockTarget
+    setUnlocking(true)
+    try {
+      const updated = await unlockStaff(authFetch, member.id)
+      upsert(updated)
+      toast({ title: "Staff member unlocked", description: `Any sign-in blocks for ${updated.name} have been cleared. They can try again now.` })
+    } catch (err) {
+      setPageMessage(err instanceof Error ? err.message : "Unable to unlock this person. Try again.")
+    } finally {
+      setUnlocking(false)
+      setUnlockTarget(null)
+    }
+  }
+
   const columns: ColumnDef<StaffMember>[] = useMemo(
     () => [
       {
@@ -212,6 +268,7 @@ export default function StaffPage() {
             <div className="flex flex-wrap gap-1">
               {usesPassword(rule) && <CredentialBadge label="Password" set={row.original.hasPassword} />}
               {usesPin(rule) && <CredentialBadge label="PIN" set={row.original.hasPin} />}
+              <SignInBadges member={row.original} />
             </div>
           )
         },
@@ -230,6 +287,18 @@ export default function StaffPage() {
           const rule = roles.find((candidate) => candidate.role === member.role)
           return (
             <div className="flex flex-wrap justify-end gap-1.5">
+              {isAdmin && offersUnlock(member) && !isOwnRecord(member, user) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setPageMessage(null)
+                    setUnlockTarget(member)
+                  }}
+                >
+                  Unlock
+                </Button>
+              )}
               <Button size="sm" variant="outline" onClick={() => openEdit(member)}>
                 Edit
               </Button>
@@ -259,7 +328,7 @@ export default function StaffPage() {
         },
       },
     ],
-    [openEdit, roles],
+    [isAdmin, openEdit, roles, user],
   )
 
   const table = useReactTable({
@@ -405,7 +474,14 @@ export default function StaffPage() {
                     </TableRow>
                   ) : (
                     table.getRowModel().rows.map((row) => (
-                      <TableRow key={row.id} className={row.original.active ? undefined : "text-muted-foreground"}>
+                      <TableRow
+                        key={row.id}
+                        className={cn(
+                          !row.original.active && "text-muted-foreground",
+                          // Someone who needs unlocking stands out in a long list.
+                          needsUnlock(row.original) && "bg-red-50/70 hover:bg-red-50 dark:bg-red-950/30 dark:hover:bg-red-950/40",
+                        )}
+                      >
                         {row.getVisibleCells().map((cell) => (
                           <TableCell key={cell.id}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</TableCell>
                         ))}
@@ -437,9 +513,29 @@ export default function StaffPage() {
           target={credentialTarget}
           onOpenChange={(open) => !open && setCredentialTarget(null)}
           onSaved={(member, kind) => {
+            // Setting a new PIN or password unlocks that scope; the returned record shows it.
+            // A PIN reset clears the PIN lock and PIN block; a password reset clears the password lock and
+            // the change-password block.
+            const affected = (m: StaffMember) =>
+              kind === "pin"
+                ? lockedScopes(m).some((e) => e.scope === "PIN") || activeBlocks(m).some((e) => e.scope === "PIN")
+                : lockedScopes(m).some((e) => e.scope === "PASSWORD") || activeBlocks(m).some((e) => e.scope === "CHANGE_PASSWORD")
+            const wasLocked = !!credentialTarget && affected(credentialTarget.staff)
+            const stillLocked = affected(member)
+            // Your own reset saves the new credential but keeps your lock.
+            const ownLockKept = stillLocked && isOwnRecord(member, user)
             upsert(member)
             setCredentialTarget(null)
-            toast({ title: kind === "pin" ? "PIN saved" : "Password saved", description: `${member.name}'s ${kind === "pin" ? "PIN" : "password"} has been updated.` })
+            toast({
+              title: kind === "pin" ? "PIN saved" : "Password saved",
+              description: `${member.name}'s ${kind === "pin" ? "PIN" : "password"} has been updated.${
+                wasLocked && !stillLocked
+                  ? " Their sign-in lock has been cleared."
+                  : ownLockKept
+                    ? " Your sign-in lock stays until another admin unlocks it."
+                    : ""
+              }`,
+            })
           }}
         />
 
@@ -465,6 +561,29 @@ export default function StaffPage() {
                 onClick={() => void toggleActive()}
               >
                 {togglingActive ? "Saving…" : activeTarget?.active ? "Deactivate" : "Activate"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={unlockTarget !== null} onOpenChange={(open) => !open && setUnlockTarget(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Unlock {unlockTarget?.name}?</DialogTitle>
+              <DialogDescription>
+                {unlockTarget && needsUnlock(unlockTarget)
+                  ? `This clears: ${signInProblems(unlockTarget)
+                      .map(({ text }) => text)
+                      .join("; ")}. They can try again straight away.`
+                  : "No account lock is showing, but they may have a short block, for example after too many wrong PINs at a till. Unlocking ends any password, PIN, manager-PIN or change-password block now."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setUnlockTarget(null)}>
+                Cancel
+              </Button>
+              <Button disabled={unlocking} onClick={() => void unlock()}>
+                {unlocking ? "Unlocking…" : "Unlock"}
               </Button>
             </div>
           </DialogContent>

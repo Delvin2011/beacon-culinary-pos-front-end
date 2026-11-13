@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { PackageSearch } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { isStockAccessRole } from "@/lib/roles";
+import { useLoginBlocks } from "@/hooks/use-login-blocks";
+import { LoginBlockedError } from "@/contexts/auth-context";
 
 // Stock Admin and Stock Clerk accounts log in by email and password; they don't have a PIN.
 export default function StockMovementLoginPage() {
@@ -15,6 +17,8 @@ export default function StockMovementLoginPage() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const blocks = useLoginBlocks<"self">();
+  const blockState = blocks.get("self");
 
   useEffect(() => {
     if (isLoading) return;
@@ -32,7 +36,7 @@ export default function StockMovementLoginPage() {
   }, [isAuthenticated, isLoading, logout, router, user?.role]);
 
   const submit = async () => {
-    if (submitting) return;
+    if (submitting || blockState?.active) return;
 
     if (!email.trim() || !password) {
       setFormError("Enter your email and password.");
@@ -42,18 +46,24 @@ export default function StockMovementLoginPage() {
     setSubmitting(true);
     setFormError(null);
     if (error) clearError();
+    blocks.clear("self");
 
     try {
       await login({ email: email.trim().toLowerCase(), password });
       // The effect above routes stock roles in and signs anyone else out.
-    } catch {
+    } catch (err) {
+      if (err instanceof LoginBlockedError) {
+        // The countdown shows the message; the context's copy would go stale when it ends.
+        blocks.block("self", err.block);
+        clearError();
+      }
       setPassword("");
     } finally {
       setSubmitting(false);
     }
   };
 
-  const message = formError ?? error;
+  const message = formError ?? blockState?.message ?? error;
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
@@ -117,7 +127,7 @@ export default function StockMovementLoginPage() {
 
           <button
             type="submit"
-            disabled={submitting || isLoading}
+            disabled={submitting || isLoading || blockState?.active}
             className="w-full rounded-2xl bg-blue-500 py-3.5 text-base font-semibold text-white transition hover:bg-blue-400 active:bg-blue-600 disabled:pointer-events-none disabled:opacity-50"
           >
             {submitting || isLoading ? "Signing in..." : "Open Stock Requests"}

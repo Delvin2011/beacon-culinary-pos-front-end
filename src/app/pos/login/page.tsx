@@ -5,6 +5,10 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { ChevronLeft, User } from "lucide-react";
+import { LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { useLoginBlocks } from "@/hooks/use-login-blocks";
+import { LoginBlockBadge } from "@/components/pos/login-block-badge";
+import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
 
 // Shape returned by GET /users/cashiers
 interface CashierSummary {
@@ -15,8 +19,6 @@ interface CashierSummary {
 const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
 type View = "select-cashier" | "enter-pin";
-
-const PIN_MAX_LENGTH = 6;
 
 function getInitials(name: string): string {
   return name
@@ -52,6 +54,9 @@ export default function PosLoginPage() {
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
+  // One countdown per cashier: a block for one person never disables another's tile.
+  const blocks = useLoginBlocks<number>();
+  const selectedBlock = blocks.get(selectedCashier?.id);
 
   // Already authenticated — let /pos handle shift routing
   useEffect(() => {
@@ -109,26 +114,36 @@ export default function PosLoginPage() {
   };
 
   const handleSubmitPin = async () => {
-    if (!selectedCashier || pin.length === 0 || submitting) return;
+    if (!selectedCashier || submitting || selectedBlock?.active) return;
+    if (!PIN_PATTERN.test(pin)) {
+      setPinError(PIN_FORMAT_MESSAGE);
+      return;
+    }
 
     setSubmitting(true);
     setPinError(null);
+    blocks.clear(selectedCashier.id);
     try {
       await pinLogin({ cashierId: selectedCashier.id, pin });
       router.replace("/pos");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Incorrect PIN.";
-      // Always surface as generic PIN error — never reveal cashier existence
-      setPinError(msg === "Incorrect PIN." ? msg : "Incorrect PIN.");
+      if (err instanceof LoginBlockedError) {
+        // The countdown shows the message; no automatic retry.
+        blocks.block(selectedCashier.id, err.block);
+        clearError();
+      } else {
+        // pinLogin's messages never reveal whether the cashier exists.
+        setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
+      }
       setPin("");
     } finally {
       setSubmitting(false);
     }
   };
 
-  // Auto-submit once PIN reaches max length
+  // Auto-submit once all 6 digits are entered
   useEffect(() => {
-    if (pin.length === PIN_MAX_LENGTH && !submitting) {
+    if (pin.length === PIN_LENGTH && !submitting) {
       handleSubmitPin();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -184,6 +199,7 @@ export default function PosLoginPage() {
                 <span className="text-sm font-medium text-white text-center leading-tight">
                   {cashier.name}
                 </span>
+                <LoginBlockBadge state={blocks.get(cashier.id)} />
               </button>
             ))}
           </div>
@@ -220,7 +236,7 @@ export default function PosLoginPage() {
 
       {/* PIN dots */}
       <div className="flex gap-4">
-        {Array.from({ length: PIN_MAX_LENGTH }).map((_, i) => (
+        {Array.from({ length: PIN_LENGTH }).map((_, i) => (
           <div
             key={i}
             className={`h-4 w-4 rounded-full border-2 transition-colors ${
@@ -233,9 +249,9 @@ export default function PosLoginPage() {
       </div>
 
       {/* Error */}
-      {pinError && (
+      {(selectedBlock?.message ?? pinError) && (
         <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-5 py-3 text-sm text-rose-300 text-center max-w-xs">
-          {pinError}
+          {selectedBlock?.message ?? pinError}
         </div>
       )}
 
@@ -243,21 +259,9 @@ export default function PosLoginPage() {
       <NumericKeypad
         value={pin}
         onChange={handlePinChange}
-        maxLength={PIN_MAX_LENGTH}
-        disabled={submitting}
+        maxLength={PIN_LENGTH}
+        disabled={submitting || selectedBlock?.active}
       />
-
-      {/* Explicit submit for short PINs (< max length) */}
-      {pin.length > 0 && pin.length < PIN_MAX_LENGTH && (
-        <button
-          type="button"
-          onClick={handleSubmitPin}
-          disabled={submitting}
-          className="w-full max-w-xs rounded-2xl bg-white py-4 text-lg font-semibold text-slate-950 transition-colors hover:bg-slate-200 active:bg-slate-300 disabled:opacity-50"
-        >
-          {submitting ? "Checking…" : "Login"}
-        </button>
-      )}
     </div>
   );
 }
