@@ -131,3 +131,19 @@ describe("manager-PIN approval", () => {
     expect(screen.queryByRole("button", { name: "Unlock Management" })).not.toBeInTheDocument()
   })
 })
+
+describe("manager-PIN approval on an unregistered till", () => {
+  it("shows the till message in the dialog, keeps the cashier signed in and doesn't run the action", async () => {
+    fetchMock.mockResolvedValue(json(403, { error: "This till isn't registered.", code: "DEVICE_NOT_REGISTERED" }))
+    renderSignedIn()
+
+    await clickButton("Open approval")
+    await enterPinAndSubmit("123456")
+
+    expect(screen.getByText("This till is not registered. Ask a manager to register it.")).toBeInTheDocument()
+    expect(screen.getByText("------")).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(action).not.toHaveBeenCalled()
+    expect(auth?.isAuthenticated).toBe(true)
+  })
+})

@@ -16,6 +16,8 @@ import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { readLoginBlock } from "@/lib/login-protection";
+import { errorCode } from "@/lib/api-error";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -299,7 +301,9 @@ function PosMainContent() {
     const body = (await res.json().catch(() => null)) as ShiftCloseResponse | Record<string, unknown> | null;
 
     if (res.status === 401) {
-      throw new Error("Session expired or unauthorized. Please log in again.");
+      const error = new Error("Session expired or unauthorized. Please log in again.");
+      (error as Error & { status?: number }).status = 401;
+      throw error;
     }
 
     if (!res.ok || !body) {
@@ -324,7 +328,8 @@ function PosMainContent() {
       const status = (err as Error & { status?: number }).status;
       const message = err instanceof Error ? err.message : "Failed to close shift.";
 
-      if (message.toLowerCase().includes("session expired") || message.toLowerCase().includes("unauthorized")) {
+      // Sign out on the HTTP status only, never on message text.
+      if (status === 401) {
         logout();
         router.replace("/pos/login");
         return;
@@ -420,6 +425,13 @@ function PosMainContent() {
         return;
       }
 
+      // Checked before the PIN: the cashier stays signed in.
+      if (authRes.status === 403 && (await errorCode(authRes)) === DeviceErrorCode.NOT_REGISTERED) {
+        setManagerPinError(TILL_NOT_REGISTERED_MESSAGE);
+        setManagerPinInput("");
+        return;
+      }
+
       const authBody = (await authRes.json().catch(() => null)) as
         | { authorizationToken?: string }
         | Record<string, unknown>
@@ -467,7 +479,8 @@ function PosMainContent() {
       const status = (err as Error & { status?: number }).status;
       const message = err instanceof Error ? err.message : "Failed to close shift.";
 
-      if (message.toLowerCase().includes("session expired") || message.toLowerCase().includes("unauthorized")) {
+      // Sign out on the HTTP status only, never on message text.
+      if (status === 401) {
         logout();
         router.replace("/pos/login");
         return;

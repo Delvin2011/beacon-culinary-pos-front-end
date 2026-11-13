@@ -11,12 +11,22 @@ import {
 } from "react";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-protection";
+import { errorCode } from "@/lib/api-error";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 
 export const INCORRECT_PIN_MESSAGE = "Incorrect PIN.";
 export const PIN_LOGIN_FAILED_MESSAGE = "Couldn't sign in. Try again.";
 
 // Thrown by pinLogin. Its message is always safe to show: it never says whether the person exists.
 export class PinLoginError extends Error {}
+
+// pinLogin on an unregistered till (403 DEVICE_NOT_REGISTERED, `required` mode). Not a wrong PIN and not a
+// sign-out: the PIN wasn't checked. Each screen decides what to show.
+export class DeviceNotRegisteredError extends PinLoginError {
+  constructor() {
+    super(TILL_NOT_REGISTERED_MESSAGE);
+  }
+}
 
 // Thrown by login and pinLogin on a 429. Its message comes from the code and wait only.
 export class LoginBlockedError extends Error {
@@ -310,6 +320,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const block = await readLoginBlock(response);
       if (block) {
         throw new LoginBlockedError(block);
+      }
+
+      // Before the body is read: errorCode reads its own copy.
+      if (response.status === 403 && (await errorCode(response)) === DeviceErrorCode.NOT_REGISTERED) {
+        throw new DeviceNotRegisteredError();
       }
 
       const responseBody = (await response.json().catch(() => null)) as unknown;

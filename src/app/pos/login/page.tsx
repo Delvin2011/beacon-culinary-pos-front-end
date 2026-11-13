@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { ChevronLeft, User } from "lucide-react";
-import { LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { DeviceNotRegisteredError, LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { errorCode } from "@/lib/api-error";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { reauthLoginPath } from "@/lib/return-to";
 import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
@@ -57,6 +60,9 @@ export default function PosLoginPage() {
   // One countdown per cashier: a block for one person never disables another's tile.
   const blocks = useLoginBlocks<number>();
   const selectedBlock = blocks.get(selectedCashier?.id);
+  // 403 DEVICE_NOT_REGISTERED (`required` mode): this browser isn't a registered till. Not a sign-out, never
+  // retried automatically; "Try again" reloads the list by hand.
+  const [tillNotRegistered, setTillNotRegistered] = useState(false);
 
   // Already authenticated — let /pos handle shift routing
   useEffect(() => {
@@ -67,12 +73,18 @@ export default function PosLoginPage() {
 
   // Fetch cashier list (no sign-in needed). Credentials send the till's deviceToken cookie: in `required`
   // mode the backend refuses this list from an unregistered browser.
-  useEffect(() => {
+  const loadCashiers = useCallback(() => {
     setCashiersLoading(true);
     setCashiersError(null);
+    setTillNotRegistered(false);
 
     fetch(`${API_BASE}/users/cashiers`, { credentials: "include" })
       .then(async (res) => {
+        if (res.status === 403 && (await errorCode(res)) === DeviceErrorCode.NOT_REGISTERED) {
+          setCashiers([]);
+          setTillNotRegistered(true);
+          return;
+        }
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const data = (await res.json()) as unknown;
         if (!Array.isArray(data)) throw new Error("Unexpected response format");
@@ -90,6 +102,10 @@ export default function PosLoginPage() {
       })
       .finally(() => setCashiersLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadCashiers();
+  }, [loadCashiers]);
 
   const handleCashierSelect = (cashier: CashierSummary) => {
     setSelectedCashier(cashier);
@@ -128,7 +144,10 @@ export default function PosLoginPage() {
       await pinLogin({ cashierId: selectedCashier.id, pin });
       router.replace("/pos");
     } catch (err) {
-      if (err instanceof LoginBlockedError) {
+      if (err instanceof DeviceNotRegisteredError) {
+        setTillNotRegistered(true);
+        clearError();
+      } else if (err instanceof LoginBlockedError) {
         // The countdown shows the message; no automatic retry.
         blocks.block(selectedCashier.id, err.block);
         clearError();
@@ -154,6 +173,36 @@ export default function PosLoginPage() {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
         <span className="text-slate-400 text-lg animate-pulse">Loading…</span>
+      </div>
+    );
+  }
+
+  // ── TILL NOT REGISTERED ─────────────────────────────────────────────────────
+  if (tillNotRegistered) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-slate-950 p-8 text-center">
+        <h1 className="text-2xl font-bold text-white">{TILL_NOT_REGISTERED_MESSAGE}</h1>
+        <p className="max-w-md text-sm text-slate-400">A manager signs in with their password on this till to register it.</p>
+        <div className="flex gap-3">
+          <a
+            href={reauthLoginPath("/devices/register")}
+            className="rounded-xl bg-white px-5 py-3 font-semibold text-slate-950 hover:bg-slate-200"
+          >
+            Manager sign-in
+          </a>
+          <button
+            type="button"
+            onClick={() => {
+              setView("select-cashier");
+              setSelectedCashier(null);
+              setPin("");
+              loadCashiers();
+            }}
+            className="rounded-xl border border-slate-700 px-5 py-3 font-medium text-slate-200 hover:bg-slate-800"
+          >
+            Try again
+          </button>
+        </div>
       </div>
     );
   }
