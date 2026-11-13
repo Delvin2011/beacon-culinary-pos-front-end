@@ -22,7 +22,8 @@ function renderSignedIn(): () => Auth {
   return () => current as Auth
 }
 
-const logoutCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/auth/logout"))
+const callsTo = (pathEnd: string) => fetchMock.mock.calls.filter(([url]) => String(url).endsWith(pathEnd))
+const logoutCalls = () => callsTo("/auth/logout")
 
 beforeEach(() => {
   localStorage.clear()
@@ -33,27 +34,9 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
-  vi.unstubAllEnvs()
 })
 
-describe("sign-out with the server switch off (default)", () => {
-  it("signs out locally and sends nothing", async () => {
-    const auth = renderSignedIn()
-    expect(auth().isAuthenticated).toBe(true)
-
-    await act(async () => auth().logout())
-
-    expect(auth().isAuthenticated).toBe(false)
-    expect(localStorage.getItem("bar-talk.auth")).toBeNull()
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-})
-
-describe("sign-out with NEXT_PUBLIC_AUTH_LOGOUT_ENABLED=true", () => {
-  beforeEach(() => {
-    vi.stubEnv("NEXT_PUBLIC_AUTH_LOGOUT_ENABLED", "true")
-  })
-
+describe("sign-out (POST /auth/logout)", () => {
   it("clears the session first, then sends one POST /auth/logout with credentials and no token", async () => {
     const auth = renderSignedIn()
     let storedWhenCalled: string | null = "not called"
@@ -68,6 +51,7 @@ describe("sign-out with NEXT_PUBLIC_AUTH_LOGOUT_ENABLED=true", () => {
     const [url, init] = logoutCalls()[0]
     expect(String(url)).toBe("http://localhost:8080/auth/logout")
     expect(init).toMatchObject({ method: "POST", credentials: "include", keepalive: true })
+    expect(init?.body).toBeUndefined()
     expect(new Headers(init?.headers).has("Authorization")).toBe(false)
     expect(storedWhenCalled).toBeNull()
     expect(auth().isAuthenticated).toBe(false)
@@ -76,6 +60,7 @@ describe("sign-out with NEXT_PUBLIC_AUTH_LOGOUT_ENABLED=true", () => {
   it.each([
     ["a network error", () => Promise.reject(new TypeError("Failed to fetch"))],
     ["a 500", () => Promise.resolve(new Response(null, { status: 500 }))],
+    ["a 429", () => Promise.resolve(new Response(JSON.stringify({ code: "RATE_LIMITED", retryAfterSeconds: 5 }), { status: 429 }))],
   ])("stays signed out after %s, without throwing or retrying", async (_name, outcome) => {
     const auth = renderSignedIn()
     fetchMock.mockImplementation(outcome)
@@ -84,6 +69,20 @@ describe("sign-out with NEXT_PUBLIC_AUTH_LOGOUT_ENABLED=true", () => {
       expect(() => auth().logout()).not.toThrow()
     })
     await act(async () => {})
+
+    expect(auth().isAuthenticated).toBe(false)
+    expect(logoutCalls()).toHaveLength(1)
+  })
+
+  it("still signs out when fetch throws immediately", async () => {
+    const auth = renderSignedIn()
+    fetchMock.mockImplementation(() => {
+      throw new TypeError("fetch unavailable")
+    })
+
+    await act(async () => {
+      expect(() => auth().logout()).not.toThrow()
+    })
 
     expect(auth().isAuthenticated).toBe(false)
     expect(logoutCalls()).toHaveLength(1)
@@ -100,6 +99,75 @@ describe("sign-out with NEXT_PUBLIC_AUTH_LOGOUT_ENABLED=true", () => {
       await auth().authFetch("/orders")
     })
 
-    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/auth/refresh"))).toBe(false)
+    expect(callsTo("/auth/refresh")).toHaveLength(0)
+  })
+
+  it("leaves other cookies (such as the till's) alone", async () => {
+    document.cookie = "deviceToken=till-1; path=/"
+    const auth = renderSignedIn()
+    fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+
+    await act(async () => auth().logout())
+
+    expect(document.cookie).toContain("deviceToken=till-1")
+    document.cookie = "deviceToken=; path=/; max-age=0"
+  })
+})
+
+describe("a session that ends on its own", () => {
+  it("treats a 401 from refresh (no refresh cookie) as signed out: one refresh, one logout, no loop", async () => {
+    const auth = renderSignedIn()
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/auth/logout")) return new Response(null, { status: 204 })
+      return new Response(null, { status: 401 })
+    })
+
+    let results: Response[] = []
+    await act(async () => {
+      results = await Promise.all([auth().authFetch("/orders/today"), auth().authFetch("/menu/today")])
+    })
+    await act(async () => {
+      await auth().authFetch("/shifts/open")
+    })
+
+    expect(results.map((res) => res.status)).toEqual([401, 401])
+    expect(auth().isAuthenticated).toBe(false)
+    expect(callsTo("/auth/refresh")).toHaveLength(1)
+    expect(logoutCalls()).toHaveLength(1)
+  })
+
+  it("signs out when a request still gets 401 after a successful refresh", async () => {
+    const auth = renderSignedIn()
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input)
+      if (url.endsWith("/auth/refresh")) return new Response(JSON.stringify({ token: "new.token.y" }), { status: 200 })
+      if (url.endsWith("/auth/logout")) return new Response(null, { status: 204 })
+      return new Response(null, { status: 401 })
+    })
+
+    await act(async () => {
+      await auth().authFetch("/orders")
+    })
+
+    expect(auth().isAuthenticated).toBe(false)
+    expect(callsTo("/auth/refresh")).toHaveLength(1)
+    expect(logoutCalls()).toHaveLength(1)
+  })
+
+  it("keeps the session on a refresh 429 and doesn't call logout", async () => {
+    const auth = renderSignedIn()
+    fetchMock.mockImplementation(async (input) =>
+      String(input).endsWith("/auth/refresh")
+        ? new Response(JSON.stringify({ code: "RATE_LIMITED", retryAfterSeconds: 10 }), { status: 429 })
+        : new Response(null, { status: 401 }),
+    )
+
+    await act(async () => {
+      await auth().authFetch("/orders")
+    })
+
+    expect(auth().isAuthenticated).toBe(true)
+    expect(logoutCalls()).toHaveLength(0)
   })
 })

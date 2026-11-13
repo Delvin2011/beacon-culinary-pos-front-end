@@ -138,7 +138,8 @@ describe("authFetch on 401", () => {
     const res = await call(auth, "/orders")
 
     expect(res.status).toBe(401)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    // The request and one refresh; then the session ends, which also signs out on the server.
+    expect(urls()).toEqual([`${API}/orders`, `${API}/auth/refresh`, `${API}/auth/logout`])
     expect(auth().isAuthenticated).toBe(false)
   })
 

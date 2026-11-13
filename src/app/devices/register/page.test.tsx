@@ -105,6 +105,7 @@ beforeEach(() => {
     if (url.endsWith("/admin/devices") && method === "GET") return json(200, lists.length > 1 ? lists.shift() : lists[0])
     if (url.endsWith("/admin/devices") && method === "POST") return (registerResponses.shift() ?? (() => json(500, undefined)))()
     if (url.includes("/revoke")) return revokeResponse()
+    if (url.endsWith("/auth/logout")) return new Response(null, { status: 204 })
     throw new Error(`Unexpected request ${method} ${url}`)
   })
   vi.stubGlobal("fetch", fetchMock)
@@ -173,6 +174,7 @@ describe("Register this till: outcomes", () => {
 
     await clickButton("Sign out and return to the POS")
     expect(localStorage.getItem("bar-talk.auth")).toBeNull()
+    expect(calls("POST", "/auth/logout")).toHaveLength(1)
     expect(replace).toHaveBeenCalledWith("/pos/login")
   })
 
