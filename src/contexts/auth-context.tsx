@@ -39,6 +39,13 @@ const AUTH_STORAGE_KEY = "bar-talk.auth";
 const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
+// Server sign-out (POST /auth/logout) clears the refreshToken cookie, so the session can't come back through
+// /auth/refresh. Off until the endpoint is deployed: set NEXT_PUBLIC_AUTH_LOGOUT_ENABLED=true to switch it on.
+// Until then sign-out is local only, and the refreshToken cookie stays valid until it is replaced or expires.
+function serverLogoutEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_AUTH_LOGOUT_ENABLED === "true";
+}
+
 export interface AuthUser {
   id?: string;
   email: string;
@@ -353,6 +360,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     sessionStorage.setItem(AUTH_LOGOUT_MARKER_KEY, "true");
     clearAuthState();
     setError(null);
+
+    if (serverLogoutEnabled()) {
+      // After the local sign-out, so signing out works even offline. A public endpoint: no Authorization header.
+      // keepalive lets it finish when the page navigates away. The result is ignored and never retried.
+      // The backend clears only refreshToken; the till's deviceToken is never touched.
+      void fetch(`${AUTH_API_BASE_URL}/auth/logout`, { method: "POST", credentials: "include", keepalive: true }).catch(() => {});
+    }
   }, [clearAuthState]);
 
   const refreshToken = useCallback(async (): Promise<RefreshResult> => {
