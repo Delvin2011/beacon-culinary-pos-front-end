@@ -65,12 +65,13 @@ export default function PosLoginPage() {
     }
   }, [isAuthenticated, authLoading, router]);
 
-  // Fetch cashier list (unauthenticated — no token needed)
+  // Fetch cashier list (no sign-in needed). Credentials send the till's deviceToken cookie: in `required`
+  // mode the backend refuses this list from an unregistered browser.
   useEffect(() => {
     setCashiersLoading(true);
     setCashiersError(null);
 
-    fetch(`${API_BASE}/users/cashiers`)
+    fetch(`${API_BASE}/users/cashiers`, { credentials: "include" })
       .then(async (res) => {
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const data = (await res.json()) as unknown;

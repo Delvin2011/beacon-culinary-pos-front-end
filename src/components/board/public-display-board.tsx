@@ -32,6 +32,8 @@ type BoardEntry = {
   removeAtMs?: number;
 };
 
+// No credentials here: /public/** is the one exception to "every API request includes credentials"
+// (agreed with the backend; the board runs on display screens, not tills).
 const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 const RECONNECT_DELAY_MS = 2000;
 const KIOSK_RELOAD_MS = Number.parseInt(process.env.NEXT_PUBLIC_BOARD_RELOAD_MS ?? "14400000", 10);

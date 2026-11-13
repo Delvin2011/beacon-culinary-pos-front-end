@@ -61,11 +61,11 @@ export default function BarLoginPage() {
     setAccessError("You don't have access to this screen.");
   }, [isAuthenticated, isLoading, logout, router, user?.role]);
 
-  // Public, before login.
+  // Public, before login. Credentials keep the till's deviceToken cookie fresh (every API request sends them).
   useEffect(() => {
     setTilesLoading(true);
     setTilesError(null);
-    fetch(`${API_BASE}/users/login-tiles?screen=BAR`)
+    fetch(`${API_BASE}/users/login-tiles?screen=BAR`, { credentials: "include" })
       .then(async (res) => {
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const data = (await res.json()) as unknown;

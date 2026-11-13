@@ -56,11 +56,11 @@ export default function KitchenLoginPage() {
     logout();
   }, [isAuthenticated, isLoading, logout, router, user?.role]);
 
-  // Public, before login.
+  // Public, before login. Credentials keep the till's deviceToken cookie fresh (every API request sends them).
   useEffect(() => {
     setTilesLoading(true);
     setTilesError(null);
-    fetch(`${API_BASE}/users/login-tiles?screen=KITCHEN`)
+    fetch(`${API_BASE}/users/login-tiles?screen=KITCHEN`, { credentials: "include" })
       .then(async (res) => {
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const data = (await res.json()) as unknown;
