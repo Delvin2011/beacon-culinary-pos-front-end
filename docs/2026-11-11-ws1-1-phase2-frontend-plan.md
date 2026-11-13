@@ -61,9 +61,11 @@ control re-enables.
 | 6 | Manager-PIN countdowns | one block per signed-in user, shared by the session overlay and the variance overlay; Back always works; PIN cleared after every failure |
 | 7 | Staff locks and unlock | `locks` on `StaffMember`, Locked badge, admin-only Unlock with confirmation, toast after reset |
 | 8 | No self-unlock | Unlock hidden on your own row; 409 `SELF_UNLOCK` shown plainly; toast when your own reset keeps your lock |
+| 9 | Unlock short-term blocks | Unlock on every active row except your own, so an admin can end a cashier's 15-minute PIN block at a till; the backend's thresholds stay as they are |
 
 ## Not covered
 
 - Short-term blocks (PIN per till, manager PIN, change password) aren't listed in `locks`, so the staff
-  page can't show them, and Unlock is shown only when `locks` reports a lock.
+  page can't show a badge for them. Admins can still clear them with Unlock, which is offered on every
+  active row except their own (unlocking with nothing to clear is harmless).
 - No change-password screen.

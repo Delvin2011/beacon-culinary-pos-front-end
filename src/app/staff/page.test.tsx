@@ -74,7 +74,7 @@ beforeEach(() => {
     const url = String(input)
     if (url.endsWith("/admin/staff/roles")) return json(200, roles)
     if (url.endsWith("/admin/staff")) return json(200, staffList)
-    if (url.endsWith("/admin/staff/1/unlock")) return unlockResponse()
+    if (/\/admin\/staff\/\d+\/unlock$/.test(url)) return unlockResponse()
     throw new Error(`Unexpected request ${url}`)
   })
   vi.stubGlobal("fetch", fetchMock)
@@ -85,7 +85,9 @@ afterEach(() => {
 })
 
 describe("Staff page locks", () => {
-  it("shows lock badges and an Unlock button only on the locked row", async () => {
+  it("shows lock badges only on the locked row, and Unlock on every active row", async () => {
+    const carl: StaffMember = { ...bob, id: 4, name: "Carl Inactive", active: false }
+    staffList = [ann, bob, carl]
     unlockResponse = () => json(200, ann)
     renderAs("ADMIN")
 
@@ -93,8 +95,31 @@ describe("Staff page locks", () => {
     expect(within(row("Ann Lee")).getByText(lockLabel("PASSWORD", passwordLock))).toBeInTheDocument()
     expect(within(row("Ann Lee")).getByText("PIN locked: needs unlock")).toBeInTheDocument()
     expect(within(row("Ann Lee")).getByRole("button", { name: "Unlock" })).toBeInTheDocument()
+    // Bob may have a short PIN block, which `locks` doesn't list.
     expect(within(row("Bob Ray")).queryByText(/locked/)).not.toBeInTheDocument()
-    expect(within(row("Bob Ray")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
+    expect(within(row("Bob Ray")).getByRole("button", { name: "Unlock" })).toBeInTheDocument()
+    // An inactive person can't sign in anyway.
+    expect(within(row("Carl Inactive")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
+  })
+
+  it("clears a short block for someone with no listed lock", async () => {
+    unlockResponse = () => json(200, bob)
+    renderAs("ADMIN")
+
+    await screen.findByText("Bob Ray")
+    await act(async () => {
+      fireEvent.click(within(row("Bob Ray")).getByRole("button", { name: "Unlock" }))
+    })
+    const dialog = screen.getByRole("dialog")
+    expect(within(dialog).getByText(/No account lock is showing, but they may have a short block/)).toBeInTheDocument()
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: "Unlock" }))
+    })
+
+    const unlockCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/admin/staff/2/unlock"))
+    expect(unlockCall?.[1]?.method).toBe("POST")
+    expect(unlockCall?.[1]?.body).toBeUndefined()
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
   it("confirms, unlocks with no body, and updates the row from the response", async () => {
@@ -115,7 +140,6 @@ describe("Staff page locks", () => {
     expect(unlockCall?.[1]?.method).toBe("POST")
     expect(unlockCall?.[1]?.body).toBeUndefined()
     expect(within(row("Ann Lee")).queryByText(/locked/)).not.toBeInTheDocument()
-    expect(within(row("Ann Lee")).queryByRole("button", { name: "Unlock" })).not.toBeInTheDocument()
   })
 
   it("hides Unlock on the signed-in admin's own locked row", async () => {

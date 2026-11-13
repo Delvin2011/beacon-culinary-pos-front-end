@@ -215,7 +215,7 @@ export default function StaffPage() {
     try {
       const updated = await unlockStaff(authFetch, member.id)
       upsert(updated)
-      toast({ title: "Staff member unlocked", description: `${updated.name} can sign in again.` })
+      toast({ title: "Staff member unlocked", description: `Any sign-in blocks for ${updated.name} have been cleared. They can try again now.` })
     } catch (err) {
       setPageMessage(err instanceof Error ? err.message : "Unable to unlock this person. Try again.")
     } finally {
@@ -270,8 +270,10 @@ export default function StaffPage() {
           const rule = roles.find((candidate) => candidate.role === member.role)
           return (
             <div className="flex flex-wrap justify-end gap-1.5">
-              {/* Admins can't clear their own locks (the backend refuses with 409 SELF_UNLOCK). */}
-              {isAdmin && isLocked(member) && !isOwnRecord(member, user) && (
+              {/* Short-term blocks (PIN at one till, manager PIN, change password) aren't listed in `locks`,
+                  so Unlock is offered on every active row; unlocking with nothing to clear is harmless.
+                  Admins can't clear their own locks (the backend refuses with 409 SELF_UNLOCK). */}
+              {isAdmin && (member.active || isLocked(member)) && !isOwnRecord(member, user) && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -543,8 +545,9 @@ export default function StaffPage() {
             <DialogHeader>
               <DialogTitle>Unlock {unlockTarget?.name}?</DialogTitle>
               <DialogDescription>
-                This clears all their sign-in blocks: password and PIN locks, and short blocks on PIN sign-in at a till,
-                manager-PIN approval and changing their password. They can try again straight away.
+                {unlockTarget && isLocked(unlockTarget)
+                  ? "This clears all their sign-in blocks: password and PIN locks, and short blocks on PIN sign-in at a till, manager-PIN approval and changing their password. They can try again straight away."
+                  : "No account lock is showing, but they may have a short block, for example after too many wrong PINs at a till. Unlocking ends any password, PIN, manager-PIN or change-password block now."}
               </DialogDescription>
             </DialogHeader>
             <div className="flex justify-end gap-2">
