@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   AuthContext,
   AuthProvider,
+  DeviceNotRegisteredError,
   INCORRECT_PIN_MESSAGE,
   PIN_LOGIN_FAILED_MESSAGE,
   PinLoginError,
@@ -102,5 +103,24 @@ describe("pinLogin", () => {
     })
     expect(auth().isAuthenticated).toBe(true)
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ cashierId: 7, pin: "123456" })
+  })
+})
+
+describe("pinLogin on an unregistered till", () => {
+  it("throws DeviceNotRegisteredError with the fixed message, never the body's text", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(403, { error: "Cashier 7 exists but this till is unknown", code: "DEVICE_NOT_REGISTERED" }))
+    const auth = renderAuth()
+    const err = await pinLoginError(auth, "123456")
+    expect(err).toBeInstanceOf(DeviceNotRegisteredError)
+    expect(err.message).toBe("This till is not registered. Ask a manager to register it.")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("gives the generic message for a 403 with another code", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(403, { error: "Nope", code: "SOMETHING_ELSE" }))
+    const auth = renderAuth()
+    const err = await pinLoginError(auth, "123456")
+    expect(err).not.toBeInstanceOf(DeviceNotRegisteredError)
+    expect(err.message).toBe(PIN_LOGIN_FAILED_MESSAGE)
   })
 })

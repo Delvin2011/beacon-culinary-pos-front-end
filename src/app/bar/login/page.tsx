@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ChevronLeft, ShieldCheck } from "lucide-react";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { useAuth } from "@/hooks/use-auth";
 import { isBarAccessRole } from "@/lib/roles";
-import { LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { DeviceNotRegisteredError, LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
 import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
@@ -42,6 +42,8 @@ export default function BarLoginPage() {
   // One countdown per person: a block for one person never disables another's tile.
   const blocks = useLoginBlocks<number>();
   const selectedBlock = blocks.get(selected?.id);
+  // A refused PIN sign-in for a tile left over from before admins were hidden (`required` mode).
+  const [managerNotice, setManagerNotice] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
 
   // PIN login doesn't check the screen: once signed in, only Baristas and Admins get through.
@@ -61,11 +63,11 @@ export default function BarLoginPage() {
     setAccessError("You don't have access to this screen.");
   }, [isAuthenticated, isLoading, logout, router, user?.role]);
 
-  // Public, before login.
-  useEffect(() => {
+  // Public, before login. Credentials keep the till's deviceToken cookie fresh (every API request sends them).
+  const loadTiles = useCallback(() => {
     setTilesLoading(true);
     setTilesError(null);
-    fetch(`${API_BASE}/users/login-tiles?screen=BAR`)
+    fetch(`${API_BASE}/users/login-tiles?screen=BAR`, { credentials: "include" })
       .then(async (res) => {
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const data = (await res.json()) as unknown;
@@ -79,6 +81,10 @@ export default function BarLoginPage() {
       .catch(() => setTilesError("Could not load the bar staff list. Check the connection or contact an admin."))
       .finally(() => setTilesLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadTiles();
+  }, [loadTiles]);
 
   const resetPin = () => {
     setPin("");
@@ -104,7 +110,13 @@ export default function BarLoginPage() {
       // The role check above sends Baristas and Admins on to /bar and refuses anyone else.
       await pinLogin({ cashierId: selected.id, pin });
     } catch (err) {
-      if (err instanceof LoginBlockedError) {
+      if (err instanceof DeviceNotRegisteredError) {
+        // The frontend can't tell an admin tile from another. Reload the tiles once; no retry.
+        setSelected(null);
+        setManagerNotice(true);
+        clearError();
+        loadTiles();
+      } else if (err instanceof LoginBlockedError) {
         // The countdown shows the message; no automatic retry.
         blocks.block(selected.id, err.block);
         clearError();
@@ -151,6 +163,15 @@ export default function BarLoginPage() {
           </p>
         )}
 
+        {managerNotice && (
+          <p role="alert" className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-center text-sm text-amber-100">
+            Managers sign in with their password on this screen.{" "}
+            <a href="/login" className="font-semibold underline">
+              Password sign-in
+            </a>
+          </p>
+        )}
+
         {!selected ? (
           <>
             {tilesLoading && <p className="text-center text-sm text-slate-400 animate-pulse">Loading bar staff…</p>}
@@ -172,6 +193,7 @@ export default function BarLoginPage() {
                     type="button"
                     onClick={() => {
                       setSelected(tile);
+                      setManagerNotice(false);
                       setAccessError(null);
                       resetPin();
                     }}

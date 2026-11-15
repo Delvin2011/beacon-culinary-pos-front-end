@@ -11,12 +11,22 @@ import {
 } from "react";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-protection";
+import { errorCode } from "@/lib/api-error";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 
 export const INCORRECT_PIN_MESSAGE = "Incorrect PIN.";
 export const PIN_LOGIN_FAILED_MESSAGE = "Couldn't sign in. Try again.";
 
 // Thrown by pinLogin. Its message is always safe to show: it never says whether the person exists.
 export class PinLoginError extends Error {}
+
+// pinLogin on an unregistered till (403 DEVICE_NOT_REGISTERED, `required` mode). Not a wrong PIN and not a
+// sign-out: the PIN wasn't checked. Each screen decides what to show.
+export class DeviceNotRegisteredError extends PinLoginError {
+  constructor() {
+    super(TILL_NOT_REGISTERED_MESSAGE);
+  }
+}
 
 // Thrown by login and pinLogin on a 429. Its message comes from the code and wait only.
 export class LoginBlockedError extends Error {
@@ -38,6 +48,18 @@ type RefreshResult =
 const AUTH_STORAGE_KEY = "bar-talk.auth";
 const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
+
+// Server sign-out (POST /auth/logout, contract 7.1): deletes this browser's refreshToken cookie so the session
+// can't come back through /auth/refresh. Public, always 204, safe to repeat; it never touches deviceToken (the
+// till stays registered). Not awaited and never retried: if it fails, the cookie only lasts until it expires.
+// keepalive lets it finish when the page navigates away. No Authorization header: the endpoint is public.
+function requestServerLogout(): void {
+  try {
+    void Promise.resolve(fetch(`${AUTH_API_BASE_URL}/auth/logout`, { method: "POST", credentials: "include", keepalive: true })).catch(() => {});
+  } catch {
+    // Signing out never fails because of this call.
+  }
+}
 
 export interface AuthUser {
   id?: string;
@@ -305,6 +327,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new LoginBlockedError(block);
       }
 
+      // Before the body is read: errorCode reads its own copy.
+      if (response.status === 403 && (await errorCode(response)) === DeviceErrorCode.NOT_REGISTERED) {
+        throw new DeviceNotRegisteredError();
+      }
+
       const responseBody = (await response.json().catch(() => null)) as unknown;
 
       if (response.status === 401) {
@@ -348,11 +375,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [clearAuthState, persistAuthState]);
 
+  // The local sign-out happens first, so signing out is instant and works offline.
   const logout = useCallback(() => {
     logoutRequestedRef.current = true;
     sessionStorage.setItem(AUTH_LOGOUT_MARKER_KEY, "true");
     clearAuthState();
     setError(null);
+    requestServerLogout();
+  }, [clearAuthState]);
+
+  // The session has ended without a sign-out button (refresh refused, or a 401 after refreshing): same as a sign-out.
+  const endSession = useCallback(() => {
+    clearAuthState();
+    requestServerLogout();
   }, [clearAuthState]);
 
   const refreshToken = useCallback(async (): Promise<RefreshResult> => {
@@ -380,14 +415,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const payload = (await response.json().catch(() => null)) as unknown;
 
         if (!response.ok) {
-          // 401 (including while the account is locked): the session has ended, as before.
-          clearAuthState();
+          // 401 (no or invalid cookie, or the account is locked; formerly 400 without a cookie): signed out.
+          endSession();
           return { kind: "ended" };
         }
 
         const refreshedToken = extractToken(payload);
         if (!refreshedToken) {
-          clearAuthState();
+          endSession();
           return { kind: "ended" };
         }
 
@@ -403,7 +438,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         return { kind: "token", token: refreshedToken };
       } catch {
-        clearAuthState();
+        endSession();
         return { kind: "ended" };
       } finally {
         refreshInFlightRef.current = null;
@@ -412,7 +447,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     refreshInFlightRef.current = refreshPromise;
     return refreshPromise;
-  }, [clearAuthState]);
+  }, [clearAuthState, endSession]);
 
   const authFetch = useCallback(
     async (path: string, init?: RequestInit) => {
@@ -467,11 +502,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       const retryResponse = await execute(refreshed.token);
       if (retryResponse.status === 401) {
-        clearAuthState();
+        endSession();
       }
       return retryResponse;
     },
-    [clearAuthState, refreshToken]
+    [endSession, refreshToken]
   );
 
   const value = useMemo<AuthContextValue>(

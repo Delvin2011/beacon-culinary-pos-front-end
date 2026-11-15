@@ -1,7 +1,7 @@
 "use client"
 
 import { FormEvent, useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -11,7 +11,8 @@ import Image from "next/image"
 import { useAuth } from "@/hooks/use-auth"
 import { useLoginBlocks } from "@/hooks/use-login-blocks"
 import { LoginBlockedError } from "@/contexts/auth-context"
-import { landingPathFor } from "@/lib/roles"
+import { isAdminRole, landingPathFor } from "@/lib/roles"
+import { safeReturnTo } from "@/lib/return-to"
 import loginImage from "../app/assets/images/beacon_login_image.png"
 
 export function LoginForm({
@@ -19,6 +20,14 @@ export function LoginForm({
   ...props
 }: React.ComponentProps<"div">) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  // /login?reauth=1&returnTo=/devices…: a fresh password sign-in to manage tills. returnTo is checked
+  // against the allowlist; anything else is ignored.
+  const reauth = searchParams.get("reauth") === "1"
+  const returnTo = safeReturnTo(searchParams.get("returnTo"))
+  // True once someone signs in on this page: with reauth=1 an existing session doesn't move on by itself.
+  const [signedInHere, setSignedInHere] = useState(false)
+  const [notManager, setNotManager] = useState(false)
   const { login, isLoading, error, clearError, isAuthenticated, user } = useAuth()
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
@@ -26,22 +35,29 @@ export function LoginForm({
   const blockState = blocks.get("self")
   const message = blockState?.message ?? error
 
-  // Signed in (now or from an earlier visit): go to the user's landing page. Until U2 the dashboard is the landing
-  // page for Admin and Head Chef only; everyone else goes to the screen they work on.
+  // Signed in (now or from an earlier visit): go back to returnTo (admins only) or to the user's landing page.
+  // Until U2 the dashboard is the landing page for Admin and Head Chef only; everyone else goes to the screen they work on.
   useEffect(() => {
-    if (isAuthenticated) {
-      router.push(landingPathFor(user?.role))
+    if (!isAuthenticated) return
+    if (reauth && !signedInHere) return
+    if (returnTo) {
+      if (isAdminRole(user?.role)) router.replace(returnTo)
+      else setNotManager(true)
+      return
     }
-  }, [isAuthenticated, user?.role, router])
+    router.push(landingPathFor(user?.role))
+  }, [isAuthenticated, reauth, returnTo, signedInHere, user?.role, router])
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (blockState?.active) return
     blocks.clear("self")
+    setNotManager(false)
 
     try {
       await login({ email, password })
-      // The effect above routes once the session is stored.
+      // Replaces any current session; the effect above routes once it is stored.
+      setSignedInHere(true)
     } catch (err) {
       // Other errors are stored in the auth context for rendering.
       if (err instanceof LoginBlockedError) {
@@ -65,6 +81,21 @@ export function LoginForm({
                   Login to your Beacon Culinary Account
                 </p>
               </div>
+
+              {reauth && !notManager && (
+                <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-sm text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100">
+                  Sign in again with your password to manage tills.
+                </div>
+              )}
+
+              {notManager && (
+                <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  Only managers can register tills.{" "}
+                  <a className="underline" href={landingPathFor(user?.role)}>
+                    Continue
+                  </a>
+                </div>
+              )}
 
               {message && (
                 <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">

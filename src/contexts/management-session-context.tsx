@@ -12,6 +12,8 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { useLoginBlocks, type LoginBlockState } from "@/hooks/use-login-blocks";
 import { readLoginBlock, type LoginBlock } from "@/lib/login-protection";
+import { errorCode } from "@/lib/api-error";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 
@@ -160,6 +162,13 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
       const block = await readLoginBlock(response);
       if (block) {
         reportManagerPinBlock(block);
+        setPin("");
+        return;
+      }
+
+      // Checked before the PIN: the cashier stays signed in and the pending action doesn't run.
+      if (response.status === 403 && (await errorCode(response)) === DeviceErrorCode.NOT_REGISTERED) {
+        setError(TILL_NOT_REGISTERED_MESSAGE);
         setPin("");
         return;
       }
