@@ -13,7 +13,7 @@ import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
-import { fetchWithTimeout, timeoutFor } from "@/lib/net";
+import { fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
 
 // timeoutMs overrides the default limit (15 s; 20 s for POST /orders; 5 s for /health).
 export type AuthFetchInit = RequestInit & { timeoutMs?: number };
@@ -47,7 +47,11 @@ type RefreshResult =
   | { kind: "token"; token: string }
   | { kind: "ended" }
   // A 429 from /auth/refresh: the session is kept and the 429 goes to the caller (each gets a copy).
-  | { kind: "blocked"; response: Response };
+  | { kind: "blocked"; response: Response }
+  // No answer (network error, timeout) or a 5xx/unexpected status: the session is kept and the caller gets the
+  // thrown error or a copy of the response, so it can show "Can't reach the server" rather than "signed out".
+  | { kind: "unavailable"; error: unknown }
+  | { kind: "unavailable"; response: Response };
 
 const AUTH_STORAGE_KEY = "bar-talk.auth";
 const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
@@ -217,6 +221,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const tokenRef = useRef<string | null>(null);
   const refreshInFlightRef = useRef<Promise<RefreshResult> | null>(null);
   const logoutRequestedRef = useRef(false);
+  // After a 429 from /auth/refresh: no new refresh before this time (Retry-After); callers get the same 429.
+  const refreshBlockRef = useRef<{ until: number; response: Response } | null>(null);
 
   const clearAuthState = useCallback(() => {
     tokenRef.current = null;
@@ -400,6 +406,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return refreshInFlightRef.current;
     }
 
+    // Checked here, not inside the promise below: an early return there runs its `finally` before
+    // refreshInFlightRef is set, which would leave a settled promise in the ref for good.
+    const block = refreshBlockRef.current;
+    if (block && Date.now() < block.until) {
+      return { kind: "blocked", response: block.response };
+    }
+
     const refreshPromise = (async (): Promise<RefreshResult> => {
       try {
         if (logoutRequestedRef.current) {
@@ -407,20 +420,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return { kind: "ended" };
         }
 
-        const response = await fetch(`${AUTH_API_BASE_URL}/auth/refresh`, {
-          method: "POST",
-          credentials: "include",
-        });
+        const refreshUrl = `${AUTH_API_BASE_URL}/auth/refresh`;
+        const response = await fetchWithTimeout(
+          refreshUrl,
+          { method: "POST", credentials: "include" },
+          timeoutFor(refreshUrl, "POST"),
+        );
 
-        // Burst limit or a block: not a logout, and never retried here. The caller decides what to show.
+        // Burst limit or a block: not a logout. Not retried before Retry-After; the caller decides what to show.
         if (response.status === 429) {
+          const waitMs = parseRetryAfter(response.headers.get("Retry-After"));
+          refreshBlockRef.current = waitMs ? { until: Date.now() + waitMs, response } : null;
           return { kind: "blocked", response };
+        }
+        refreshBlockRef.current = null;
+
+        // Only a refusal ends the session: 401 (no or invalid cookie, or the account is locked), or 400 from older
+        // servers without a cookie. A 5xx or any other status is the server's problem, not a sign-out.
+        if (!response.ok && response.status !== 401 && response.status !== 400) {
+          return { kind: "unavailable", response };
         }
 
         const payload = (await response.json().catch(() => null)) as unknown;
 
         if (!response.ok) {
-          // 401 (no or invalid cookie, or the account is locked; formerly 400 without a cookie): signed out.
           endSession();
           return { kind: "ended" };
         }
@@ -442,9 +465,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         });
 
         return { kind: "token", token: refreshedToken };
-      } catch {
-        endSession();
-        return { kind: "ended" };
+      } catch (error) {
+        // Network error or timeout: the server never answered, so nothing says the session is over.
+        return { kind: "unavailable", error };
       } finally {
         refreshInFlightRef.current = null;
       }
@@ -496,6 +519,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const refreshed = await refreshToken();
       if (refreshed.kind === "blocked") {
         // Keep the session; hand back the 429 so callers don't mistake it for "session expired".
+        return refreshed.response.clone();
+      }
+      if (refreshed.kind === "unavailable") {
+        // The session is kept. Report it as the connection problem it is.
+        if ("error" in refreshed) throw refreshed.error;
         return refreshed.response.clone();
       }
       if (refreshed.kind === "ended") {
