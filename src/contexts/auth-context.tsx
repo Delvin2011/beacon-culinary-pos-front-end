@@ -13,6 +13,10 @@ import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { fetchWithTimeout, timeoutFor } from "@/lib/net";
+
+// timeoutMs overrides the default limit (15 s; 20 s for POST /orders; 5 s for /health).
+export type AuthFetchInit = RequestInit & { timeoutMs?: number };
 
 export const INCORRECT_PIN_MESSAGE = "Incorrect PIN.";
 export const PIN_LOGIN_FAILED_MESSAGE = "Couldn't sign in. Try again.";
@@ -95,7 +99,8 @@ interface AuthContextValue {
   pinLogin: (payload: PinLoginPayload) => Promise<void>;
   logout: () => void;
   clearError: () => void;
-  authFetch: (path: string, init?: RequestInit) => Promise<Response>;
+  // A request that gets no answer within its limit throws RequestTimeoutError (see lib/net).
+  authFetch: (path: string, init?: AuthFetchInit) => Promise<Response>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -450,25 +455,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearAuthState, endSession]);
 
   const authFetch = useCallback(
-    async (path: string, init?: RequestInit) => {
+    async (path: string, init?: AuthFetchInit) => {
       const isAbsoluteUrl = path.startsWith("http://") || path.startsWith("https://");
       const url = isAbsoluteUrl ? path : `${AUTH_API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+      const { timeoutMs: requestedTimeout, ...requestInit } = init ?? {};
+      const timeoutMs = requestedTimeout ?? timeoutFor(url, requestInit.method);
 
       const buildHeaders = (token: string | null) => {
-        const headers = new Headers(init?.headers);
+        const headers = new Headers(requestInit.headers);
         if (token) {
           headers.set("Authorization", `Bearer ${token}`);
         }
         return headers;
       };
 
-      const execute = (token: string | null) => {
-        return fetch(url, {
-          ...init,
-          headers: buildHeaders(token),
-          credentials: "include",
-        });
-      };
+      const execute = (token: string | null) =>
+        fetchWithTimeout(url, { ...requestInit, headers: buildHeaders(token), credentials: "include" }, timeoutMs);
 
       const initialResponse = await execute(tokenRef.current);
       const shouldAttemptRefresh =
