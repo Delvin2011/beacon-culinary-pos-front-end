@@ -13,7 +13,7 @@ import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
-import { fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
+import { CONNECTION_MESSAGES, RequestTimeoutError, fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
 
 // timeoutMs overrides the default limit (15 s; 20 s for POST /orders; 5 s for /health).
 export type AuthFetchInit = RequestInit & { timeoutMs?: number };
@@ -325,12 +325,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new PinLoginError(PIN_FORMAT_MESSAGE);
       }
 
-      const response = await fetch(`${AUTH_API_BASE_URL}/auth/pin-login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ cashierId, pin }),
-      });
+      const pinUrl = `${AUTH_API_BASE_URL}/auth/pin-login`;
+      const response = await fetchWithTimeout(
+        pinUrl,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ cashierId, pin }),
+        },
+        timeoutFor(pinUrl, "POST"),
+      );
 
       // Before the body is read: readLoginBlock reads its own copy.
       const block = await readLoginBlock(response);
@@ -354,6 +359,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new PinLoginError(PIN_FORMAT_MESSAGE);
       }
 
+      if (response.status >= 500) {
+        throw new PinLoginError(CONNECTION_MESSAGES.server);
+      }
+
       if (!response.ok) {
         throw new PinLoginError(PIN_LOGIN_FAILED_MESSAGE);
       }
@@ -375,9 +384,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       persistAuthState(nextState);
     } catch (err) {
-      // Network errors and anything unexpected become the generic message.
+      // No answer from the server: say so. Anything else unexpected becomes the generic message.
       const safe =
-        err instanceof PinLoginError || err instanceof LoginBlockedError ? err : new PinLoginError(PIN_LOGIN_FAILED_MESSAGE);
+        err instanceof PinLoginError || err instanceof LoginBlockedError
+          ? err
+          : new PinLoginError(
+              err instanceof TypeError || err instanceof RequestTimeoutError ? CONNECTION_MESSAGES.network : PIN_LOGIN_FAILED_MESSAGE,
+            );
       clearAuthState();
       setError(safe.message);
       throw safe;

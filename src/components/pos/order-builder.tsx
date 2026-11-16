@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Gift, Info, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
@@ -12,6 +12,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatZarCurrency } from "@/lib/utils";
+import { messageForError } from "@/lib/net";
 import type { CatalogGroup, CategoryRef, Station } from "@/lib/catalog";
 import { type OrderStation, orderStatusLabel, stationLabel, stationStatusLabel } from "@/lib/stations";
 import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
@@ -268,6 +269,10 @@ type PosOrderBuilderProps = {
   invalidateManagementSession: () => void;
 };
 
+function formatHHMM(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 function nowTimeHHMMSS(): string {
   return new Date().toTimeString().slice(0, 8);
 }
@@ -441,6 +446,12 @@ export function PosOrderBuilder({
   const [menu, setMenu] = useState<MenuTodayResponse>({ options: [], availableExtras: [] });
   const [isLoadingMenu, setIsLoadingMenu] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
+  // The period whose menu is on screen and when it last loaded. A failed refresh of the SAME period keeps it
+  // and marks it stale; a different period that fails to load is cleared, so items never show under the wrong tab.
+  const menuPeriodRef = useRef<string | null>(null);
+  const beveragesLoadedRef = useRef(false);
+  const [menuUpdatedAt, setMenuUpdatedAt] = useState<Date | null>(null);
+  const [menuStale, setMenuStale] = useState(false);
   // The Beverages tab isn't a meal period: its items come from the full till menu (no period).
   const [beveragesTab, setBeveragesTab] = useState(false);
   const [beverageOptions, setBeverageOptions] = useState<DailyMealOption[]>([]);
@@ -626,10 +637,18 @@ export function PosOrderBuilder({
           options: Array.isArray(payload.options) ? payload.options : [],
           availableExtras: Array.isArray(payload.availableExtras) ? payload.availableExtras : [],
         });
+        menuPeriodRef.current = periodName.toUpperCase();
+        setMenuUpdatedAt(new Date());
+        setMenuStale(false);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unable to load today's menu.";
-        setMenu({ options: [], availableExtras: [] });
-        setMenuError(msg);
+        if (menuPeriodRef.current === periodName.toUpperCase()) {
+          // Keep what's on screen; the server still refuses anything that has sold out.
+          setMenuStale(true);
+        } else {
+          menuPeriodRef.current = null;
+          setMenu({ options: [], availableExtras: [] });
+          setMenuError(messageForError(err, "Unable to load today's menu."));
+        }
       } finally {
         setIsLoadingMenu(false);
       }
@@ -650,9 +669,16 @@ export function PosOrderBuilder({
         }
         const options = Array.isArray(payload.options) ? payload.options : [];
         setBeverageOptions(options.filter((option) => option.group === "BEVERAGES"));
+        beveragesLoadedRef.current = true;
+        setMenuUpdatedAt(new Date());
+        setMenuStale(false);
       } catch (err) {
-        setBeverageOptions([]);
-        setMenuError(err instanceof Error ? err.message : "Unable to load beverages.");
+        if (beveragesLoadedRef.current) {
+          setMenuStale(true);
+        } else {
+          setBeverageOptions([]);
+          setMenuError(messageForError(err, "Unable to load beverages."));
+        }
       } finally {
         setIsLoadingMenu(false);
       }
@@ -2300,6 +2326,13 @@ export function PosOrderBuilder({
             </button>
           </div>
         </div>
+
+        {menuStale && menuUpdatedAt && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            Last updated {formatHHMM(menuUpdatedAt)}. Couldn&apos;t refresh the menu; stock shown may be out of date.
+          </div>
+        )}
 
         {menuError && (
           <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">

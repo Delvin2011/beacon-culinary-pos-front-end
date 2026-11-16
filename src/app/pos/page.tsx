@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Clock, FileText, Lock, LogOut, RefreshCw, ShieldCheck, UserRound } from "lucide-react";
+import { Clock, FileText, Lock, LogOut, RefreshCw, ShieldCheck, UserRound, WifiOff } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { useManagementSession } from "@/hooks/use-management-session";
@@ -106,7 +106,7 @@ function formatRemainingMs(remainingMs: number): string {
 function PosMainContent() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, logout, authFetch } = useAuth();
-  const { shift, isLoading: shiftLoading, refetch } = useShift();
+  const { shift, isLoading: shiftLoading, error: shiftError, refetch } = useShift();
   const {
     sessionToken,
     remainingMs,
@@ -149,10 +149,12 @@ function PosMainContent() {
   }, [isAuthenticated, authLoading, router]);
 
   useEffect(() => {
-    if (!shiftLoading && !shift) {
+    // Only a confirmed "no open shift" (404) goes to shift-open. A failed lookup stays here with a retry.
+    // Wait for the sign-in to load: before that the shift lookup hasn't run yet, so "no shift" means nothing.
+    if (!authLoading && isAuthenticated && !shiftLoading && !shift && !shiftError) {
       router.replace("/pos/shift-open");
     }
-  }, [shift, shiftLoading, router]);
+  }, [authLoading, isAuthenticated, shift, shiftLoading, shiftError, router]);
 
   const parseMessage = useCallback((payload: unknown, fallback: string): string => {
     if (!payload || typeof payload !== "object") return fallback;
@@ -508,6 +510,39 @@ function PosMainContent() {
     );
   }
 
+  // The first lookup failed (e.g. the app restarted while offline): the shift isn't known yet.
+  if (!shift && shiftError && !closeoutRecord) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
+        <div className="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-900 p-6 text-center">
+          <WifiOff className="mx-auto h-10 w-10 text-amber-300" />
+          <h1 className="mt-4 text-2xl font-bold text-white">Can&apos;t reach the server</h1>
+          <p className="mt-2 text-slate-300">{shiftError}</p>
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                logout();
+                router.replace("/pos/login");
+              }}
+              className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-medium text-slate-300 hover:bg-slate-800"
+            >
+              Log Out
+            </button>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Retry
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (shift && !shift.ownedByCaller && !isAdmin && !closeoutRecord) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
@@ -659,6 +694,21 @@ function PosMainContent() {
           </button>
         </div>
       </header>
+
+      {shiftError && shift && (
+        <div className="flex items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-6 py-2 text-sm text-amber-100">
+          <WifiOff className="h-4 w-4 shrink-0" />
+          <span>Can&apos;t reach the server to check the shift. Showing the last known shift.</span>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-amber-400/40 px-3 py-1 text-xs font-medium hover:bg-amber-500/20"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Retry
+          </button>
+        </div>
+      )}
 
       {sellingOnOthersShift && shift && (
         <div className="border-b border-sky-500/30 bg-sky-500/10 px-6 py-2 text-sm text-sky-100">

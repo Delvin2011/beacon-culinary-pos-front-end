@@ -12,6 +12,7 @@ import { reauthLoginPath } from "@/lib/return-to";
 import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
+import { CONNECTION_MESSAGES, fetchWithTimeout, messageForError, timeoutFor } from "@/lib/net";
 
 // Shape returned by GET /users/cashiers
 interface CashierSummary {
@@ -20,6 +21,11 @@ interface CashierSummary {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
+
+const CASHIERS_FAILED_MESSAGE = "Could not load the cashier list. Contact the administrator if this keeps happening.";
+
+// A cashier-list failure whose message is already safe to show.
+class CashierListError extends Error {}
 
 type View = "select-cashier" | "enter-pin";
 
@@ -78,16 +84,18 @@ export default function PosLoginPage() {
     setCashiersError(null);
     setTillNotRegistered(false);
 
-    fetch(`${API_BASE}/users/cashiers`, { credentials: "include" })
+    const cashiersUrl = `${API_BASE}/users/cashiers`;
+    fetchWithTimeout(cashiersUrl, { credentials: "include" }, timeoutFor(cashiersUrl))
       .then(async (res) => {
         if (res.status === 403 && (await errorCode(res)) === DeviceErrorCode.NOT_REGISTERED) {
           setCashiers([]);
           setTillNotRegistered(true);
           return;
         }
-        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        if (res.status >= 500) throw new CashierListError(CONNECTION_MESSAGES.server);
+        if (!res.ok) throw new CashierListError(CASHIERS_FAILED_MESSAGE);
         const data = (await res.json()) as unknown;
-        if (!Array.isArray(data)) throw new Error("Unexpected response format");
+        if (!Array.isArray(data)) throw new CashierListError(CASHIERS_FAILED_MESSAGE);
         setCashiers(
           (data as Record<string, unknown>[]).map((u) => ({
             id: u.id as number,
@@ -95,10 +103,8 @@ export default function PosLoginPage() {
           })),
         );
       })
-      .catch(() => {
-        setCashiersError(
-          "Could not load cashier list. Please check your connection or contact the administrator.",
-        );
+      .catch((err: unknown) => {
+        setCashiersError(err instanceof CashierListError ? err.message : messageForError(err, CASHIERS_FAILED_MESSAGE));
       })
       .finally(() => setCashiersLoading(false));
   }, []);
@@ -221,8 +227,15 @@ export default function PosLoginPage() {
         )}
 
         {cashiersError && (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-6 py-4 text-center text-rose-300 max-w-sm">
-            {cashiersError}
+          <div className="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-6 py-4 text-center text-rose-300">
+            <p>{cashiersError}</p>
+            <button
+              type="button"
+              onClick={() => loadCashiers()}
+              className="rounded-lg border border-rose-400/40 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-500/20"
+            >
+              Try again
+            </button>
           </div>
         )}
 

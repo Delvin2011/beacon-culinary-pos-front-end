@@ -5,10 +5,12 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { CONNECTION_MESSAGES, messageForError } from "@/lib/net";
 
 export interface ShiftOwner {
   id: number;
@@ -93,15 +95,23 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
   const [shift, setShift] = useState<Shift | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The shift on screen, for a quiet refetch: once a shift is known, reloading it doesn't show the full-screen
+  // loader (which would unmount the till and its cart).
+  const shiftRef = useRef<Shift | null>(null);
+  useEffect(() => {
+    shiftRef.current = shift;
+  }, [shift]);
 
   const fetchCurrentShift = useCallback(async () => {
     if (!isAuthenticated) {
+      // No lookup without a sign-in. Stay "loading" so no screen treats this empty shift as "no open shift"
+      // (on a page load the sign-in arrives a render later, and the lookup runs then).
       setShift(null);
-      setIsLoading(false);
+      setIsLoading(true);
       return;
     }
 
-    setIsLoading(true);
+    if (!shiftRef.current) setIsLoading(true);
     setError(null);
     try {
       // /shifts/open returns the till's shift whoever owns it; /shifts/current only the caller's own.
@@ -111,13 +121,14 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (!res.ok) {
-        setError("Failed to load shift status.");
+        setError(res.status >= 500 ? CONNECTION_MESSAGES.server : "Failed to load shift status.");
         return;
       }
       const body = (await res.json().catch(() => null)) as unknown;
       setShift(extractShift(body));
-    } catch {
-      setError("Failed to load shift status.");
+    } catch (err) {
+      // No answer: keep the last known shift. Only a 404 means "no open shift".
+      setError(messageForError(err, "Failed to load shift status."));
     } finally {
       setIsLoading(false);
     }
