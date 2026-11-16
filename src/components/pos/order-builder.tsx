@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatZarCurrency } from "@/lib/utils";
 import { messageForError } from "@/lib/net";
+import { useConnection } from "@/contexts/connection-context";
 import type { CatalogGroup, CategoryRef, Station } from "@/lib/catalog";
 import { type OrderStation, orderStatusLabel, stationLabel, stationStatusLabel } from "@/lib/stations";
 import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
@@ -438,6 +439,8 @@ export function PosOrderBuilder({
 }: PosOrderBuilderProps) {
   const { authFetch } = useAuth();
   const { shift, refetch: refetchShift } = useShift();
+  // Selling offline is not part of O1: Confirm waits for the connection; the cart is kept.
+  const { isOnline } = useConnection();
   const [shiftClosedWhileSelling, setShiftClosedWhileSelling] = useState(false);
 
   const [periods, setPeriods] = useState<MealPeriod[]>([]);
@@ -857,6 +860,7 @@ export function PosOrderBuilder({
   const canConfirmPayment =
     draftLines.length > 0 &&
     !isSubmitting &&
+    isOnline &&
     ((paymentEntries.length > 0 && remainingToPayCents === 0) || singlePaymentDraft !== null);
 
   // One tap adds one. Always-on lines never carry extras, so repeat taps just raise the quantity.
@@ -1617,7 +1621,7 @@ export function PosOrderBuilder({
   };
 
   const confirmComplimentary = () => {
-    if (draftLines.length === 0 || saleDiscount || isSubmitting) return;
+    if (draftLines.length === 0 || saleDiscount || isSubmitting || !isOnline) return;
     const error = complimentaryFormError();
     if (error) {
       setComplimentaryError(error);
@@ -2756,13 +2760,15 @@ export function PosOrderBuilder({
               </button>
               <button
                 type="button"
-                disabled={isSubmitting || draftLines.length === 0 || complimentaryFormError() !== null}
+                disabled={isSubmitting || !isOnline || draftLines.length === 0 || complimentaryFormError() !== null}
                 onClick={confirmComplimentary}
                 className="rounded-lg bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-400 disabled:cursor-not-allowed disabled:bg-slate-700"
               >
                 {isSubmitting
                   ? "Sending..."
-                  : complimentaryToken || (managementSessionActive && managementSessionToken)
+                  : !isOnline
+                    ? "Waiting for connection"
+                    : complimentaryToken || (managementSessionActive && managementSessionToken)
                     ? `Give away ${toMoney(draftTotal)}`
                     : "Approve with PIN"}
               </button>
@@ -3229,7 +3235,7 @@ export function PosOrderBuilder({
                 onClick={() => void submitOrder()}
                 className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
               >
-                {isSubmitting ? "Processing..." : "Confirm Payment"}
+                {isSubmitting ? "Processing..." : !isOnline ? "Waiting for connection" : "Confirm Payment"}
               </button>
             </div>
           </div>

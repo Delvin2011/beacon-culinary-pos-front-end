@@ -14,6 +14,7 @@ import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { CONNECTION_MESSAGES, RequestTimeoutError, fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
+import { reportConnectionSignal, signalForError, signalForResponse } from "@/lib/connection-signals";
 
 // timeoutMs overrides the default limit (15 s; 20 s for POST /orders; 5 s for /health).
 export type AuthFetchInit = RequestInit & { timeoutMs?: number };
@@ -505,8 +506,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return headers;
       };
 
-      const execute = (token: string | null) =>
-        fetchWithTimeout(url, { ...requestInit, headers: buildHeaders(token), credentials: "include" }, timeoutMs);
+      // Every outcome is also a connection signal for the till's online/offline indicator.
+      const execute = async (token: string | null) => {
+        try {
+          const res = await fetchWithTimeout(
+            url,
+            { ...requestInit, headers: buildHeaders(token), credentials: "include" },
+            timeoutMs,
+          );
+          const signal = signalForResponse(res.status);
+          if (signal) reportConnectionSignal(signal);
+          return res;
+        } catch (err) {
+          const signal = signalForError(err);
+          if (signal) reportConnectionSignal(signal);
+          throw err;
+        }
+      };
 
       const initialResponse = await execute(tokenRef.current);
       const shouldAttemptRefresh =

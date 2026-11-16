@@ -3,6 +3,7 @@ import { act, render } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AuthContext, AuthProvider } from "@/contexts/auth-context"
 import { RequestTimeoutError } from "@/lib/net"
+import { subscribeConnectionSignals, type ConnectionSignal } from "@/lib/connection-signals"
 
 type Auth = NonNullable<ContextType<typeof AuthContext>>
 
@@ -76,6 +77,23 @@ describe("authFetch timeouts", () => {
     expect(await limitFor("/orders", { method: "POST" })).toBe(20_000)
     expect(await limitFor("/health")).toBe(5_000)
     expect(await limitFor("/orders/today")).toBe(15_000)
+  })
+
+  it("reports each outcome as a connection signal", async () => {
+    const signals: ConnectionSignal[] = []
+    const unsubscribe = subscribeConnectionSignals((s) => signals.push(s))
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValueOnce(new Response("{}", { status: 409 }))
+    const auth = renderSignedIn()
+
+    await act(async () => {
+      await auth()
+        .authFetch("/orders/today")
+        .catch(() => {})
+      await auth().authFetch("/orders/today")
+    })
+    unsubscribe()
+
+    expect(signals).toEqual([{ ok: false, reason: "no-connection" }, { ok: true }])
   })
 
   it("passes the request through unchanged apart from the signal", async () => {

@@ -11,6 +11,7 @@ import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
 import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
+import { ConnectionIndicator } from "@/components/pos/connection-indicator";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
@@ -650,6 +651,7 @@ function PosMainContent() {
         </div>
 
         <div className="flex items-center gap-3">
+          <ConnectionIndicator />
           {isManagementActive && (
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">
               <ShieldCheck className="h-3.5 w-3.5" />
