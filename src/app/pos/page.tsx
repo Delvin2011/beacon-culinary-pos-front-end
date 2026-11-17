@@ -21,7 +21,8 @@ import { readLoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { useLockBlocker, useLockBusy } from "@/lib/lock-guard";
-import { UNREGISTERED_TILL } from "@/lib/till";
+import { UNREGISTERED_TILL, tillLabel } from "@/lib/till";
+import { moneyOrDash } from "@/lib/money";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -52,9 +53,12 @@ type ShiftCloseResponse = {
   openingFloat: number;
   openedAt: string;
   closedAt?: string | null;
-  closingCash?: number;
+  closingCash?: number | null;
   expectedCash?: number;
-  variance?: number;
+  variance?: number | null;
+  // O2 ShiftDto (contract 8.5).
+  tillCode?: string | null;
+  tillName?: string | null;
   varianceReasonCode?: VarianceReasonCode;
   varianceNote?: string;
   varianceAuthorizedById?: number;
@@ -605,10 +609,11 @@ function PosMainContent() {
           </div>
 
           <div className="grid gap-2 text-sm text-slate-200">
+            <p>Till: {tillLabel(closeoutRecord.tillCode, closeoutRecord.tillName)}</p>
             <p>Opening Float: {formatZarCurrency(closeoutRecord.openingFloat ?? 0)}</p>
             <p>Expected Cash: {formatZarCurrency(closeoutRecord.expectedCash ?? 0)}</p>
-            <p>Counted Cash: {formatZarCurrency(closeoutRecord.closingCash ?? 0)}</p>
-            <p>Variance: {formatZarCurrency(closeoutRecord.variance ?? 0)}</p>
+            <p>Counted Cash: {moneyOrDash(closeoutRecord.closingCash)}</p>
+            <p>Variance: {moneyOrDash(closeoutRecord.variance)}</p>
             {closeoutRecord.varianceReasonCode && <p>Reason: {closeoutRecord.varianceReasonCode.replaceAll("_", " ")}</p>}
             {closeoutRecord.varianceNote && <p>Note: {closeoutRecord.varianceNote}</p>}
           </div>
