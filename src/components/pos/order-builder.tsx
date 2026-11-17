@@ -14,6 +14,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { formatZarCurrency } from "@/lib/utils";
 import { messageForError } from "@/lib/net";
 import { useConnection } from "@/contexts/connection-context";
+import { usePendingSale } from "@/hooks/use-pending-sale";
+import { PendingSaleOverlay } from "@/components/pos/pending-sale-overlay";
+import type { PendingSale, SaleSendOutcome } from "@/lib/pending-sale";
 import type { CatalogGroup, CategoryRef, Station } from "@/lib/catalog";
 import { type OrderStation, orderStatusLabel, stationLabel, stationStatusLabel } from "@/lib/stations";
 import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
@@ -437,7 +440,7 @@ export function PosOrderBuilder({
   requestManagementSession,
   invalidateManagementSession,
 }: PosOrderBuilderProps) {
-  const { authFetch } = useAuth();
+  const { authFetch, user, logout } = useAuth();
   const { shift, refetch: refetchShift } = useShift();
   // Selling offline is not part of O1: Confirm waits for the connection; the cart is kept.
   const { isOnline } = useConnection();
@@ -562,7 +565,35 @@ export function PosOrderBuilder({
   const [accountSearch, setAccountSearch] = useState("");
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [showAccountDetails, setShowAccountDetails] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  // Set when a 200 replay finished the sale: it had already gone through before.
+  const [saleReplayNotice, setSaleReplayNotice] = useState(false);
+
+  const managerApprovalPrompt = {
+    title: "Manager PIN Required",
+    description: "The approval was refused or has expired. Enter an admin PIN to finish this sale.",
+    submitLabel: "Approve",
+  };
+
+  // Confirm freezes the body with a clientOrderId and keeps resending it until the server gives a definite answer.
+  // The callbacks only run after a render, so they may use handlers defined further down.
+  const pendingSale = usePendingSale({
+    authFetch,
+    user,
+    isOnline,
+    // Once per clientOrderId. Printing the receipt / kitchen ticket would hook in here.
+    onCompleted: async (order, _sale, replay) => {
+      setSaleReplayNotice(replay);
+      await finishOrder(order as OrderDto);
+    },
+    onRejected: (sale, outcome) =>
+      sale.kind === "COMPLIMENTARY" ? handleComplimentaryRejection(sale, outcome) : handleSaleRejection(outcome),
+    onNeedsApproval: () => {
+      invalidateManagementSession();
+      requestManagementSession((token) => pendingSale.resendWithApproval(token), managerApprovalPrompt);
+    },
+  });
+  // A sale is out and its outcome is unknown: nothing on the till may change it or start another.
+  const isSubmitting = pendingSale.pending !== null;
   // Discount at checkout: the draft being edited, and the one a manager approved.
   const [saleDiscount, setSaleDiscount] = useState<SaleDiscount | null>(null);
   const [showSaleDiscountForm, setShowSaleDiscountForm] = useState(false);
@@ -1441,7 +1472,6 @@ export function PosOrderBuilder({
       return;
     }
 
-    setIsSubmitting(true);
     setSubmissionError(null);
 
     const payload: Record<string, unknown> = {
@@ -1467,77 +1497,60 @@ export function PosOrderBuilder({
       };
     }
 
-    try {
-      const res = await authFetch("/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const body = (await res.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
-
-      if (!res.ok) {
-        // Shift errors share 409 with stock conflicts, so branch on code first.
-        const errorCode = (body as ApiErrorPayload | null)?.code;
-        if (errorCode === "NO_OPEN_SHIFT") {
-          // Keep the cart so the order can be completed on a new shift.
-          setShiftClosedWhileSelling(true);
-          return;
-        }
-        if (errorCode === "TILL_IN_USE") {
-          // Reloading the shift shows the "Till in use" screen.
-          await refetchShift();
-          return;
-        }
-        if (errorCode === "AUTHORIZATION_INVALID") {
-          // No order was created. Ask for the PIN again and resubmit the same cart.
-          invalidateManagementSession();
-          setSubmissionError("The manager approval was rejected or has expired. Enter an admin PIN again to charge.");
-          requestManagementSession((token) => void submitOrder(token), approvalPrompt);
-          return;
-        }
-        if (errorCode === "ACCOUNT_PAYMENT_INVALID") {
-          throw new Error(parseMessage(body, "The account payment was refused. Check the account and try again."));
-        }
-        if (errorCode === "ITEM_UNAVAILABLE") {
-          await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
-          return;
-        }
-        if (errorCode === "EXTRAS_NOT_ALLOWED") {
-          throw new Error(parseMessage(body, "Extras can't be added to light meals or beverages. Remove them and try again."));
-        }
-        if (errorCode === "DISCOUNT_INVALID" || errorCode === "DISCOUNT_TOO_LARGE") {
-          setSaleDiscountError(parseMessage(body, "This discount isn't allowed. Change or remove it."));
-          throw new Error("The discount was refused. Change or remove it, then charge again.");
-        }
-
-        if (res.status === 409) {
-          applyConflictFeedback(body);
-          await loadMenuForPeriod(selectedPeriod?.name ?? "");
-          throw new Error(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
-        }
-
-        throw new Error(parseMessage(body, "Order submission failed."));
-      }
-
-      await finishOrder(body as OrderDto);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Order submission failed.";
-      setSubmissionError(msg);
-      // Out today changes aren't pushed to the till: refresh the menu after any order error.
-      refreshShownMenu(true);
-    } finally {
-      setIsSubmitting(false);
+    setSaleReplayNotice(false);
+    // Confirm freezes this body with a new clientOrderId and sends it; retries reuse both.
+    if (!pendingSale.start("SALE", payload, saleSummary(payableCents / 100))) {
+      setSubmissionError("A sale is still being checked. Wait for it to finish.");
     }
+  };
+
+  // What the "Checking the sale…" screen lists: the request body only has ids.
+  const saleSummary = (total: number) => ({
+    lines: draftLines.map((line) => ({ name: line.name, quantity: line.quantity })),
+    total,
+  });
+
+  type RejectedSale = Extract<SaleSendOutcome, { kind: "rejected" }>;
+
+  // The server refused the sale and nothing was created: the same handling as before O1. The cart is kept.
+  const handleSaleRejection = async ({ status, code, body }: RejectedSale) => {
+    // Shift errors share 409 with stock conflicts, so branch on code first.
+    if (code === "NO_OPEN_SHIFT") {
+      // Keep the cart so the order can be completed on a new shift.
+      setShiftClosedWhileSelling(true);
+      return;
+    }
+    if (code === "TILL_IN_USE") {
+      // Reloading the shift shows the "Till in use" screen.
+      await refetchShift();
+      return;
+    }
+    if (code === "ITEM_UNAVAILABLE") {
+      await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
+      return;
+    }
+    if (code === "DISCOUNT_INVALID" || code === "DISCOUNT_TOO_LARGE") {
+      setSaleDiscountError(parseMessage(body, "This discount isn't allowed. Change or remove it."));
+      setSubmissionError("The discount was refused. Change or remove it, then charge again.");
+    } else if (code === "ACCOUNT_PAYMENT_INVALID") {
+      setSubmissionError(parseMessage(body, "The account payment was refused. Check the account and try again."));
+    } else if (code === "EXTRAS_NOT_ALLOWED") {
+      setSubmissionError(parseMessage(body, "Extras can't be added to light meals or beverages. Remove them and try again."));
+    } else if (status === 409) {
+      applyConflictFeedback(body);
+      await loadMenuForPeriod(selectedPeriod?.name ?? "");
+      setSubmissionError(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
+    } else {
+      setSubmissionError(parseMessage(body, "Order submission failed."));
+    }
+    // Out today changes aren't pushed to the till: refresh the menu after any order error.
+    refreshShownMenu(true);
   };
 
   // A complimentary order: lines and the manager's approval, never payments or a discount.
   const submitComplimentary = async (sessionToken: string) => {
     if (draftLines.length === 0 || !complimentaryReason) return;
 
-    setIsSubmitting(true);
     setSubmissionError(null);
     setComplimentaryError(null);
 
@@ -1550,69 +1563,66 @@ export function PosOrderBuilder({
       },
     };
 
-    try {
-      const res = await authFetch("/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const body = (await res.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
-
-      if (!res.ok) {
-        const errorCode = (body as ApiErrorPayload | null)?.code;
-        if (errorCode === "NO_OPEN_SHIFT") {
-          setShiftClosedWhileSelling(true);
-          return;
-        }
-        if (errorCode === "TILL_IN_USE") {
-          await refetchShift();
-          return;
-        }
-        if (errorCode === "AUTHORIZATION_INVALID" || res.status === 401) {
-          // Bad, expired or already used: drop it and ask for a new PIN.
-          invalidateManagementSession();
-          setComplimentaryToken(null);
-          setComplimentaryError("Manager approval failed. Enter the PIN again.");
-          requestManagementSession((token) => void submitComplimentary(token), {
-            title: "Manager PIN Required",
-            description: "Manager approval failed. Enter the PIN again.",
-            submitLabel: "Approve Complimentary",
-          });
-          return;
-        }
-        if (errorCode === "ITEM_UNAVAILABLE") {
-          // The order rolled back, so the approval is still valid for the trimmed cart.
-          setComplimentaryToken(sessionToken);
-          await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
-          return;
-        }
-        if (errorCode === "COMPLIMENTARY_INVALID") {
-          // The approval wasn't used: keep it while the cashier fixes the form.
-          setComplimentaryToken(sessionToken);
-          setComplimentaryError(parseMessage(body, "This complimentary order isn't allowed. Check the reason and note."));
-          return;
-        }
-        if (res.status === 409) {
-          // The order rolled back, so the approval is still valid: retry after fixing the cart, no new PIN.
-          setComplimentaryToken(sessionToken);
-          applyConflictFeedback(body);
-          await loadMenuForPeriod(selectedPeriod?.name ?? "");
-          setComplimentaryError(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
-          return;
-        }
-        throw new Error(parseMessage(body, "Order submission failed."));
-      }
-
-      await finishOrder(body as OrderDto);
-    } catch (err) {
-      setComplimentaryError(err instanceof Error ? err.message : "Order submission failed.");
-    } finally {
-      setIsSubmitting(false);
+    setSaleReplayNotice(false);
+    // The approval goes out with the frozen body; a refused approval asks for a PIN and resends the same id.
+    setComplimentaryToken(null);
+    if (!pendingSale.start("COMPLIMENTARY", payload, saleSummary(0))) {
+      setComplimentaryToken(sessionToken);
+      setComplimentaryError("A sale is still being checked. Wait for it to finish.");
     }
   };
+
+  // Nothing was created. The approval wasn't used, so it is kept for the corrected cart, as before O1.
+  const handleComplimentaryRejection = async (sale: PendingSale, { status, code, body }: RejectedSale) => {
+    const complimentary = sale.body.complimentary as { authorization?: { sessionToken?: string } } | undefined;
+    const sessionToken = complimentary?.authorization?.sessionToken ?? null;
+    if (code === "NO_OPEN_SHIFT") {
+      setShiftClosedWhileSelling(true);
+      return;
+    }
+    if (code === "TILL_IN_USE") {
+      await refetchShift();
+      return;
+    }
+    setComplimentaryToken(sessionToken);
+    if (code === "ITEM_UNAVAILABLE") {
+      await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
+      return;
+    }
+    if (code === "COMPLIMENTARY_INVALID") {
+      setComplimentaryError(parseMessage(body, "This complimentary order isn't allowed. Check the reason and note."));
+      return;
+    }
+    if (status === 409) {
+      applyConflictFeedback(body);
+      await loadMenuForPeriod(selectedPeriod?.name ?? "");
+      setComplimentaryError(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
+      return;
+    }
+    setComplimentaryError(parseMessage(body, "Order submission failed."));
+  };
+
+  // Covers the till while a sale's outcome is unknown. Rendered on both screens (till and completed sale).
+  const pendingSaleOverlay =
+    pendingSale.pending && pendingSale.phase !== "idle" ? (
+      <PendingSaleOverlay
+        sale={pendingSale.pending}
+        phase={pendingSale.phase}
+        isOnline={isOnline}
+        onCheckAgain={pendingSale.checkNow}
+        onEnterPin={() => requestManagementSession((token) => pendingSale.resendWithApproval(token), managerApprovalPrompt)}
+        // 401 AUTHORIZATION_INVALID: nothing was created, so the cashier can go back and change the order.
+        onCancelUnapproved={pendingSale.discard}
+        onSupervisorClear={() =>
+          requestManagementSession(() => pendingSale.discard(), {
+            title: "Supervisor approval",
+            description: "Clearing doesn't cancel the sale. Check Today's orders before ringing it again.",
+            submitLabel: "Clear it",
+          })
+        }
+        onSignOut={logout}
+      />
+    ) : null;
 
   const complimentaryFormError = (): string | null => {
     if (!complimentaryReason) return "Choose a reason.";
@@ -1883,6 +1893,9 @@ export function PosOrderBuilder({
 
           <p className="mt-6 text-sm text-emerald-200/90">Order Number</p>
           <p className="text-7xl font-black text-white">#{shownOrder.orderNumber}</p>
+          {saleReplayNotice && (
+            <p className="mt-2 text-sm text-sky-200">This sale had already gone through. It was recorded once.</p>
+          )}
 
           {complimentaryOrder ? (
             <>
@@ -2263,6 +2276,7 @@ export function PosOrderBuilder({
           )}
         </aside>
       </main>
+      {pendingSaleOverlay}
       </>
     );
   }
@@ -3299,6 +3313,7 @@ export function PosOrderBuilder({
           </div>
         </div>
       )}
+      {pendingSaleOverlay}
     </>
   );
 }
