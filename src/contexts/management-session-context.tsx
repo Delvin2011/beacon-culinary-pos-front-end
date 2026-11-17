@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { messageForError } from "@/lib/net";
 import { useLoginBlocks, type LoginBlockState } from "@/hooks/use-login-blocks";
 import { readLoginBlock, type LoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
@@ -203,7 +204,7 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
       }
     } catch (err) {
       setPin("");
-      setError(err instanceof Error ? err.message : "Unable to unlock management mode.");
+      setError(messageForError(err, "Unable to unlock management mode."));
     } finally {
       setSubmitting(false);
     }

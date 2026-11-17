@@ -8,6 +8,7 @@ import { ReportStatement } from "@/components/reports/report-statement"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { readApiError } from "@/lib/pos-activity"
+import { messageForError } from "@/lib/net"
 import type { PrintMedium, ReportEnvelope } from "@/lib/reports"
 
 // The till's Cashier Reading: GET /shifts/{id}/reading, for the shift's owner or an Admin.
@@ -31,7 +32,7 @@ export function ShiftReadingDialog({ shiftId, onClose }: { shiftId: number | nul
       setReading((await res.json()) as ReportEnvelope)
     } catch (err) {
       setReading(null)
-      setError(err instanceof Error ? err.message : "Unable to load the reading.")
+      setError(messageForError(err, "Unable to load the reading."))
     } finally {
       setLoading(false)
     }

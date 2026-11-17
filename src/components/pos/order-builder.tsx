@@ -738,7 +738,7 @@ export function PosOrderBuilder({
       try {
         await loadPeriods();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unable to load meal periods.";
+        const msg = messageForError(err, "Unable to load meal periods.");
         setMenuError(msg);
       }
     })();
@@ -1170,7 +1170,7 @@ export function PosOrderBuilder({
       // No default: the cashier must pick the account. Keep a pick only if it is still active.
       setSelectedAccountId((current) => (current && body.some((account) => account.id === current) ? current : null));
     } catch (err) {
-      setAccountsError(err instanceof Error ? err.message : "Unable to load accounts for checkout.");
+      setAccountsError(messageForError(err, "Unable to load accounts for checkout."));
       setCheckoutAccounts([]);
       setSelectedAccountId(null);
     } finally {
@@ -1327,7 +1327,7 @@ export function PosOrderBuilder({
         setCompletedOrder(nextOrder);
         return nextOrder;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unable to load receipt.";
+        const msg = messageForError(err, "Unable to load receipt.");
         setReceiptError(msg);
         return null;
       } finally {
@@ -1348,7 +1348,7 @@ export function PosOrderBuilder({
       }
       setTodayOrders(body);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unable to load today's orders.";
+      const msg = messageForError(err, "Unable to load today's orders.");
       setTodayOrdersError(msg);
     } finally {
       setTodayOrdersLoading(false);
@@ -1827,7 +1827,7 @@ export function PosOrderBuilder({
 
         setShowAdjustmentForm(false);
       } catch (err) {
-        setAdjustmentError(err instanceof Error ? err.message : "Unable to apply management action.");
+        setAdjustmentError(messageForError(err, "Unable to apply management action."));
       } finally {
         setIsApplyingAdjustment(false);
       }
@@ -2105,7 +2105,7 @@ export function PosOrderBuilder({
                     await markPrintFailed(completedOrderId);
                     await loadTodayOrders();
                   } catch (err) {
-                    setReceiptError(err instanceof Error ? err.message : "Unable to mark print as failed.");
+                    setReceiptError(messageForError(err, "Unable to mark print as failed."));
                   }
                 })();
               }}

@@ -10,6 +10,7 @@ import { PosOrderBuilder } from "@/components/pos/order-builder";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
+import { messageForError } from "@/lib/net";
 import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ConnectionIndicator } from "@/components/pos/connection-indicator";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
@@ -218,7 +219,7 @@ function PosMainContent() {
 
       setCloseSummary(body as ShiftSummaryDto);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to load shift summary.";
+      const message = messageForError(err, "Unable to load shift summary.");
       setCloseError(message);
     } finally {
       setSummaryLoading(false);
@@ -258,7 +259,7 @@ function PosMainContent() {
         setManagementSummary(body as ShiftSummaryDto);
         setManagementSummaryOpen(true);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to load cashup summary.";
+        const message = messageForError(err, "Unable to load cashup summary.");
         setManagementSummaryError(message);
         setManagementSummaryOpen(true);
       } finally {
@@ -329,7 +330,7 @@ function PosMainContent() {
       setConfirmClose(false);
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
-      const message = err instanceof Error ? err.message : "Failed to close shift.";
+      const message = messageForError(err, "Failed to close shift.");
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {
@@ -480,7 +481,7 @@ function PosMainContent() {
       setConfirmClose(false);
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
-      const message = err instanceof Error ? err.message : "Failed to close shift.";
+      const message = messageForError(err, "Failed to close shift.");
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {

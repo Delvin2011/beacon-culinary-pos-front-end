@@ -7,6 +7,7 @@ import { useShift } from "@/hooks/use-shift";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import { DayClosedError } from "@/contexts/shift-context";
+import { messageForError } from "@/lib/net";
 
 // Opening float is entered as typed, with "," for cents (e.g. "50,5" = R 50.50)
 const MAX_FLOAT_WHOLE_DIGITS = 6; // up to R999,999.99
@@ -55,7 +56,7 @@ export default function ShiftOpenPage() {
         setError(err.message);
         return;
       }
-      const msg = err instanceof Error ? err.message : "Failed to open shift.";
+      const msg = messageForError(err, "Failed to open shift.");
       if (msg.includes("already open")) {
         // Shift was opened in another tab / race — redirect
         router.replace("/pos");
