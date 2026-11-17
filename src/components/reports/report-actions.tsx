@@ -19,7 +19,10 @@ import {
 // The outcome of a request made for a report or row action.
 export type ActionOutcome =
   | { ok: true; body: unknown }
-  | { ok: false; message: string; blockers: EndOfDayBlocker[] }
+  | { ok: false; message: string; blockers: EndOfDayBlocker[]; code: string | null; details: Record<string, unknown> | null }
+
+// O2: a sign-off refused because the shift was force-closed without a count. The fix is in POS Activity.
+const SHIFT_UNCOUNTED = "SHIFT_UNCOUNTED"
 
 // Sends an action's request. Errors come back as { error, code, blockers? } or a field map; every blocker is kept.
 export async function sendAction(
@@ -45,9 +48,14 @@ export async function sendAction(
           ? record.message
           : Object.values(record).filter((value): value is string => typeof value === "string").join(" ") ||
             (res.status === 403 ? "You don't have permission to do this." : "The action failed. Try again.")
-    return { ok: false, message, blockers }
+    const code = typeof record.code === "string" ? record.code : null
+    const details =
+      record.details && typeof record.details === "object" && !Array.isArray(record.details)
+        ? (record.details as Record<string, unknown>)
+        : null
+    return { ok: false, message, blockers, code, details }
   } catch {
-    return { ok: false, message: "The action failed. Check the connection and try again.", blockers: [] }
+    return { ok: false, message: "The action failed. Check the connection and try again.", blockers: [], code: null, details: null }
   }
 }
 
@@ -87,7 +95,13 @@ export function ReportActions({ actions, onDone }: ReportActionsProps) {
   const [pending, setPending] = useState<ReportAction | null>(null)
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
   const [running, setRunning] = useState<string | null>(null)
-  const [failure, setFailure] = useState<{ label: string; message: string; blockers: EndOfDayBlocker[] } | null>(null)
+  const [failure, setFailure] = useState<{
+    label: string
+    message: string
+    blockers: EndOfDayBlocker[]
+    // details.shiftId of a SHIFT_UNCOUNTED refusal.
+    uncountedShiftId: number | null
+  } | null>(null)
 
   const pendingFields = pending?.fields ?? []
   const missingRequired = pendingFields.some((field) => field.required && !(fieldValues[actionFieldName(field)] ?? "").trim())
@@ -112,7 +126,13 @@ export function ReportActions({ actions, onDone }: ReportActionsProps) {
       onDone(isEnvelope(outcome.body) ? outcome.body : null)
       return
     }
-    setFailure({ label: action.label, message: outcome.message, blockers: outcome.blockers })
+    const shiftId = outcome.details?.shiftId
+    setFailure({
+      label: action.label,
+      message: outcome.message,
+      blockers: outcome.blockers,
+      uncountedShiftId: outcome.code === SHIFT_UNCOUNTED && typeof shiftId === "number" ? shiftId : null,
+    })
   }
 
   const start = (action: ReportAction) => {
@@ -153,6 +173,11 @@ export function ReportActions({ actions, onDone }: ReportActionsProps) {
             {failure.label}: {failure.message}
           </p>
           {failure.blockers.length > 0 && <BlockerList blockers={failure.blockers} />}
+          {failure.uncountedShiftId !== null && (
+            <Link href={`/pos-activity?shiftId=${failure.uncountedShiftId}`} className="mt-1 inline-block font-medium underline underline-offset-2">
+              Record the count or confirm there is no count
+            </Link>
+          )}
         </div>
       )}
 
