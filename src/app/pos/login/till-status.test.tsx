@@ -28,6 +28,9 @@ const registered = (shift: TillStatus["shift"]): TillStatus => ({
   shift,
   idleLockMinutes: 5,
   requireRegistered: false,
+  offlineEnabled: false,
+  maxOfflineHours: 6,
+  warnOfflineHours: 5,
 })
 const shiftOf = (locked: boolean): TillStatus["shift"] => ({
   shiftId: 412,
@@ -86,7 +89,7 @@ async function signInAs(name: RegExp, pin = "123456") {
 
 describe("till status on the sign-in screen", () => {
   it("unregistered, requireRegistered off: no till line, tiles shown", async () => {
-    statuses = [{ registered: false, tillCode: null, tillName: null, shift: null, idleLockMinutes: 5, requireRegistered: false }]
+    statuses = [{ registered: false, tillCode: null, tillName: null, shift: null, idleLockMinutes: 5, requireRegistered: false, offlineEnabled: false, maxOfflineHours: 6, warnOfflineHours: 5 }]
     renderPage()
     expect(await screen.findByRole("button", { name: /Thandi Mokoena/ })).toBeInTheDocument()
     await waitFor(() => expect(statusReads()).toBe(1))
@@ -94,7 +97,7 @@ describe("till status on the sign-in screen", () => {
   })
 
   it("unregistered, requireRegistered on: the not-registered screen, no POS sign-in", async () => {
-    statuses = [{ registered: false, tillCode: null, tillName: null, shift: null, idleLockMinutes: 5, requireRegistered: true }]
+    statuses = [{ registered: false, tillCode: null, tillName: null, shift: null, idleLockMinutes: 5, requireRegistered: true, offlineEnabled: false, maxOfflineHours: 6, warnOfflineHours: 5 }]
     renderPage()
     expect(await screen.findByText("This till is not registered. Ask a manager to register it.")).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Thandi Mokoena/ })).not.toBeInTheDocument()
