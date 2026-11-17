@@ -12,11 +12,15 @@ import {
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatZarCurrency } from "@/lib/utils";
-import { messageForError } from "@/lib/net";
+import { messageForError, parseRetryAfter } from "@/lib/net";
 import { useConnection } from "@/contexts/connection-context";
 import { usePendingSale } from "@/hooks/use-pending-sale";
 import { PendingSaleOverlay } from "@/components/pos/pending-sale-overlay";
-import type { PendingSale, SaleSendOutcome } from "@/lib/pending-sale";
+import { newRequestId, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
+
+// Voids and refunds: waits before each resend of the same request (network error, timeout, 5xx, 429).
+const ADJUSTMENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 import type { CatalogGroup, CategoryRef, Station } from "@/lib/catalog";
 import { type OrderStation, orderStatusLabel, stationLabel, stationStatusLabel } from "@/lib/stations";
 import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
@@ -1658,6 +1662,10 @@ export function PosOrderBuilder({
     setAdjustmentSuccess(null);
   };
 
+  // Voids and refunds: one clientRequestId per action, kept in memory (not across a reload). Pressing again with the
+  // same order, action, scope, reason and note reuses it, so a lost answer can't get the action applied twice.
+  const adjustmentRequestRef = useRef<{ key: string; id: string } | null>(null);
+
   const submitOrderAdjustment = useCallback(
     async (order: OrderDto, sessionToken: string) => {
       if (!requestedAction) return;
@@ -1666,21 +1674,47 @@ export function PosOrderBuilder({
       setAdjustmentError(null);
 
       try {
+        const note = adjustmentNote.trim() || undefined;
+        // The contract's "same payload": the session token is not part of it.
+        const key = JSON.stringify([order.id, requestedAction, adjustmentScope, adjustmentReasonCode, note ?? null]);
+        if (adjustmentRequestRef.current?.key !== key) adjustmentRequestRef.current = { key, id: newRequestId() };
+
         const payload: Record<string, unknown> = {
+          clientRequestId: adjustmentRequestRef.current.id,
           requestedAction,
           reasonCode: adjustmentReasonCode,
-          note: adjustmentNote.trim() || undefined,
+          note,
           sessionToken,
           scope: adjustmentScope,
         };
 
-        const adjustmentRes = await authFetch(`/orders/${order.id}/adjustments`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
+        // Network error, timeout, 5xx or 429: resend the same body and id (Retry-After honoured).
+        let adjustmentRes: Response | null = null;
+        for (let attempt = 0; ; attempt += 1) {
+          let retryAfterMs: number | null = null;
+          try {
+            adjustmentRes = await authFetch(`/orders/${order.id}/adjustments`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(payload),
+            });
+            if (adjustmentRes.status < 500 && adjustmentRes.status !== 429) break; // a definite answer
+            if (adjustmentRes.status === 429) retryAfterMs = parseRetryAfter(adjustmentRes.headers.get("Retry-After"));
+          } catch {
+            adjustmentRes = null;
+          }
+          if (attempt === ADJUSTMENT_RETRY_DELAYS_MS.length) break;
+          await sleep(Math.max(ADJUSTMENT_RETRY_DELAYS_MS[attempt], retryAfterMs ?? 0));
+        }
+
+        if (!adjustmentRes || adjustmentRes.status >= 500 || adjustmentRes.status === 429) {
+          // Unknown outcome: keep the id, so pressing again replays it rather than applying it twice.
+          await loadOrderReceipt(order.id);
+          setAdjustmentError("Couldn't confirm the void or refund. Check the order, then press it again: it won't be applied twice.");
+          return;
+        }
 
         const adjustmentBody = (await adjustmentRes.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
 
@@ -1721,6 +1755,14 @@ export function PosOrderBuilder({
             return;
           }
 
+          if (errorCode === "IDEMPOTENCY_CONFLICT") {
+            // This id was already used for something else. Never retried; the next press gets a new id.
+            adjustmentRequestRef.current = null;
+            await loadOrderReceipt(order.id);
+            setAdjustmentError("This action wasn't applied: it was matched to a different request. Check the order before trying again.");
+            return;
+          }
+
           if (adjustmentRes.status === 409) {
             const refreshed = await loadOrderReceipt(order.id);
             await loadTodayOrders();
@@ -1738,6 +1780,8 @@ export function PosOrderBuilder({
           throw new Error(parsedMessage);
         }
 
+        // Done: 201, or 200 Idempotent-Replay with the order as it is now.
+        adjustmentRequestRef.current = null;
         const updatedOrder = adjustmentBody as OrderDto;
         const recent = latestAdjustment(updatedOrder);
 

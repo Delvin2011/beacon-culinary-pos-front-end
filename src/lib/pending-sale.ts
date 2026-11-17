@@ -97,7 +97,8 @@ export function markSaleCompleted(clientOrderId: string): boolean {
   return !already;
 }
 
-function newClientOrderId(): string {
+// A v4 UUID for clientOrderId / clientRequestId.
+export function newRequestId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   // Older browsers without randomUUID: a v4 UUID from getRandomValues.
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -114,7 +115,7 @@ export function createPendingSale(
   summary: PendingSaleSummary,
   owner: PendingSaleOwner,
 ): PendingSale {
-  const clientOrderId = newClientOrderId();
+  const clientOrderId = newRequestId();
   const frozen = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
   return {
     clientOrderId,
