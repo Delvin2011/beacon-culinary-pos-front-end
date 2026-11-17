@@ -90,6 +90,11 @@ const data = {
           url: "/devices",
           access: "admin" as const,
         },
+        {
+          title: "Receipt Settings",
+          url: "/receipt-settings",
+          access: "admin" as const,
+        },
       ],
     },
     {
