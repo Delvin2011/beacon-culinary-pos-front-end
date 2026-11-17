@@ -11,6 +11,9 @@ import {
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { CONNECTION_MESSAGES, messageForError } from "@/lib/net";
+import { detailString, readApiError } from "@/lib/api-error";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { TillErrorCode, shiftAlreadyOpenMessage, shiftOpenOnOtherTillMessage } from "@/lib/till";
 
 export interface ShiftOwner {
   id: number;
@@ -151,18 +154,29 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ openingFloat }),
       });
 
+      // Before the body is read: readApiError reads its own copy.
+      const { code, details } = await readApiError(res);
       const body = (await res.json().catch(() => null)) as unknown;
 
-      const code = body && typeof body === "object" ? (body as Record<string, unknown>).code : undefined;
       if (res.status === 409 && code === "DAY_CLOSED") {
         const zNumber = (body as Record<string, unknown>).zNumber;
         throw new DayClosedError(typeof zNumber === "number" ? zNumber : null);
       }
 
-      if (res.status === 409) {
-        // Already open — sync state so the UI can redirect correctly
+      // O2: the caller already has a shift on another till (an ADMIN included).
+      if (code === TillErrorCode.SHIFT_OPEN_ON_OTHER_TILL) {
+        throw new Error(shiftOpenOnOtherTillMessage(detailString(details, "tillCode"), detailString(details, "tillName")));
+      }
+
+      // This till already has a shift (the caller's own included): load it. /pos/shift-open then moves on to /pos,
+      // which resumes the caller's shift or shows who holds the till.
+      if (code === TillErrorCode.SHIFT_ALREADY_OPEN) {
         await fetchCurrentShift();
-        throw new Error("A shift is currently open on this till. Ask the current cashier to close it first.");
+        throw new Error(shiftAlreadyOpenMessage(detailString(details, "ownerName"), detailString(details, "tillCode")));
+      }
+
+      if (code === DeviceErrorCode.NOT_REGISTERED) {
+        throw new Error(TILL_NOT_REGISTERED_MESSAGE);
       }
 
       if (!res.ok) {

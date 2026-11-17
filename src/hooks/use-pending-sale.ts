@@ -159,6 +159,13 @@ export function usePendingSale(options: UsePendingSaleOptions) {
     if (current && !current.conflict) void send(current);
   }, [send]);
 
+  // A manager finishing another cashier's sale (O2): the stored body as it is, same clientOrderId. The server replays
+  // it if it went through, or records it with the manager as cashier if it never arrived.
+  const sendAsIs = useCallback(() => {
+    const current = pendingRef.current;
+    if (current && !current.conflict) void send(current);
+  }, [send]);
+
   // Drop the pending sale. Only for a supervisor (conflict, someone else's sale, or one that can't be confirmed),
   // or when a refused approval means nothing was created.
   const discard = useCallback(() => {
@@ -199,5 +206,5 @@ export function usePendingSale(options: UsePendingSaleOptions) {
     [],
   );
 
-  return { pending, phase, start, resendWithApproval, checkNow, discard };
+  return { pending, phase, start, resendWithApproval, checkNow, sendAsIs, discard };
 }

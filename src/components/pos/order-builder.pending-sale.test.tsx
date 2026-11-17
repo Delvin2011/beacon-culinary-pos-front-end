@@ -1,7 +1,8 @@
 // Confirm sends a frozen body with a clientOrderId; the till is locked until the server gives a definite answer.
+import { useContext, type ContextType } from "react"
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { AuthProvider } from "@/contexts/auth-context"
+import { AuthContext, AuthProvider } from "@/contexts/auth-context"
 import { ConnectionProvider } from "@/contexts/connection-context"
 import { PosOrderBuilder } from "@/components/pos/order-builder"
 import { createPendingSale, loadPendingSale, savePendingSale } from "@/lib/pending-sale"
@@ -160,5 +161,97 @@ describe("after a reload", () => {
     expect(await screen.findByRole("alertdialog")).toHaveTextContent("2 × Cheese Toastie")
     await waitFor(() => expect(postedBodies()).toHaveLength(1))
     expect(postedBodies()[0]).toEqual(stored.body)
+  })
+})
+
+// O2: a session can end while a sale is out. The sale stays pending and goes out again, unchanged, after sign-in.
+describe("O2: sessions and pending sales", () => {
+  const storedSale = (ownerKey: string, ownerName: string) => {
+    const sale = createPendingSale(
+      "SALE",
+      { lines: [{ dailyMealOptionId: 501, quantity: 1, extras: [] }], payments: [{ method: "CARD", amount: 40 }] },
+      { lines: [{ name: "Cheese Toastie", quantity: 1 }], total: 40 },
+      { key: ownerKey, name: ownerName },
+    )
+    savePendingSale(sale)
+    return sale
+  }
+
+  let auth: ContextType<typeof AuthContext>
+  function AuthProbe() {
+    auth = useContext(AuthContext)
+    return null
+  }
+
+  function renderTillWithProbe() {
+    return render(
+      <AuthProvider>
+        <AuthProbe />
+        <ConnectionProvider>
+          <PosOrderBuilder
+            managementSessionToken={null}
+            managementSessionActive={false}
+            managementRemainingMs={0}
+            requestManagementSession={vi.fn()}
+            invalidateManagementSession={vi.fn()}
+          />
+        </ConnectionProvider>
+      </AuthProvider>,
+    )
+  }
+
+  it("SESSION_ENDED mid-sale: after signing in again the same clientOrderId is resent and a replay completes it", async () => {
+    orderAnswers = [
+      () => ok({ error: "x", code: "SESSION_ENDED", details: { reason: "REPLACED" } }, 401),
+      () => ok(order, 200, { "Idempotent-Replay": "true" }),
+    ]
+    renderTillWithProbe()
+    await ringUpToastieByCard()
+
+    await waitFor(() => expect(auth?.isAuthenticated).toBe(false))
+    const sentId = postedBodies()[0].clientOrderId
+    expect(loadPendingSale()?.clientOrderId).toBe(sentId)
+
+    fetchMock.mockImplementationOnce(async () => ok({ token: "n.e.w", user: { email: "me@x.co", name: "Me" } }))
+    await act(async () => {
+      await auth?.login({ email: "me@x.co", password: "secret1" })
+    })
+
+    expect(await screen.findByText("#1042")).toBeInTheDocument()
+    expect(postedBodies()).toHaveLength(2)
+    expect(postedBodies()[1]).toEqual(postedBodies()[0])
+    expect(loadPendingSale()).toBeNull()
+  })
+
+  it("a manager can finish another cashier's sale after confirming: the identical body is sent", async () => {
+    localStorage.setItem("bar-talk.auth", JSON.stringify({ token: "a.b.c", user: { email: "boss@x.co", name: "Boss", role: "ADMIN" } }))
+    const stored = storedSale("cashier:17", "Thandi")
+    orderAnswers = [() => ok(order, 200, { "Idempotent-Replay": "true" })]
+    renderTill()
+
+    const dialog = await screen.findByRole("alertdialog")
+    expect(dialog).toHaveTextContent("A sale by Thandi is still being checked")
+    expect(postedBodies()).toHaveLength(0)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Manager: finish this sale" }))
+    })
+    expect(postedBodies()).toHaveLength(0)
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send it" }))
+    })
+
+    expect(await screen.findByText("#1042")).toBeInTheDocument()
+    expect(postedBodies()).toEqual([stored.body])
+  })
+
+  it("a cashier who isn't the owner can't send it", async () => {
+    localStorage.setItem("bar-talk.auth", JSON.stringify({ token: "a.b.c", user: { email: "sipho@x.co", name: "Sipho", role: "CASHIER" } }))
+    storedSale("cashier:17", "Thandi")
+    renderTill()
+
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("A sale by Thandi is still being checked")
+    expect(screen.queryByRole("button", { name: /Manager: finish/ })).not.toBeInTheDocument()
+    expect(postedBodies()).toHaveLength(0)
   })
 })

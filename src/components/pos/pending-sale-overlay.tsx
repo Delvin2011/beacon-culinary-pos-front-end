@@ -3,6 +3,7 @@
 // Covers the till while a sale's outcome is unknown, so it can't be edited, rung again or replaced by a new one.
 // Sits under the manager PIN dialog (z-50) and over everything else, header buttons included.
 
+import { useState } from "react";
 import { AlertTriangle, Loader2, RefreshCw, ShieldAlert, UserRound } from "lucide-react";
 import type { PendingSale } from "@/lib/pending-sale";
 import type { PendingSalePhase } from "@/hooks/use-pending-sale";
@@ -17,6 +18,8 @@ type PendingSaleOverlayProps = {
   onCancelUnapproved: () => void;
   onSupervisorClear: () => void;
   onSignOut: () => void;
+  // Set for a manager (O2): send another cashier's sale as it was rung, after a confirm step.
+  onManagerFinish?: () => void;
 };
 
 export function PendingSaleOverlay({
@@ -28,7 +31,9 @@ export function PendingSaleOverlay({
   onCancelUnapproved,
   onSupervisorClear,
   onSignOut,
+  onManagerFinish,
 }: PendingSaleOverlayProps) {
+  const [confirmFinish, setConfirmFinish] = useState(false);
   const who = sale.owner.name ?? "another cashier";
   const label = sale.kind === "COMPLIMENTARY" ? "complimentary order" : "sale";
 
@@ -110,6 +115,42 @@ export function PendingSaleOverlay({
                 Back to the order (nothing was recorded)
               </button>
             </>
+          )}
+          {phase === "other-user" && onManagerFinish && !confirmFinish && (
+            <button
+              type="button"
+              onClick={() => setConfirmFinish(true)}
+              className="rounded-xl bg-amber-400 px-4 py-3 text-sm font-semibold text-slate-900 hover:bg-amber-300"
+            >
+              Manager: finish this {label}
+            </button>
+          )}
+          {phase === "other-user" && onManagerFinish && confirmFinish && (
+            <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-left text-sm text-amber-100">
+              <p>
+                Send {who}&apos;s {label} exactly as it was rung? If it already went through, it comes back as it is and
+                nothing is charged twice. If it never arrived, it is recorded now, with you as the cashier.
+              </p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setConfirmFinish(false)}
+                  className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                >
+                  Not now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmFinish(false);
+                    onManagerFinish();
+                  }}
+                  className="rounded-lg bg-amber-400 px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-amber-300"
+                >
+                  Send it
+                </button>
+              </div>
+            </div>
           )}
           {phase === "other-user" && (
             <button

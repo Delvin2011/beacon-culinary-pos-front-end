@@ -205,6 +205,21 @@ describe("one pending sale at a time, across reloads", () => {
     expect(result.current.pending?.owner.name).toBe("Ann")
   })
 
+  it("sendAsIs sends someone else's stored sale unchanged (a manager finishing it)", async () => {
+    const stored = createPendingSale("SALE", saleBody, summary, { key: "cashier:7", name: "Ann" })
+    savePendingSale(stored)
+    authFetch.mockResolvedValueOnce(json(200, { id: 61 }, { "Idempotent-Replay": "true" }))
+    const { result } = setup(bob)
+    await flush()
+    expect(authFetch).not.toHaveBeenCalled()
+
+    act(() => result.current.sendAsIs())
+    await flush()
+    expect(sentBodies()).toEqual([stored.body])
+    expect(onCompleted).toHaveBeenCalledWith({ id: 61 }, expect.objectContaining({ clientOrderId: stored.clientOrderId }), true)
+    expect(result.current.phase).toBe("idle")
+  })
+
   it("discard clears it for a supervisor", async () => {
     savePendingSale(createPendingSale("SALE", saleBody, summary, { key: "cashier:7", name: "Ann" }))
     const { result } = setup(bob)

@@ -172,3 +172,18 @@ describe("void with a clientRequestId", () => {
     expect(second.clientRequestId).not.toBe(first.clientRequestId)
   })
 })
+
+describe("O2: voids and refunds on someone else's shift", () => {
+  it("TILL_IN_USE says only the owner or a manager can void or refund here, and isn't retried", async () => {
+    adjustmentAnswers = [() => ok({ code: "TILL_IN_USE", error: "x" }, 409)]
+    await sellThenOpenVoid()
+    await click("Unlock & Apply")
+    await advance(10_000)
+
+    expect(
+      await screen.findByText("This till's shift belongs to someone else. Only they or a manager can void or refund here."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/already/i)).not.toBeInTheDocument()
+    expect(adjustmentBodies()).toHaveLength(1)
+  })
+})

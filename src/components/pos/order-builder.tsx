@@ -18,6 +18,9 @@ import { usePendingSale } from "@/hooks/use-pending-sale";
 import { PendingSaleOverlay } from "@/components/pos/pending-sale-overlay";
 import { newRequestId, ownerKey, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
 import { useLockBlocker } from "@/lib/lock-guard";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { TillErrorCode } from "@/lib/till";
+import { isAdminRole } from "@/lib/roles";
 import { onSessionEnding } from "@/lib/session-events";
 import { clearPendingCart, loadPendingCart, savePendingCart, type PendingCart } from "@/lib/pending-cart";
 
@@ -1552,6 +1555,11 @@ export function PosOrderBuilder({
 
   // The server refused the sale and nothing was created: the same handling as before O1. The cart is kept.
   const handleSaleRejection = async ({ status, code, body }: RejectedSale) => {
+    // require-registered is on and this browser isn't a registered till (O2): nothing was created.
+    if (code === DeviceErrorCode.NOT_REGISTERED) {
+      setSubmissionError(TILL_NOT_REGISTERED_MESSAGE);
+      return;
+    }
     // Shift errors share 409 with stock conflicts, so branch on code first.
     if (code === "NO_OPEN_SHIFT") {
       // Keep the cart so the order can be completed on a new shift.
@@ -1614,6 +1622,10 @@ export function PosOrderBuilder({
   const handleComplimentaryRejection = async (sale: PendingSale, { status, code, body }: RejectedSale) => {
     const complimentary = sale.body.complimentary as { authorization?: { sessionToken?: string } } | undefined;
     const sessionToken = complimentary?.authorization?.sessionToken ?? null;
+    if (code === DeviceErrorCode.NOT_REGISTERED) {
+      setComplimentaryError(TILL_NOT_REGISTERED_MESSAGE);
+      return;
+    }
     if (code === "NO_OPEN_SHIFT") {
       setShiftClosedWhileSelling(true);
       return;
@@ -1659,6 +1671,8 @@ export function PosOrderBuilder({
           })
         }
         onSignOut={logout}
+        // A manager may finish another cashier's sale (O2): same body and id, so one that went through comes back as is.
+        onManagerFinish={isAdminRole(user?.role) ? pendingSale.sendAsIs : undefined}
       />
     ) : null;
 
@@ -1789,6 +1803,18 @@ export function PosOrderBuilder({
             return;
           }
 
+          // O2: voids and refunds book to this till's shift, which only its owner or a manager may use.
+          if (errorCode === TillErrorCode.TILL_IN_USE) {
+            await refetchShift();
+            setAdjustmentError("This till's shift belongs to someone else. Only they or a manager can void or refund here.");
+            return;
+          }
+
+          if (errorCode === DeviceErrorCode.NOT_REGISTERED) {
+            setAdjustmentError(TILL_NOT_REGISTERED_MESSAGE);
+            return;
+          }
+
           if (errorCode === "IDEMPOTENCY_CONFLICT") {
             // This id was already used for something else. Never retried; the next press gets a new id.
             adjustmentRequestRef.current = null;
@@ -1872,6 +1898,7 @@ export function PosOrderBuilder({
       adjustmentScope,
       authFetch,
       invalidateManagementSession,
+      refetchShift,
       loadOrderReceipt,
       loadTodayOrders,
       getAccountName,

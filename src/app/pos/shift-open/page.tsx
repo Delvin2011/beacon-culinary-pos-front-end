@@ -56,13 +56,8 @@ export default function ShiftOpenPage() {
         setError(err.message);
         return;
       }
-      const msg = messageForError(err, "Failed to open shift.");
-      if (msg.includes("already open")) {
-        // Shift was opened in another tab / race — redirect
-        router.replace("/pos");
-        return;
-      }
-      setError(msg);
+      // A shift already open on this till has been loaded by openShift; the effect above then moves on to /pos.
+      setError(messageForError(err, "Failed to open shift."));
     } finally {
       setSubmitting(false);
     }
