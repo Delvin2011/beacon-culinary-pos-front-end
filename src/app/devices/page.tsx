@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DevicePageShell, useDeviceAdminGuard } from "@/components/devices/device-page-shell"
+import { PrintSettingsCard } from "@/components/devices/print-settings-card"
 import { toast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 import { detailString } from "@/lib/api-error"
@@ -409,6 +410,9 @@ export default function RegisteredTillsPage() {
           )}
         </dl>
       )}
+
+      {/* O2b: this browser's automatic printing switches, set on each till. */}
+      <PrintSettingsCard />
 
       {pageMessage && (
         <div role="alert" className="flex items-start justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
