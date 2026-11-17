@@ -9,11 +9,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DevicePageShell, useDeviceAdminGuard } from "@/components/devices/device-page-shell"
-import { detailString } from "@/lib/api-error"
+import { detailNumber, detailString } from "@/lib/api-error"
 import {
   DEVICE_TEXT_MAX,
   DeviceApiError,
   DeviceErrorCode,
+  deviceLabel,
   findThisBrowser,
   getDeviceConfig,
   listDevices,
@@ -24,6 +25,7 @@ import {
 } from "@/lib/devices"
 import { saveRegisterDraft, takeRegisterDraft, type RegisterDraft } from "@/lib/register-draft"
 import { reauthLoginPath } from "@/lib/return-to"
+import { TillErrorCode } from "@/lib/till"
 
 // The server's normalisation (contract section 1): all whitespace removed, upper-cased. Messages show this value.
 function normaliseSerial(raw: string): string {
@@ -151,6 +153,15 @@ export default function RegisterTillPage() {
           link: tillLink,
         })
         return
+      case TillErrorCode.TILL_LIMIT_REACHED: {
+        // O2: a new till beyond pos.tills.max-active. The form is kept while another till is revoked.
+        const max = detailNumber(err.details, "maxActive")
+        setProblem({
+          message: `The maximum number of tills (${max ?? "allowed"}) is registered. Revoke one first.`,
+          link: { href: "/devices", label: "Open Registered tills" },
+        })
+        return
+      }
       case DeviceErrorCode.REAUTH_REQUIRED:
         // Keep the three fields (never a password) and come back here after a fresh password sign-in.
         saveRegisterDraft(form)
@@ -264,8 +275,8 @@ export default function RegisterTillPage() {
         <div className="max-w-xl space-y-4 rounded-md border border-emerald-300 bg-emerald-50 p-4 text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100">
           <p className="font-medium">
             {outcome.joined
-              ? `This browser has been added to ${outcome.device.name}.`
-              : `This browser is now registered as ${outcome.device.name}.`}
+              ? `This browser has been added to ${deviceLabel(outcome.device)}.`
+              : `This browser is now registered as ${deviceLabel(outcome.device)}.`}
           </p>
           {outcome.unverified && (
             <p className="text-sm">Couldn&apos;t confirm that this browser kept the till cookie. Check it in Registered tills.</p>
