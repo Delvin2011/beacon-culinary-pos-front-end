@@ -16,7 +16,10 @@ import { messageForError, parseRetryAfter } from "@/lib/net";
 import { useConnection } from "@/contexts/connection-context";
 import { usePendingSale } from "@/hooks/use-pending-sale";
 import { PendingSaleOverlay } from "@/components/pos/pending-sale-overlay";
-import { newRequestId, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
+import { newRequestId, ownerKey, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
+import { useLockBlocker } from "@/lib/lock-guard";
+import { onSessionEnding } from "@/lib/session-events";
+import { clearPendingCart, loadPendingCart, savePendingCart, type PendingCart } from "@/lib/pending-cart";
 
 // Voids and refunds: waits before each resend of the same request (network error, timeout, 5xx, 429).
 const ADJUSTMENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -598,6 +601,37 @@ export function PosOrderBuilder({
   });
   // A sale is out and its outcome is unknown: nothing on the till may change it or start another.
   const isSubmitting = pendingSale.pending !== null;
+
+  // A payment on screen, or a sale being sent or not yet confirmed (O1): the till can't lock or end the shift.
+  useLockBlocker("payment", showPayment);
+  useLockBlocker("pending-sale", pendingSale.pending !== null);
+
+  // Lock till, or a session the server ended: keep this person's cart. An empty cart leaves an earlier kept one alone.
+  const draftLinesRef = useRef(draftLines);
+  draftLinesRef.current = draftLines;
+  const userKey = ownerKey(user);
+  const userName = user?.name ?? null;
+  useEffect(
+    () =>
+      onSessionEnding(() => {
+        if (userKey && draftLinesRef.current.length > 0) savePendingCart({ key: userKey, name: userName }, draftLinesRef.current);
+      }),
+    [userKey, userName],
+  );
+
+  // On sign-in: the same person gets their cart back; anyone else is asked whether to keep it or discard it.
+  const [keptCart, setKeptCart] = useState<PendingCart<DraftLine> | null>(null);
+  useEffect(() => {
+    if (!userKey) return;
+    const kept = loadPendingCart<DraftLine>();
+    if (!kept) return;
+    if (kept.owner.key === userKey) {
+      setDraftLines(kept.lines);
+      clearPendingCart();
+    } else {
+      setKeptCart(kept);
+    }
+  }, [userKey]);
   // Discount at checkout: the draft being edited, and the one a manager approved.
   const [saleDiscount, setSaleDiscount] = useState<SaleDiscount | null>(null);
   const [showSaleDiscountForm, setShowSaleDiscountForm] = useState(false);
@@ -3358,6 +3392,51 @@ export function PosOrderBuilder({
         </div>
       )}
       {pendingSaleOverlay}
+      {keptCart && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="kept-cart-title"
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+        >
+          <div className="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-900 p-6">
+            <h2 id="kept-cart-title" className="text-xl font-bold text-white">
+              {keptCart.owner.name ?? "Another cashier"}&apos;s order was kept
+            </h2>
+            <p className="mt-2 text-sm text-slate-300">
+              The till locked with {keptCart.lines.reduce((sum, line) => sum + line.quantity, 0)} item
+              {keptCart.lines.reduce((sum, line) => sum + line.quantity, 0) === 1 ? "" : "s"} in the cart. Keep it for{" "}
+              {keptCart.owner.name ?? "them"}, or discard it?
+            </p>
+            <ul className="mt-3 space-y-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-300">
+              {keptCart.lines.map((line) => (
+                <li key={line.id}>
+                  {line.quantity} × {line.name}
+                </li>
+              ))}
+            </ul>
+            <div className="mt-5 grid gap-2">
+              <button
+                type="button"
+                onClick={() => setKeptCart(null)}
+                className="rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
+              >
+                Keep it for {keptCart.owner.name ?? "them"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearPendingCart();
+                  setKeptCart(null);
+                }}
+                className="rounded-xl border border-rose-400/40 px-4 py-3 text-sm font-medium text-rose-200 hover:bg-rose-500/10"
+              >
+                Discard it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

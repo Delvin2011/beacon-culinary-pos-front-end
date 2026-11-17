@@ -20,6 +20,8 @@ import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { readLoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { useLockBlocker, useLockBusy } from "@/lib/lock-guard";
+import { UNREGISTERED_TILL } from "@/lib/till";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -107,7 +109,7 @@ function formatRemainingMs(remainingMs: number): string {
 
 function PosMainContent() {
   const router = useRouter();
-  const { isAuthenticated, isLoading: authLoading, user, logout, authFetch } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user, logout, lockTill, authFetch } = useAuth();
   const { shift, isLoading: shiftLoading, error: shiftError, refetch } = useShift();
   const {
     sessionToken,
@@ -143,6 +145,19 @@ function PosMainContent() {
   const [managementSummaryLoading, setManagementSummaryLoading] = useState(false);
   const [managementSummaryError, setManagementSummaryError] = useState<string | null>(null);
   const [managementSummary, setManagementSummary] = useState<ShiftSummaryDto | null>(null);
+
+  // The cash-up and its manager PIN must finish before the till can lock (O2).
+  useLockBlocker("cash-up", confirmOwnerClose || confirmClose || showPinOverlay || closeoutRecord !== null);
+  const lockBusy = useLockBusy();
+  const [locking, setLocking] = useState(false);
+
+  // Lock till: for breaks. The shift stays open and the cart is kept for this person (order-builder).
+  const lockTheTill = async () => {
+    if (lockBusy || locking) return;
+    setLocking(true);
+    await lockTill();
+    router.replace("/pos/login");
+  };
 
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -632,6 +647,10 @@ function PosMainContent() {
     <div className="flex min-h-screen flex-col bg-slate-950">
       <header className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-6 py-3">
         <div className="flex items-center gap-3">
+          <span className="text-sm font-semibold text-white">
+            {shift?.tillCode ?? UNREGISTERED_TILL}
+            {user?.name ? ` · ${user.name}` : ""}
+          </span>
           <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-400 ring-1 ring-emerald-500/30">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
             Shift Open
@@ -659,7 +678,6 @@ function PosMainContent() {
               Management Active · {managementCountdown}
             </span>
           )}
-          {user?.name && <span className="text-sm text-slate-400">{user.name}</span>}
           <button
             type="button"
             onClick={openManagementMenu}
@@ -689,11 +707,23 @@ function PosMainContent() {
           )}
           <button
             type="button"
+            onClick={() => void lockTheTill()}
+            disabled={lockBusy || locking}
+            title={lockBusy ? "Finish the payment, sale or dialog first." : "Lock the till for a break. Your shift stays open."}
+            className="flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Lock className="h-3.5 w-3.5" />
+            Lock till
+          </button>
+          <button
+            type="button"
             onClick={requestCloseShift}
-            className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 active:bg-rose-500/30"
+            disabled={lockBusy}
+            title={lockBusy ? "Finish the payment, sale or dialog first." : "Close the shift and count the drawer."}
+            className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 active:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <LogOut className="h-3.5 w-3.5" />
-            Close Shift
+            End shift
           </button>
         </div>
       </header>

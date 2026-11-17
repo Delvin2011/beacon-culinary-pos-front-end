@@ -28,6 +28,9 @@ export interface Shift {
   closedAt?: string | null;
   owner: ShiftOwner;
   ownedByCaller: boolean;
+  // The till the shift is on; null (shown as "Unregistered till") for the NULL till or a pre-O2 server.
+  tillCode: string | null;
+  tillName: string | null;
 }
 
 interface ShiftContextValue {
@@ -79,6 +82,8 @@ function extractShift(payload: unknown): Shift | null {
     closedAt: null,
     owner,
     ownedByCaller: src.ownedByCaller === true,
+    tillCode: typeof src.tillCode === "string" ? src.tillCode : null,
+    tillName: typeof src.tillName === "string" ? src.tillName : null,
   };
 }
 

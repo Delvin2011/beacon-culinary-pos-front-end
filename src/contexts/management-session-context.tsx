@@ -16,6 +16,7 @@ import { readLoginBlock, type LoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
+import { useLockBlocker } from "@/lib/lock-guard";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 
 type AuthorizationPrompt = {
@@ -90,6 +91,8 @@ export function ManagementSessionProvider({ children }: { children: ReactNode })
   const [remainingMs, setRemainingMs] = useState(0);
 
   const [overlayOpen, setOverlayOpen] = useState(false);
+  // The manager-PIN dialog must finish before the till can lock (O2).
+  useLockBlocker("manager-pin", overlayOpen);
   const [pin, setPin] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
