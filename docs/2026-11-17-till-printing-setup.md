@@ -73,7 +73,7 @@ The POS also sets a margin-free 80 mm page for receipts, but the header and foot
 3. Sign out, sign in as a cashier, and ring up a test sale with a kitchen item and a cold drink. Check that:
    - the receipt prints first, then a kitchen ticket listing only the kitchen item, each cut separately;
    - the receipt's time is the local time;
-   - the header (business name, address, VAT number) is correct. An admin sets it under **Admin → Receipt Settings**.
+   - the header (business name, address, VAT number) is correct. An admin sets it under **Admin → Registered tills → Receipt settings**.
 
 ## When the printer is out of paper or a print is lost
 
@@ -105,4 +105,4 @@ If either switch was turned off, set it again under **Admin → Registered tills
 | A date, URL or page number is printed | Headers and footers are still on (step 4). |
 | The receipt is narrow, or split over two cuts | The paper size or cutter setting in the driver (step 2). |
 | Nothing prints after a sale | The switches under **Printing on this till**. The printer is on, has paper, and the cover is closed. |
-| The receipt has no business name | The header isn't set yet under **Admin → Receipt Settings**, or the till couldn't read it when the cashier signed in. Signing in again reads it again. |
+| The receipt has no business name | The header isn't set yet under **Admin → Registered tills → Receipt settings**, or the till couldn't read it when the cashier signed in. Signing in again reads it again. |

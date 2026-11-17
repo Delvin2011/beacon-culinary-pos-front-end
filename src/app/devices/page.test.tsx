@@ -356,3 +356,43 @@ describe("Registered tills: till codes (O2)", () => {
     expect(within(screen.getByRole("dialog")).getByText(/everyone signed in on it is signed out/)).toBeInTheDocument()
   })
 })
+
+describe("Registered tills: receipt settings (O2b)", () => {
+  it("opens the Receipt settings dialog with the loaded values, and Cancel closes it", async () => {
+    const stored = {
+      receiptTitle: "Tax Invoice",
+      businessName: "Canteen at Riverside Park",
+      addressLines: [],
+      phone: null,
+      vatNumber: null,
+      footerText: null,
+      showVatLine: false,
+      updatedAt: null,
+      updatedBy: null,
+    }
+    const devicesFetch = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).endsWith("/admin/receipt-settings") ? json(200, stored) : devicesFetch(input, init),
+    )
+    // Radix's Checkbox measures itself inside a <form>; jsdom has no ResizeObserver.
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    renderAs("ADMIN")
+    await screen.findByRole("heading", { name: "Till 1" })
+
+    await click("Receipt settings")
+    const dialog = await screen.findByRole("dialog")
+    expect(await within(dialog).findByDisplayValue("Canteen at Riverside Park")).toBeInTheDocument()
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled()
+
+    await click("Cancel", dialog)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(calls("PUT", "/admin/receipt-settings")).toHaveLength(0)
+  })
+})

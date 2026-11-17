@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DevicePageShell, useDeviceAdminGuard } from "@/components/devices/device-page-shell"
 import { PrintSettingsCard } from "@/components/devices/print-settings-card"
+import { ReceiptSettingsDialog } from "@/components/devices/receipt-settings-dialog"
 import { toast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 import { detailString } from "@/lib/api-error"
@@ -104,6 +105,7 @@ export default function RegisteredTillsPage() {
   const [renameTarget, setRenameTarget] = useState<{ device: Device; credential: DeviceCredential } | null>(null)
   const [renameLabel, setRenameLabel] = useState("")
   const [revokeTarget, setRevokeTarget] = useState<RevokeTarget | null>(null)
+  const [receiptSettingsOpen, setReceiptSettingsOpen] = useState(false)
   const [reason, setReason] = useState("")
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
@@ -377,9 +379,14 @@ export default function RegisteredTillsPage() {
           <h1 className="text-lg font-semibold">Registered tills</h1>
           <p className="text-sm text-muted-foreground">POS tills and the browsers registered on them.</p>
         </div>
-        <Button asChild size="sm">
-          <Link href="/devices/register">Register this till</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={() => setReceiptSettingsOpen(true)}>
+            Receipt settings
+          </Button>
+          <Button asChild size="sm">
+            <Link href="/devices/register">Register this till</Link>
+          </Button>
+        </div>
       </div>
 
       {config && (
@@ -605,6 +612,7 @@ export default function RegisteredTillsPage() {
           </div>
         </DialogContent>
       </Dialog>
+      <ReceiptSettingsDialog open={receiptSettingsOpen} onClose={() => setReceiptSettingsOpen(false)} />
     </DevicePageShell>
   )
 }

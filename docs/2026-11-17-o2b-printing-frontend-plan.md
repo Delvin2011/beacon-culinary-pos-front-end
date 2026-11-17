@@ -33,7 +33,7 @@ integration. Setup: `docs/2026-11-17-till-printing-setup.md`.
    - every sale is printed, a replay included, and each order id at most once per till session (`pos.autoPrinted` in sessionStorage);
    - a lock or `SESSION_ENDED` clears that list, and a different person's sign-in starts a new one.
 8. **Admin reprint:** the full `OrderDto` plus `reprint`; the cashier and till are the original sale's, and the header comes from the current settings.
-9. **Receipt settings screen** (`GET` / `PUT /admin/receipt-settings`, ADMIN only):
+9. **Receipt settings dialog** (`GET` / `PUT /admin/receipt-settings`, ADMIN only), opened from Registered tills:
    - the PUT replaces everything, so unedited fields are sent back as GET returned them;
    - a 400 is a field map, which can hold several fields at once.
 
@@ -86,15 +86,17 @@ integration. Setup: `docs/2026-11-17-till-printing-setup.md`.
 ### Admin (steps 6, 7)
 
 - **Registered tills → Printing on this till:** the two switches, for the browser the page is open on.
-- **Admin → Receipt Settings** (`/receipt-settings`, ADMIN only; the sidebar item and the page are hidden from other roles):
+- **Registered tills → Receipt settings** (a button next to "Register this till"; the page is ADMIN only) opens a dialog:
   - the fields: title, business name, 4 address inputs, phone, VAT number, a multi-line footer and the VAT-line checkbox;
   - "Last saved by … at …" in local time, hidden when both are null;
   - the handoff's limits checked before saving, and each 400 message shown under its field;
+  - **Save** is enabled only when saving would change something (an undone edit or added spaces don't count); **Cancel** is always enabled and drops the edits;
+  - a save closes the dialog, and a 400 keeps it open;
   - saving drops this browser's cached settings. Other tills read the new settings at their next sign-in.
 
 ## Tests
 
-The suite has 417 tests, all passing; `tsc` and lint are clean. The O2b tests:
+The suite has 419 tests, all passing; `tsc` and lint are clean. The O2b tests:
 
 | File | Covers |
 |---|---|
@@ -105,7 +107,8 @@ The suite has 417 tests, all passing; `tsc` and lint are clean. The O2b tests:
 | `components/reports/receipt-reprint.test.tsx` | the admin reprint after a refund: `originalTotal`, original cashier and till, COPY 2, the current header, the account name |
 | `components/pos/order-builder.printing.test.tsx` | receipt then ticket after a sale; printing without settings; each switch off; an order id auto-printed once; local copies say COPY with no number and use no server call; the buttons are gone after Next Customer |
 | `components/devices/print-settings-card.test.tsx` | both switches on by default; each change is stored on this till |
-| `app/receipt-settings/page.test.tsx` | load, last-saved line (and hidden before the first save), save with every field, `receiptTitle` kept when not edited, a cleared field as null, several 400 field errors, hidden for a CASHIER |
+| `components/devices/receipt-settings-dialog.test.tsx` | load, last-saved line (and hidden before the first save), Save enabled only on a real change and Cancel always enabled, Cancel saves nothing, save with every field and close, `receiptTitle` kept when not edited, a cleared field as null, several 400 field errors with the dialog kept open |
+| `app/devices/page.test.tsx` | the Receipt settings button opens the dialog; Cancel closes it |
 
 ## Release checklist (handoff 9)
 
@@ -146,4 +149,5 @@ how long the printer takes. Use the setup guide's test sale.
 5. `247c5c2` auto-print after a sale and print-again buttons
 6. `aad0fdd` per-till switches on the devices page
 7. `f8968f1` admin Receipt settings screen
-8. this document and the till setup guide
+8. `c9c2238` this document and the till setup guide
+9. receipt settings moved from their own page and sidebar item into a dialog on Registered tills (Save only when changed)
