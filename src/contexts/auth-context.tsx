@@ -11,7 +11,9 @@ import {
 } from "react";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-protection";
-import { errorCode } from "@/lib/api-error";
+import { detailString, errorCode, readApiError } from "@/lib/api-error";
+import { TillErrorCode, readSessionEnded, sessionEndedMessage, shiftOpenOnOtherTillMessage, tillLockedMessage } from "@/lib/till";
+import { notifySessionEnding } from "@/lib/session-events";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { CONNECTION_MESSAGES, RequestTimeoutError, fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
 import { reportConnectionSignal, signalForError, signalForResponse } from "@/lib/connection-signals";
@@ -31,6 +33,38 @@ export class DeviceNotRegisteredError extends PinLoginError {
   constructor() {
     super(TILL_NOT_REGISTERED_MESSAGE);
   }
+}
+
+// Sign-in refused by the till rules (O2 contract 5). Not a wrong PIN or password; never counts toward lockout.
+export class TillLockedError extends PinLoginError {
+  constructor(
+    readonly ownerName: string | null,
+    readonly tillCode: string | null,
+  ) {
+    super(tillLockedMessage(ownerName, tillCode));
+  }
+}
+
+export class ShiftOpenOnOtherTillError extends PinLoginError {
+  constructor(
+    readonly tillCode: string | null,
+    readonly tillName: string | null,
+  ) {
+    super(shiftOpenOnOtherTillMessage(tillCode, tillName));
+  }
+}
+
+// 409 TILL_LOCKED or SHIFT_OPEN_ON_OTHER_TILL from /auth/login or /auth/pin-login, else null. Reads a copy.
+async function readTillRefusal(res: Response): Promise<PinLoginError | null> {
+  if (res.status !== 409) return null;
+  const { code, details } = await readApiError(res);
+  if (code === TillErrorCode.TILL_LOCKED) {
+    return new TillLockedError(detailString(details, "ownerName"), detailString(details, "tillCode"));
+  }
+  if (code === TillErrorCode.SHIFT_OPEN_ON_OTHER_TILL) {
+    return new ShiftOpenOnOtherTillError(detailString(details, "tillCode"), detailString(details, "tillName"));
+  }
+  return null;
 }
 
 // Thrown by login and pinLogin on a 429. Its message comes from the code and wait only.
@@ -58,15 +92,38 @@ const AUTH_STORAGE_KEY = "bar-talk.auth";
 const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
 const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
-// Server sign-out (POST /auth/logout, contract 7.1): deletes this browser's refreshToken cookie so the session
-// can't come back through /auth/refresh. Public, always 204, safe to repeat; it never touches deviceToken (the
-// till stays registered). Not awaited and never retried: if it fails, the cookie only lasts until it expires.
-// keepalive lets it finish when the page navigates away. No Authorization header: the endpoint is public.
-function requestServerLogout(): void {
+// Server sign-out (POST /auth/logout): deletes this browser's refreshToken cookie so the session can't come back
+// through /auth/refresh, and (O2 contract 8.4) ends the session the access token names; an expired token is
+// accepted. Always 204, safe to repeat; it never touches deviceToken (the till stays registered).
+// Awaited for at most 2 s and never retried. Not keepalive: browsers may refuse a keepalive request that needs a
+// CORS preflight, which the Authorization header does. If it fails, the server session ends by itself later.
+const LOGOUT_TIMEOUT_MS = 2_000;
+// POST /pos/lock: at most 5 s, then the till is locked locally anyway.
+const LOCK_TIMEOUT_MS = 5_000;
+
+async function requestServerLogout(token: string | null): Promise<void> {
   try {
-    void Promise.resolve(fetch(`${AUTH_API_BASE_URL}/auth/logout`, { method: "POST", credentials: "include", keepalive: true })).catch(() => {});
+    await fetchWithTimeout(
+      `${AUTH_API_BASE_URL}/auth/logout`,
+      { method: "POST", credentials: "include", headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+      LOGOUT_TIMEOUT_MS,
+    );
   } catch {
     // Signing out never fails because of this call.
+  }
+}
+
+// True when the server answered the lock (204, or any 4xx: a 401 means the session had already ended).
+async function requestServerLock(token: string): Promise<boolean> {
+  try {
+    const res = await fetchWithTimeout(
+      `${AUTH_API_BASE_URL}/pos/lock`,
+      { method: "POST", credentials: "include", headers: { Authorization: `Bearer ${token}` } },
+      LOCK_TIMEOUT_MS,
+    );
+    return res.status < 500;
+  } catch {
+    return false;
   }
 }
 
@@ -102,7 +159,16 @@ interface AuthContextValue {
   error: string | null;
   login: (payload: LoginPayload) => Promise<void>;
   pinLogin: (payload: PinLoginPayload) => Promise<void>;
-  logout: () => void;
+  // Signs out locally at once; the promise settles when the server call ends (at most 2 s).
+  logout: () => Promise<void>;
+  // Lock till (O2 contract 7.2): keeps the cart, ends this session with POST /pos/lock and drops the tokens.
+  // The shift stays open. The till is locked locally even if the server can't be reached.
+  lockTill: () => Promise<void>;
+  // Why the server ended the last session (401 SESSION_ENDED), for the sign-in screen. Cleared by the next sign-in.
+  sessionEndedNotice: string | null;
+  clearSessionEndedNotice: () => void;
+  // A lock the server never got is sent once more: on `online`, or when the sign-in screen reaches the server.
+  retryPendingLock: () => void;
   clearError: () => void;
   // A request that gets no answer within its limit throws RequestTimeoutError (see lib/net).
   authFetch: (path: string, init?: AuthFetchInit) => Promise<Response>;
@@ -224,6 +290,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logoutRequestedRef = useRef(false);
   // After a 429 from /auth/refresh: no new refresh before this time (Retry-After); callers get the same 429.
   const refreshBlockRef = useRef<{ until: number; response: Response } | null>(null);
+  const [sessionEndedNotice, setSessionEndedNotice] = useState<string | null>(null);
+  // The token of a lock the server never got: sent once more when the connection returns.
+  const pendingLockTokenRef = useRef<string | null>(null);
 
   const clearAuthState = useCallback(() => {
     tokenRef.current = null;
@@ -237,6 +306,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState(nextState);
     localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextState));
     sessionStorage.removeItem(AUTH_LOGOUT_MARKER_KEY);
+    setSessionEndedNotice(null);
   }, []);
 
   useEffect(() => {
@@ -284,6 +354,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (block) {
         throw new LoginBlockedError(block);
       }
+
+      // A password sign-in on a registered till is a POS session: the till rules apply.
+      const refusal = await readTillRefusal(response);
+      if (refusal) throw refusal;
 
       const responseBody = (await response.json().catch(() => null)) as unknown;
 
@@ -349,6 +423,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new DeviceNotRegisteredError();
       }
 
+      // Checked after the PIN: a wrong PIN never reveals who holds the till.
+      const refusal = await readTillRefusal(response);
+      if (refusal) throw refusal;
+
       const responseBody = (await response.json().catch(() => null)) as unknown;
 
       if (response.status === 401) {
@@ -401,19 +479,64 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearAuthState, persistAuthState]);
 
   // The local sign-out happens first, so signing out is instant and works offline.
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    const token = tokenRef.current;
     logoutRequestedRef.current = true;
     sessionStorage.setItem(AUTH_LOGOUT_MARKER_KEY, "true");
     clearAuthState();
     setError(null);
-    requestServerLogout();
+    await requestServerLogout(token);
   }, [clearAuthState]);
 
   // The session has ended without a sign-out button (refresh refused, or a 401 after refreshing): same as a sign-out.
   const endSession = useCallback(() => {
+    const token = tokenRef.current;
     clearAuthState();
-    requestServerLogout();
+    void requestServerLogout(token);
   }, [clearAuthState]);
+
+  // 401 SESSION_ENDED from refresh or a POS write (O2 contract 4.4): no refresh and no retry. Keep the cart, drop
+  // the tokens and tell the sign-in screen why.
+  const sessionEnded = useCallback(
+    (reason: string | null) => {
+      const token = tokenRef.current;
+      // A parallel request already handled it.
+      if (!token) return;
+      notifySessionEnding("SESSION_ENDED");
+      logoutRequestedRef.current = true;
+      clearAuthState();
+      setSessionEndedNotice(sessionEndedMessage(reason));
+      // The session is over on the server; this only clears the refresh cookie it left behind.
+      void requestServerLogout(token);
+    },
+    [clearAuthState],
+  );
+
+  const lockTill = useCallback(async () => {
+    const token = tokenRef.current;
+    notifySessionEnding("LOCK");
+    logoutRequestedRef.current = true;
+    sessionStorage.setItem(AUTH_LOGOUT_MARKER_KEY, "true");
+    clearAuthState();
+    setError(null);
+    if (!token) return;
+    // Locked here whatever the answer. Without one, the token is kept in memory only, for one more try.
+    if (!(await requestServerLock(token))) pendingLockTokenRef.current = token;
+  }, [clearAuthState]);
+
+  const retryPendingLock = useCallback(() => {
+    const token = pendingLockTokenRef.current;
+    if (!token) return;
+    pendingLockTokenRef.current = null;
+    void requestServerLock(token);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("online", retryPendingLock);
+    return () => window.removeEventListener("online", retryPendingLock);
+  }, [retryPendingLock]);
+
+  const clearSessionEndedNotice = useCallback(() => setSessionEndedNotice(null), []);
 
   const refreshToken = useCallback(async (): Promise<RefreshResult> => {
     if (refreshInFlightRef.current) {
@@ -448,6 +571,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return { kind: "blocked", response };
         }
         refreshBlockRef.current = null;
+
+        const ended = await readSessionEnded(response);
+        if (ended) {
+          sessionEnded(ended.reason);
+          return { kind: "ended" };
+        }
 
         // Only a refusal ends the session: 401 (no or invalid cookie, or the account is locked), or 400 from older
         // servers without a cookie. A 5xx or any other status is the server's problem, not a sign-out.
@@ -489,7 +618,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     refreshInFlightRef.current = refreshPromise;
     return refreshPromise;
-  }, [clearAuthState, endSession]);
+  }, [clearAuthState, endSession, sessionEnded]);
 
   const authFetch = useCallback(
     async (path: string, init?: AuthFetchInit) => {
@@ -525,6 +654,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
 
       const initialResponse = await execute(tokenRef.current);
+      const ended = await readSessionEnded(initialResponse);
+      if (ended) {
+        sessionEnded(ended.reason);
+        return initialResponse;
+      }
       const shouldAttemptRefresh =
         !logoutRequestedRef.current &&
         tokenRef.current !== null &&
@@ -560,12 +694,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       const retryResponse = await execute(refreshed.token);
-      if (retryResponse.status === 401) {
+      const endedAfterRefresh = await readSessionEnded(retryResponse);
+      if (endedAfterRefresh) {
+        sessionEnded(endedAfterRefresh.reason);
+      } else if (retryResponse.status === 401) {
         endSession();
       }
       return retryResponse;
     },
-    [endSession, refreshToken]
+    [endSession, refreshToken, sessionEnded]
   );
 
   const value = useMemo<AuthContextValue>(
@@ -579,10 +716,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       pinLogin,
       logout,
+      lockTill,
+      sessionEndedNotice,
+      clearSessionEndedNotice,
+      retryPendingLock,
       clearError,
       authFetch,
     }),
-    [state.token, state.user, isLoading, error, login, pinLogin, logout, clearError, authFetch]
+    [
+      state.token,
+      state.user,
+      isLoading,
+      error,
+      login,
+      pinLogin,
+      logout,
+      lockTill,
+      sessionEndedNotice,
+      clearSessionEndedNotice,
+      retryPendingLock,
+      clearError,
+      authFetch,
+    ]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
