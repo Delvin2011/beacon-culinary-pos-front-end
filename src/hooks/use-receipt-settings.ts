@@ -12,6 +12,12 @@ export function resetReceiptSettingsCache(): void {
   cache = null
 }
 
+// For printing outside React's render (right after a sale): the settings of this sign-in, waiting for the fetch
+// if it's still running. null when nobody has fetched them or the fetch failed.
+export function currentReceiptSettings(): Promise<ReceiptSettings | null> {
+  return cache ? cache.promise : Promise.resolve(null)
+}
+
 // null while loading or when the fetch failed: receipts then print without the header and footer.
 export function useReceiptSettings(): ReceiptSettings | null {
   const { user, authFetch } = useAuth()

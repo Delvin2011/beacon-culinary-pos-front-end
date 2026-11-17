@@ -23,6 +23,8 @@ import { TillErrorCode } from "@/lib/till";
 import { isAdminRole } from "@/lib/roles";
 import { onSessionEnding } from "@/lib/session-events";
 import { clearPendingCart, loadPendingCart, savePendingCart, type PendingCart } from "@/lib/pending-cart";
+import { useSalePrinting } from "@/hooks/use-sale-printing";
+import { hasKitchenLines } from "@/lib/receipt";
 
 // Voids and refunds: waits before each resend of the same request (network error, timeout, 5xx, 429).
 const ADJUSTMENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -188,6 +190,8 @@ type OrderPaymentDto = {
   amountTendered?: number;
   changeDue?: number;
   accountId?: number;
+  // CARD payments only (O2b); left out otherwise.
+  cardReference?: string;
   // ACCOUNT payments only; absent on account orders placed before approval was required.
   authorizedBy?: { id: number; name: string } | null;
 };
@@ -195,6 +199,14 @@ type OrderPaymentDto = {
 type OrderDto = {
   id: number;
   orderNumber: number;
+  // O2b receipt data: the receipt's number ("20261118-0037"), the till (null on the unregistered till), who rang it
+  // up, and the VAT included (null on orders from before O2b).
+  receiptNumber?: string;
+  tillCode?: string | null;
+  tillName?: string | null;
+  cashierName?: string;
+  vatRate?: number | null;
+  vatIncludedAmount?: number | null;
   status?: OrderStatus;
   orderDate?: string;
   createdAt?: string;
@@ -635,6 +647,11 @@ export function PosOrderBuilder({
       setKeptCart(kept);
     }
   }, [userKey]);
+
+  // O2b printing: the receipt, then the kitchen ticket, after each sale; local copies from the completion screen.
+  const salePrinting = useSalePrinting({ authFetch, owner: userKey, knownAccounts: checkoutAccounts });
+  // The sale just finished on this screen: only it gets the "print again" buttons, until the next sale starts.
+  const [justSoldOrderId, setJustSoldOrderId] = useState<number | null>(null);
   // Discount at checkout: the draft being edited, and the one a manager approved.
   const [saleDiscount, setSaleDiscount] = useState<SaleDiscount | null>(null);
   const [showSaleDiscountForm, setShowSaleDiscountForm] = useState(false);
@@ -1421,6 +1438,7 @@ export function PosOrderBuilder({
   const finishOrder = async (order: OrderDto) => {
     setCompletedOrderId(order.id);
     setCompletedOrder(order);
+    setJustSoldOrderId(order.id);
     setReceiptOrder(null);
     setReceiptError(null);
     resetSaleDiscount();
@@ -1433,7 +1451,10 @@ export function PosOrderBuilder({
     setCashTenderedInput("");
     setPaymentEntryError(null);
     setAccountSearch("");
-    await loadOrderReceipt(order.id);
+    // Print from the full order (GET /orders/{id}), or the POST response if that fails. Not awaited: printing never
+    // holds up the till, and its failures are swallowed.
+    const loaded = await loadOrderReceipt(order.id);
+    void salePrinting.autoPrint(loaded ?? order);
     await loadTodayOrders();
     await loadMenuForPeriod(selectedPeriod?.name ?? "");
   };
@@ -2158,6 +2179,28 @@ export function PosOrderBuilder({
               <RefreshCw className="h-4 w-4" />
               {receiptLoading ? "Loading Receipt..." : "Reload Receipt"}
             </button>
+            {justSoldOrderId === completedOrderId && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => salePrinting.reprintReceipt(shownOrder)}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-300/50 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-300/10"
+                >
+                  <Printer className="h-4 w-4" />
+                  Print receipt again
+                </button>
+                {hasKitchenLines(shownOrder) && (
+                  <button
+                    type="button"
+                    onClick={() => salePrinting.reprintKitchenTicket(shownOrder)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-emerald-300/50 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-300/10"
+                  >
+                    <Printer className="h-4 w-4" />
+                    Print kitchen ticket again
+                  </button>
+                )}
+              </>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -2182,6 +2225,7 @@ export function PosOrderBuilder({
                 setCompletedOrderId(null);
                 setReceiptOrder(null);
                 setReceiptError(null);
+                setJustSoldOrderId(null);
               }}
               className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900"
             >
@@ -2382,6 +2426,7 @@ export function PosOrderBuilder({
         </aside>
       </main>
       {pendingSaleOverlay}
+      {salePrinting.portal}
       </>
     );
   }
@@ -3464,6 +3509,7 @@ export function PosOrderBuilder({
           </div>
         </div>
       )}
+      {salePrinting.portal}
     </>
   );
 }
