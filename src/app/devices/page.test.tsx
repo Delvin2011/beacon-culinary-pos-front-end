@@ -205,7 +205,7 @@ describe("Registered tills: actions", () => {
     await screen.findByRole("heading", { name: "Till 1" })
     await click("Revoke till", card("Till 1"))
     const dialog = screen.getByRole("dialog")
-    expect(within(dialog).getByText(/serial number and asset tag become free to register as a new till/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/serial number, asset tag and till code become free for a new till/)).toBeInTheDocument()
     expect(within(dialog).getByText(/This is the till you're using\./)).toBeInTheDocument()
     await click("Revoke till", dialog)
 
@@ -226,7 +226,7 @@ describe("Registered tills: actions", () => {
     fireEvent.change(within(dialog).getByLabelText("Asset tag (optional)"), { target: { value: "" } })
     await click("Save", dialog)
 
-    expect(bodyOf("PUT", "/admin/devices/d1")).toEqual({ name: "Till 1 (front)", serialNumber: "PF3X9K2B", assetTag: null })
+    expect(bodyOf("PUT", "/admin/devices/d1")).toEqual({ name: "Till 1 (front)", serialNumber: "PF3X9K2B", assetTag: null, tillCode: null })
     expect(screen.getByRole("heading", { name: "Till 1 (front)" })).toBeInTheDocument()
   })
 
@@ -284,5 +284,115 @@ describe("Registered tills: actions", () => {
     await click("Revoke till", screen.getByRole("dialog"))
 
     expect(push).toHaveBeenCalledWith("/login?reauth=1&returnTo=%2Fdevices")
+  })
+})
+
+describe("Registered tills: till codes (O2)", () => {
+  it("shows the till code with the name and the O2 settings", async () => {
+    config = { ...config, maxActiveTills: 3, requireRegistered: true }
+    list = [till({ tillCode: "T1", name: "Till 1 (front)" })]
+    renderAs("ADMIN")
+    expect(await screen.findByRole("heading", { name: "T1 · Till 1 (front)" })).toBeInTheDocument()
+    expect(screen.getByText("Most active tills").nextSibling).toHaveTextContent("3")
+    expect(screen.getByText("Registered tills only")).toBeInTheDocument()
+  })
+
+  it("edits the till code, sent upper case", async () => {
+    list = [till({ tillCode: "T1" })]
+    actionResponse = () => json(200, till({ tillCode: "T4" }))
+    renderAs("ADMIN")
+
+    await screen.findByRole("heading", { name: "T1 · Till 1" })
+    await click("Edit", card("T1 · Till 1"))
+    const dialog = screen.getByRole("dialog")
+    expect(within(dialog).getByLabelText("Till code")).toHaveValue("T1")
+    fireEvent.change(within(dialog).getByLabelText("Till code"), { target: { value: " t4 " } })
+    await click("Save", dialog)
+
+    expect(bodyOf("PUT", "/admin/devices/d1")).toMatchObject({ tillCode: "T4" })
+    expect(await screen.findByRole("heading", { name: "T4 · Till 1" })).toBeInTheDocument()
+  })
+
+  it("refuses a bad till code before sending", async () => {
+    renderAs("ADMIN")
+    await screen.findByRole("heading", { name: "Till 1" })
+    await click("Edit", card("Till 1"))
+    const dialog = screen.getByRole("dialog")
+    fireEvent.change(within(dialog).getByLabelText("Till code"), { target: { value: "T 1!" } })
+    await click("Save", dialog)
+
+    expect(within(dialog).getByText("Use 1 to 10 letters, digits or dashes, e.g. T1.")).toBeInTheDocument()
+    expect(calls("PUT", "/admin/devices/d1")).toHaveLength(0)
+  })
+
+  it("TILL_CODE_IN_USE names the other till", async () => {
+    actionResponse = () => json(409, { error: "x", code: "TILL_CODE_IN_USE", details: { deviceId: "d2", deviceName: "Till 2 (back)" } })
+    renderAs("ADMIN")
+    await screen.findByRole("heading", { name: "Till 1" })
+    await click("Edit", card("Till 1"))
+    const dialog = screen.getByRole("dialog")
+    fireEvent.change(within(dialog).getByLabelText("Till code"), { target: { value: "t2" } })
+    await click("Save", dialog)
+
+    expect(within(screen.getByRole("dialog")).getByText("Till code T2 is already used by Till 2 (back).")).toBeInTheDocument()
+  })
+
+  it("shows the server's tillCode field error under the field", async () => {
+    actionResponse = () => json(400, { tillCode: "tillCode must be 1-10 characters from A-Z, 0-9 and -." })
+    renderAs("ADMIN")
+    await screen.findByRole("heading", { name: "Till 1" })
+    await click("Edit", card("Till 1"))
+    const dialog = screen.getByRole("dialog")
+    fireEvent.change(within(dialog).getByLabelText("Till code"), { target: { value: "T9" } })
+    await click("Save", dialog)
+
+    expect(within(screen.getByRole("dialog")).getByText(/tillCode must be 1-10 characters/)).toBeInTheDocument()
+  })
+
+  it("says revoking signs out everyone on the till", async () => {
+    renderAs("ADMIN")
+    await screen.findByRole("heading", { name: "Till 1" })
+    await click("Revoke till", card("Till 1"))
+    expect(within(screen.getByRole("dialog")).getByText(/everyone signed in on it is signed out/)).toBeInTheDocument()
+  })
+})
+
+describe("Registered tills: receipt settings (O2b)", () => {
+  it("opens the Receipt settings dialog with the loaded values, and Cancel closes it", async () => {
+    const stored = {
+      receiptTitle: "Tax Invoice",
+      businessName: "Canteen at Riverside Park",
+      addressLines: [],
+      phone: null,
+      vatNumber: null,
+      footerText: null,
+      showVatLine: false,
+      updatedAt: null,
+      updatedBy: null,
+    }
+    const devicesFetch = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).endsWith("/admin/receipt-settings") ? json(200, stored) : devicesFetch(input, init),
+    )
+    // Radix's Checkbox measures itself inside a <form>; jsdom has no ResizeObserver.
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    renderAs("ADMIN")
+    await screen.findByRole("heading", { name: "Till 1" })
+
+    await click("Receipt settings")
+    const dialog = await screen.findByRole("dialog")
+    expect(await within(dialog).findByDisplayValue("Canteen at Riverside Park")).toBeInTheDocument()
+    expect(within(dialog).getByRole("button", { name: "Save" })).toBeDisabled()
+
+    await click("Cancel", dialog)
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    expect(calls("PUT", "/admin/receipt-settings")).toHaveLength(0)
   })
 })

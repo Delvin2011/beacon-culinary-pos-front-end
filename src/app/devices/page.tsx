@@ -10,6 +10,8 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DevicePageShell, useDeviceAdminGuard } from "@/components/devices/device-page-shell"
+import { PrintSettingsCard } from "@/components/devices/print-settings-card"
+import { ReceiptSettingsDialog } from "@/components/devices/receipt-settings-dialog"
 import { toast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 import { detailString } from "@/lib/api-error"
@@ -18,7 +20,11 @@ import {
   DeviceApiError,
   DeviceErrorCode,
   REVOKE_REASON_MAX,
+  TILL_CODE_MAX,
+  TILL_CODE_PATTERN,
+  deviceLabel,
   editDevice,
+  normaliseTillCode,
   getDeviceConfig,
   listDevices,
   renameCredential,
@@ -30,6 +36,7 @@ import {
   type DeviceCredential,
 } from "@/lib/devices"
 import { reauthLoginPath } from "@/lib/return-to"
+import { TillErrorCode } from "@/lib/till"
 
 const MODE_LABEL: Record<DeviceConfig["mode"], string> = {
   off: "Off (not checked)",
@@ -80,7 +87,7 @@ function RevokedLine({ by, at, reason }: { by?: string | null; at: string | null
 }
 
 type RevokeTarget = { kind: "device"; device: Device } | { kind: "browser"; device: Device; credential: DeviceCredential }
-type EditForm = { name: string; serialNumber: string; assetTag: string }
+type EditForm = { name: string; serialNumber: string; assetTag: string; tillCode: string }
 
 export default function RegisteredTillsPage() {
   const ready = useDeviceAdminGuard("/devices")
@@ -94,10 +101,11 @@ export default function RegisteredTillsPage() {
   const [pageMessage, setPageMessage] = useState<string | null>(null)
 
   const [editTarget, setEditTarget] = useState<Device | null>(null)
-  const [editForm, setEditForm] = useState<EditForm>({ name: "", serialNumber: "", assetTag: "" })
+  const [editForm, setEditForm] = useState<EditForm>({ name: "", serialNumber: "", assetTag: "", tillCode: "" })
   const [renameTarget, setRenameTarget] = useState<{ device: Device; credential: DeviceCredential } | null>(null)
   const [renameLabel, setRenameLabel] = useState("")
   const [revokeTarget, setRevokeTarget] = useState<RevokeTarget | null>(null)
+  const [receiptSettingsOpen, setReceiptSettingsOpen] = useState(false)
   const [reason, setReason] = useState("")
   const [dialogError, setDialogError] = useState<string | null>(null)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
@@ -158,6 +166,9 @@ export default function RegisteredTillsPage() {
       case DeviceErrorCode.ASSET_TAG_IN_USE:
         setDialogError(`Asset tag ${assetTag ?? ""} is already used by ${deviceName}.`)
         return
+      case TillErrorCode.TILL_CODE_IN_USE:
+        setDialogError(`Till code ${normaliseTillCode(editForm.tillCode)} is already used by ${deviceName}.`)
+        return
       default:
         if (err.status === 404) {
           closeDialogs()
@@ -173,7 +184,12 @@ export default function RegisteredTillsPage() {
   const openEdit = (device: Device) => {
     closeDialogs()
     setPageMessage(null)
-    setEditForm({ name: device.name, serialNumber: device.serialNumber ?? "", assetTag: device.assetTag ?? "" })
+    setEditForm({
+      name: device.name,
+      serialNumber: device.serialNumber ?? "",
+      assetTag: device.assetTag ?? "",
+      tillCode: device.tillCode ?? "",
+    })
     setEditTarget(device)
   }
 
@@ -182,6 +198,8 @@ export default function RegisteredTillsPage() {
     const errors: Record<string, string> = {}
     if (!editForm.name.trim()) errors.name = "Till name is required."
     if (config?.requireSerial && !normaliseSerial(editForm.serialNumber)) errors.serialNumber = "Serial number is required."
+    const tillCode = normaliseTillCode(editForm.tillCode)
+    if (tillCode && !TILL_CODE_PATTERN.test(tillCode)) errors.tillCode = "Use 1 to 10 letters, digits or dashes, e.g. T1."
     setFieldErrors(errors)
     if (Object.keys(errors).length > 0) return
 
@@ -266,7 +284,7 @@ export default function RegisteredTillsPage() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-semibold">{device.name}</h2>
+              <h2 className="font-semibold">{deviceLabel(device)}</h2>
               {device.thisDevice && <Marker>This till</Marker>}
               {!isActive && <Marker tone="danger">Revoked</Marker>}
             </div>
@@ -361,9 +379,14 @@ export default function RegisteredTillsPage() {
           <h1 className="text-lg font-semibold">Registered tills</h1>
           <p className="text-sm text-muted-foreground">POS tills and the browsers registered on them.</p>
         </div>
-        <Button asChild size="sm">
-          <Link href="/devices/register">Register this till</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={() => setReceiptSettingsOpen(true)}>
+            Receipt settings
+          </Button>
+          <Button asChild size="sm">
+            <Link href="/devices/register">Register this till</Link>
+          </Button>
+        </div>
       </div>
 
       {config && (
@@ -380,8 +403,23 @@ export default function RegisteredTillsPage() {
             <dt className="text-xs text-muted-foreground">Serial number</dt>
             <dd>{config.requireSerial ? "Required" : "Optional"}</dd>
           </div>
+          {config.maxActiveTills !== undefined && (
+            <div>
+              <dt className="text-xs text-muted-foreground">Most active tills</dt>
+              <dd>{config.maxActiveTills}</dd>
+            </div>
+          )}
+          {config.requireRegistered !== undefined && (
+            <div>
+              <dt className="text-xs text-muted-foreground">Selling</dt>
+              <dd>{config.requireRegistered ? "Registered tills only" : "Any browser"}</dd>
+            </div>
+          )}
         </dl>
       )}
+
+      {/* O2b: this browser's automatic printing switches, set on each till. */}
+      <PrintSettingsCard />
 
       {pageMessage && (
         <div role="alert" className="flex items-start justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
@@ -432,7 +470,10 @@ export default function RegisteredTillsPage() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Edit {editTarget?.name}</DialogTitle>
-            <DialogDescription>All three fields are saved together. A blank asset tag clears it.</DialogDescription>
+            <DialogDescription>
+              All fields are saved together. A blank asset tag clears it; a blank till code keeps the current one. Shifts already
+              opened keep the code they opened with.
+            </DialogDescription>
           </DialogHeader>
           <form
             className="space-y-3"
@@ -443,15 +484,21 @@ export default function RegisteredTillsPage() {
             }}
           >
             {dialogError && <p role="alert" className="text-sm text-destructive">{dialogError}</p>}
-            {(["name", "serialNumber", "assetTag"] as const).map((key) => (
+            {(["tillCode", "name", "serialNumber", "assetTag"] as const).map((key) => (
               <div key={key} className="space-y-1">
                 <Label htmlFor={`edit-${key}`}>
-                  {key === "name" ? "Till name" : key === "serialNumber" ? `Serial number${config?.requireSerial ? "" : " (optional)"}` : "Asset tag (optional)"}
+                  {key === "tillCode"
+                    ? "Till code"
+                    : key === "name"
+                      ? "Till name"
+                      : key === "serialNumber"
+                        ? `Serial number${config?.requireSerial ? "" : " (optional)"}`
+                        : "Asset tag (optional)"}
                 </Label>
                 <Input
                   id={`edit-${key}`}
                   value={editForm[key]}
-                  maxLength={DEVICE_TEXT_MAX}
+                  maxLength={key === "tillCode" ? TILL_CODE_MAX : DEVICE_TEXT_MAX}
                   aria-invalid={!!fieldErrors[key]}
                   onChange={(event) => {
                     const value = event.target.value
@@ -526,8 +573,8 @@ export default function RegisteredTillsPage() {
             </DialogTitle>
             <DialogDescription>
               {revokeTarget?.kind === "device"
-                ? "The till and all its browsers stop being recognised at once. Its serial number and asset tag become free to register as a new till."
-                : "This browser stops being recognised at once."}
+                ? "The till and all its browsers stop being recognised at once, and everyone signed in on it is signed out. A shift open on it stays open: its owner closes it, or force close it in POS Activity. Its serial number, asset tag and till code become free for a new till."
+                : "This browser stops being recognised at once, and anyone signed in on it is signed out."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm">
@@ -565,6 +612,7 @@ export default function RegisteredTillsPage() {
           </div>
         </DialogContent>
       </Dialog>
+      <ReceiptSettingsDialog open={receiptSettingsOpen} onClose={() => setReceiptSettingsOpen(false)} />
     </DevicePageShell>
   )
 }

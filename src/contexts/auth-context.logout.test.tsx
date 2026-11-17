@@ -37,7 +37,7 @@ afterEach(() => {
 })
 
 describe("sign-out (POST /auth/logout)", () => {
-  it("clears the session first, then sends one POST /auth/logout with credentials and no token", async () => {
+  it("clears the session first, then sends one POST /auth/logout with credentials and the access token (O2)", async () => {
     const auth = renderSignedIn()
     let storedWhenCalled: string | null = "not called"
     fetchMock.mockImplementation(async () => {
@@ -50,9 +50,11 @@ describe("sign-out (POST /auth/logout)", () => {
     expect(logoutCalls()).toHaveLength(1)
     const [url, init] = logoutCalls()[0]
     expect(String(url)).toBe("http://localhost:8080/auth/logout")
-    expect(init).toMatchObject({ method: "POST", credentials: "include", keepalive: true })
+    expect(init).toMatchObject({ method: "POST", credentials: "include" })
+    // Not keepalive: a keepalive request needing a CORS preflight may be refused.
+    expect(init?.keepalive).toBeUndefined()
     expect(init?.body).toBeUndefined()
-    expect(new Headers(init?.headers).has("Authorization")).toBe(false)
+    expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer a.b.c")
     expect(storedWhenCalled).toBeNull()
     expect(auth().isAuthenticated).toBe(false)
   })
@@ -86,6 +88,29 @@ describe("sign-out (POST /auth/logout)", () => {
 
     expect(auth().isAuthenticated).toBe(false)
     expect(logoutCalls()).toHaveLength(1)
+  })
+
+  it("finishes within 2 s when the server never answers", async () => {
+    vi.useFakeTimers()
+    try {
+      const auth = renderSignedIn()
+      fetchMock.mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")))
+      }))
+      let settled = false
+      await act(async () => {
+        void auth().logout().then(() => {
+          settled = true
+        })
+      })
+      expect(auth().isAuthenticated).toBe(false)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000)
+      })
+      expect(settled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("doesn't refresh after sign-out", async () => {

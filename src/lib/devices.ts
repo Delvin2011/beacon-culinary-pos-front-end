@@ -12,6 +12,9 @@ export interface DeviceConfig {
   mode: DeviceTrustMode
   multiBrowserEnabled: boolean
   requireSerial: boolean
+  // O2 (contract 8.1). Optional: servers before O2 don't send them.
+  maxActiveTills?: number
+  requireRegistered?: boolean
 }
 
 export type DeviceStatus = "ACTIVE" | "REVOKED"
@@ -37,6 +40,8 @@ export interface DeviceCredential {
 export interface Device {
   id: string
   name: string
+  // "T1"… (O2); null or absent on servers before O2.
+  tillCode?: string | null
   type: string
   serialNumber: string | null
   assetTag: string | null
@@ -64,6 +69,19 @@ export const DeviceErrorCode = {
 
 export const TILL_NOT_REGISTERED_MESSAGE = "This till is not registered. Ask a manager to register it."
 export const DEVICE_TEXT_MAX = 100
+
+// A till code (O2 contract 8.1): 1 to 10 of A–Z, 0–9 and "-", stored upper case.
+export const TILL_CODE_MAX = 10
+export const TILL_CODE_PATTERN = /^[A-Z0-9-]{1,10}$/
+
+export function normaliseTillCode(raw: string): string {
+  return raw.trim().toUpperCase()
+}
+
+// "T1 · Till 1 (front)", or the name alone before O2.
+export function deviceLabel(device: Pick<Device, "name" | "tillCode">): string {
+  return device.tillCode ? `${device.tillCode} · ${device.name}` : device.name
+}
 export const REVOKE_REASON_MAX = 255
 
 // A failed /admin/devices call. `message` is the backend's `error` text, or a plain fallback.
@@ -128,14 +146,21 @@ export interface EditDeviceInput {
   name: string
   serialNumber: string
   assetTag: string
+  // Blank leaves the code unchanged (sent as null).
+  tillCode?: string
 }
 
-// A full replace: all three fields are always sent; a blank asset tag clears it.
+// A full replace: the fields are always sent; a blank asset tag clears it, a blank till code keeps it.
 export function editDevice(authFetch: AuthFetch, id: string, input: EditDeviceInput): Promise<Device> {
   return call(
     authFetch,
     `/admin/devices/${encodeURIComponent(id)}`,
-    jsonBody("PUT", { name: input.name.trim(), serialNumber: optional(input.serialNumber), assetTag: optional(input.assetTag) }),
+    jsonBody("PUT", {
+      name: input.name.trim(),
+      serialNumber: optional(input.serialNumber),
+      assetTag: optional(input.assetTag),
+      tillCode: normaliseTillCode(input.tillCode ?? "") || null,
+    }),
     "Unable to save the till.",
   )
 }

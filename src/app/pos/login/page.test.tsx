@@ -108,3 +108,27 @@ describe("POS PIN sign-in on 429", () => {
     expect(pinLoginCalls(1)).toBe(1)
   })
 })
+
+describe("POS cashier list on a network error", () => {
+  it("says the server can't be reached, never the browser's text, and Try again reloads the list", async () => {
+    const usual = fetchMock.getMockImplementation()
+    fetchMock.mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/users/cashiers")) throw new TypeError("Failed to fetch")
+      return usual!(input, init)
+    })
+    render(
+      <AuthProvider>
+        <PosLoginPage />
+      </AuthProvider>,
+    )
+
+    expect(await screen.findByText("Can't reach the server. Nothing has been lost. Try again.")).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to fetch/)).not.toBeInTheDocument()
+
+    fetchMock.mockImplementation(usual!)
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+    })
+    expect(await screen.findByRole("button", { name: /Ann Lee/ })).toBeInTheDocument()
+  })
+})

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Gift, Info, Minus, Plus, Printer, RefreshCw, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
@@ -12,6 +12,23 @@ import {
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { formatZarCurrency } from "@/lib/utils";
+import { messageForError, parseRetryAfter } from "@/lib/net";
+import { useConnection } from "@/contexts/connection-context";
+import { usePendingSale } from "@/hooks/use-pending-sale";
+import { PendingSaleOverlay } from "@/components/pos/pending-sale-overlay";
+import { newRequestId, ownerKey, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
+import { useLockBlocker } from "@/lib/lock-guard";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { TillErrorCode } from "@/lib/till";
+import { isAdminRole } from "@/lib/roles";
+import { onSessionEnding } from "@/lib/session-events";
+import { clearPendingCart, loadPendingCart, savePendingCart, type PendingCart } from "@/lib/pending-cart";
+import { useSalePrinting } from "@/hooks/use-sale-printing";
+import { hasKitchenLines } from "@/lib/receipt";
+
+// Voids and refunds: waits before each resend of the same request (network error, timeout, 5xx, 429).
+const ADJUSTMENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 import type { CatalogGroup, CategoryRef, Station } from "@/lib/catalog";
 import { type OrderStation, orderStatusLabel, stationLabel, stationStatusLabel } from "@/lib/stations";
 import { centsToAmountInput, formatAmountInput, parseAmountInput } from "@/lib/amount-input";
@@ -173,6 +190,8 @@ type OrderPaymentDto = {
   amountTendered?: number;
   changeDue?: number;
   accountId?: number;
+  // CARD payments only (O2b); left out otherwise.
+  cardReference?: string;
   // ACCOUNT payments only; absent on account orders placed before approval was required.
   authorizedBy?: { id: number; name: string } | null;
 };
@@ -180,6 +199,14 @@ type OrderPaymentDto = {
 type OrderDto = {
   id: number;
   orderNumber: number;
+  // O2b receipt data: the receipt's number ("20261118-0037"), the till (null on the unregistered till), who rang it
+  // up, and the VAT included (null on orders from before O2b).
+  receiptNumber?: string;
+  tillCode?: string | null;
+  tillName?: string | null;
+  cashierName?: string;
+  vatRate?: number | null;
+  vatIncludedAmount?: number | null;
   status?: OrderStatus;
   orderDate?: string;
   createdAt?: string;
@@ -267,6 +294,10 @@ type PosOrderBuilderProps = {
   ) => void;
   invalidateManagementSession: () => void;
 };
+
+function formatHHMM(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
 
 function nowTimeHHMMSS(): string {
   return new Date().toTimeString().slice(0, 8);
@@ -431,8 +462,10 @@ export function PosOrderBuilder({
   requestManagementSession,
   invalidateManagementSession,
 }: PosOrderBuilderProps) {
-  const { authFetch } = useAuth();
+  const { authFetch, user, logout } = useAuth();
   const { shift, refetch: refetchShift } = useShift();
+  // Selling offline is not part of O1: Confirm waits for the connection; the cart is kept.
+  const { isOnline } = useConnection();
   const [shiftClosedWhileSelling, setShiftClosedWhileSelling] = useState(false);
 
   const [periods, setPeriods] = useState<MealPeriod[]>([]);
@@ -441,6 +474,12 @@ export function PosOrderBuilder({
   const [menu, setMenu] = useState<MenuTodayResponse>({ options: [], availableExtras: [] });
   const [isLoadingMenu, setIsLoadingMenu] = useState(false);
   const [menuError, setMenuError] = useState<string | null>(null);
+  // The period whose menu is on screen and when it last loaded. A failed refresh of the SAME period keeps it
+  // and marks it stale; a different period that fails to load is cleared, so items never show under the wrong tab.
+  const menuPeriodRef = useRef<string | null>(null);
+  const beveragesLoadedRef = useRef(false);
+  const [menuUpdatedAt, setMenuUpdatedAt] = useState<Date | null>(null);
+  const [menuStale, setMenuStale] = useState(false);
   // The Beverages tab isn't a meal period: its items come from the full till menu (no period).
   const [beveragesTab, setBeveragesTab] = useState(false);
   const [beverageOptions, setBeverageOptions] = useState<DailyMealOption[]>([]);
@@ -548,7 +587,71 @@ export function PosOrderBuilder({
   const [accountSearch, setAccountSearch] = useState("");
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [showAccountDetails, setShowAccountDetails] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  // Set when a 200 replay finished the sale: it had already gone through before.
+  const [saleReplayNotice, setSaleReplayNotice] = useState(false);
+
+  const managerApprovalPrompt = {
+    title: "Manager PIN Required",
+    description: "The approval was refused or has expired. Enter an admin PIN to finish this sale.",
+    submitLabel: "Approve",
+  };
+
+  // Confirm freezes the body with a clientOrderId and keeps resending it until the server gives a definite answer.
+  // The callbacks only run after a render, so they may use handlers defined further down.
+  const pendingSale = usePendingSale({
+    authFetch,
+    user,
+    isOnline,
+    // Once per clientOrderId. Printing the receipt / kitchen ticket would hook in here.
+    onCompleted: async (order, _sale, replay) => {
+      setSaleReplayNotice(replay);
+      await finishOrder(order as OrderDto);
+    },
+    onRejected: (sale, outcome) =>
+      sale.kind === "COMPLIMENTARY" ? handleComplimentaryRejection(sale, outcome) : handleSaleRejection(outcome),
+    onNeedsApproval: () => {
+      invalidateManagementSession();
+      requestManagementSession((token) => pendingSale.resendWithApproval(token), managerApprovalPrompt);
+    },
+  });
+  // A sale is out and its outcome is unknown: nothing on the till may change it or start another.
+  const isSubmitting = pendingSale.pending !== null;
+
+  // A payment on screen, or a sale being sent or not yet confirmed (O1): the till can't lock or end the shift.
+  useLockBlocker("payment", showPayment);
+  useLockBlocker("pending-sale", pendingSale.pending !== null);
+
+  // Lock till, or a session the server ended: keep this person's cart. An empty cart leaves an earlier kept one alone.
+  const draftLinesRef = useRef(draftLines);
+  draftLinesRef.current = draftLines;
+  const userKey = ownerKey(user);
+  const userName = user?.name ?? null;
+  useEffect(
+    () =>
+      onSessionEnding(() => {
+        if (userKey && draftLinesRef.current.length > 0) savePendingCart({ key: userKey, name: userName }, draftLinesRef.current);
+      }),
+    [userKey, userName],
+  );
+
+  // On sign-in: the same person gets their cart back; anyone else is asked whether to keep it or discard it.
+  const [keptCart, setKeptCart] = useState<PendingCart<DraftLine> | null>(null);
+  useEffect(() => {
+    if (!userKey) return;
+    const kept = loadPendingCart<DraftLine>();
+    if (!kept) return;
+    if (kept.owner.key === userKey) {
+      setDraftLines(kept.lines);
+      clearPendingCart();
+    } else {
+      setKeptCart(kept);
+    }
+  }, [userKey]);
+
+  // O2b printing: the receipt, then the kitchen ticket, after each sale; local copies from the completion screen.
+  const salePrinting = useSalePrinting({ authFetch, owner: userKey, knownAccounts: checkoutAccounts });
+  // The sale just finished on this screen: only it gets the "print again" buttons, until the next sale starts.
+  const [justSoldOrderId, setJustSoldOrderId] = useState<number | null>(null);
   // Discount at checkout: the draft being edited, and the one a manager approved.
   const [saleDiscount, setSaleDiscount] = useState<SaleDiscount | null>(null);
   const [showSaleDiscountForm, setShowSaleDiscountForm] = useState(false);
@@ -626,10 +729,18 @@ export function PosOrderBuilder({
           options: Array.isArray(payload.options) ? payload.options : [],
           availableExtras: Array.isArray(payload.availableExtras) ? payload.availableExtras : [],
         });
+        menuPeriodRef.current = periodName.toUpperCase();
+        setMenuUpdatedAt(new Date());
+        setMenuStale(false);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unable to load today's menu.";
-        setMenu({ options: [], availableExtras: [] });
-        setMenuError(msg);
+        if (menuPeriodRef.current === periodName.toUpperCase()) {
+          // Keep what's on screen; the server still refuses anything that has sold out.
+          setMenuStale(true);
+        } else {
+          menuPeriodRef.current = null;
+          setMenu({ options: [], availableExtras: [] });
+          setMenuError(messageForError(err, "Unable to load today's menu."));
+        }
       } finally {
         setIsLoadingMenu(false);
       }
@@ -650,9 +761,16 @@ export function PosOrderBuilder({
         }
         const options = Array.isArray(payload.options) ? payload.options : [];
         setBeverageOptions(options.filter((option) => option.group === "BEVERAGES"));
+        beveragesLoadedRef.current = true;
+        setMenuUpdatedAt(new Date());
+        setMenuStale(false);
       } catch (err) {
-        setBeverageOptions([]);
-        setMenuError(err instanceof Error ? err.message : "Unable to load beverages.");
+        if (beveragesLoadedRef.current) {
+          setMenuStale(true);
+        } else {
+          setBeverageOptions([]);
+          setMenuError(messageForError(err, "Unable to load beverages."));
+        }
       } finally {
         setIsLoadingMenu(false);
       }
@@ -674,7 +792,7 @@ export function PosOrderBuilder({
       try {
         await loadPeriods();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unable to load meal periods.";
+        const msg = messageForError(err, "Unable to load meal periods.");
         setMenuError(msg);
       }
     })();
@@ -831,6 +949,7 @@ export function PosOrderBuilder({
   const canConfirmPayment =
     draftLines.length > 0 &&
     !isSubmitting &&
+    isOnline &&
     ((paymentEntries.length > 0 && remainingToPayCents === 0) || singlePaymentDraft !== null);
 
   // One tap adds one. Always-on lines never carry extras, so repeat taps just raise the quantity.
@@ -1105,7 +1224,7 @@ export function PosOrderBuilder({
       // No default: the cashier must pick the account. Keep a pick only if it is still active.
       setSelectedAccountId((current) => (current && body.some((account) => account.id === current) ? current : null));
     } catch (err) {
-      setAccountsError(err instanceof Error ? err.message : "Unable to load accounts for checkout.");
+      setAccountsError(messageForError(err, "Unable to load accounts for checkout."));
       setCheckoutAccounts([]);
       setSelectedAccountId(null);
     } finally {
@@ -1262,7 +1381,7 @@ export function PosOrderBuilder({
         setCompletedOrder(nextOrder);
         return nextOrder;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Unable to load receipt.";
+        const msg = messageForError(err, "Unable to load receipt.");
         setReceiptError(msg);
         return null;
       } finally {
@@ -1283,7 +1402,7 @@ export function PosOrderBuilder({
       }
       setTodayOrders(body);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unable to load today's orders.";
+      const msg = messageForError(err, "Unable to load today's orders.");
       setTodayOrdersError(msg);
     } finally {
       setTodayOrdersLoading(false);
@@ -1319,6 +1438,7 @@ export function PosOrderBuilder({
   const finishOrder = async (order: OrderDto) => {
     setCompletedOrderId(order.id);
     setCompletedOrder(order);
+    setJustSoldOrderId(order.id);
     setReceiptOrder(null);
     setReceiptError(null);
     resetSaleDiscount();
@@ -1331,7 +1451,10 @@ export function PosOrderBuilder({
     setCashTenderedInput("");
     setPaymentEntryError(null);
     setAccountSearch("");
-    await loadOrderReceipt(order.id);
+    // Print from the full order (GET /orders/{id}), or the POST response if that fails. Not awaited: printing never
+    // holds up the till, and its failures are swallowed.
+    const loaded = await loadOrderReceipt(order.id);
+    void salePrinting.autoPrint(loaded ?? order);
     await loadTodayOrders();
     await loadMenuForPeriod(selectedPeriod?.name ?? "");
   };
@@ -1411,7 +1534,6 @@ export function PosOrderBuilder({
       return;
     }
 
-    setIsSubmitting(true);
     setSubmissionError(null);
 
     const payload: Record<string, unknown> = {
@@ -1437,77 +1559,65 @@ export function PosOrderBuilder({
       };
     }
 
-    try {
-      const res = await authFetch("/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const body = (await res.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
-
-      if (!res.ok) {
-        // Shift errors share 409 with stock conflicts, so branch on code first.
-        const errorCode = (body as ApiErrorPayload | null)?.code;
-        if (errorCode === "NO_OPEN_SHIFT") {
-          // Keep the cart so the order can be completed on a new shift.
-          setShiftClosedWhileSelling(true);
-          return;
-        }
-        if (errorCode === "TILL_IN_USE") {
-          // Reloading the shift shows the "Till in use" screen.
-          await refetchShift();
-          return;
-        }
-        if (errorCode === "AUTHORIZATION_INVALID") {
-          // No order was created. Ask for the PIN again and resubmit the same cart.
-          invalidateManagementSession();
-          setSubmissionError("The manager approval was rejected or has expired. Enter an admin PIN again to charge.");
-          requestManagementSession((token) => void submitOrder(token), approvalPrompt);
-          return;
-        }
-        if (errorCode === "ACCOUNT_PAYMENT_INVALID") {
-          throw new Error(parseMessage(body, "The account payment was refused. Check the account and try again."));
-        }
-        if (errorCode === "ITEM_UNAVAILABLE") {
-          await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
-          return;
-        }
-        if (errorCode === "EXTRAS_NOT_ALLOWED") {
-          throw new Error(parseMessage(body, "Extras can't be added to light meals or beverages. Remove them and try again."));
-        }
-        if (errorCode === "DISCOUNT_INVALID" || errorCode === "DISCOUNT_TOO_LARGE") {
-          setSaleDiscountError(parseMessage(body, "This discount isn't allowed. Change or remove it."));
-          throw new Error("The discount was refused. Change or remove it, then charge again.");
-        }
-
-        if (res.status === 409) {
-          applyConflictFeedback(body);
-          await loadMenuForPeriod(selectedPeriod?.name ?? "");
-          throw new Error(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
-        }
-
-        throw new Error(parseMessage(body, "Order submission failed."));
-      }
-
-      await finishOrder(body as OrderDto);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Order submission failed.";
-      setSubmissionError(msg);
-      // Out today changes aren't pushed to the till: refresh the menu after any order error.
-      refreshShownMenu(true);
-    } finally {
-      setIsSubmitting(false);
+    setSaleReplayNotice(false);
+    // Confirm freezes this body with a new clientOrderId and sends it; retries reuse both.
+    if (!pendingSale.start("SALE", payload, saleSummary(payableCents / 100))) {
+      setSubmissionError("A sale is still being checked. Wait for it to finish.");
     }
+  };
+
+  // What the "Checking the sale…" screen lists: the request body only has ids.
+  const saleSummary = (total: number) => ({
+    lines: draftLines.map((line) => ({ name: line.name, quantity: line.quantity })),
+    total,
+  });
+
+  type RejectedSale = Extract<SaleSendOutcome, { kind: "rejected" }>;
+
+  // The server refused the sale and nothing was created: the same handling as before O1. The cart is kept.
+  const handleSaleRejection = async ({ status, code, body }: RejectedSale) => {
+    // require-registered is on and this browser isn't a registered till (O2): nothing was created.
+    if (code === DeviceErrorCode.NOT_REGISTERED) {
+      setSubmissionError(TILL_NOT_REGISTERED_MESSAGE);
+      return;
+    }
+    // Shift errors share 409 with stock conflicts, so branch on code first.
+    if (code === "NO_OPEN_SHIFT") {
+      // Keep the cart so the order can be completed on a new shift.
+      setShiftClosedWhileSelling(true);
+      return;
+    }
+    if (code === "TILL_IN_USE") {
+      // Reloading the shift shows the "Till in use" screen.
+      await refetchShift();
+      return;
+    }
+    if (code === "ITEM_UNAVAILABLE") {
+      await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
+      return;
+    }
+    if (code === "DISCOUNT_INVALID" || code === "DISCOUNT_TOO_LARGE") {
+      setSaleDiscountError(parseMessage(body, "This discount isn't allowed. Change or remove it."));
+      setSubmissionError("The discount was refused. Change or remove it, then charge again.");
+    } else if (code === "ACCOUNT_PAYMENT_INVALID") {
+      setSubmissionError(parseMessage(body, "The account payment was refused. Check the account and try again."));
+    } else if (code === "EXTRAS_NOT_ALLOWED") {
+      setSubmissionError(parseMessage(body, "Extras can't be added to light meals or beverages. Remove them and try again."));
+    } else if (status === 409) {
+      applyConflictFeedback(body);
+      await loadMenuForPeriod(selectedPeriod?.name ?? "");
+      setSubmissionError(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
+    } else {
+      setSubmissionError(parseMessage(body, "Order submission failed."));
+    }
+    // Out today changes aren't pushed to the till: refresh the menu after any order error.
+    refreshShownMenu(true);
   };
 
   // A complimentary order: lines and the manager's approval, never payments or a discount.
   const submitComplimentary = async (sessionToken: string) => {
     if (draftLines.length === 0 || !complimentaryReason) return;
 
-    setIsSubmitting(true);
     setSubmissionError(null);
     setComplimentaryError(null);
 
@@ -1520,69 +1630,72 @@ export function PosOrderBuilder({
       },
     };
 
-    try {
-      const res = await authFetch("/orders", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const body = (await res.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
-
-      if (!res.ok) {
-        const errorCode = (body as ApiErrorPayload | null)?.code;
-        if (errorCode === "NO_OPEN_SHIFT") {
-          setShiftClosedWhileSelling(true);
-          return;
-        }
-        if (errorCode === "TILL_IN_USE") {
-          await refetchShift();
-          return;
-        }
-        if (errorCode === "AUTHORIZATION_INVALID" || res.status === 401) {
-          // Bad, expired or already used: drop it and ask for a new PIN.
-          invalidateManagementSession();
-          setComplimentaryToken(null);
-          setComplimentaryError("Manager approval failed. Enter the PIN again.");
-          requestManagementSession((token) => void submitComplimentary(token), {
-            title: "Manager PIN Required",
-            description: "Manager approval failed. Enter the PIN again.",
-            submitLabel: "Approve Complimentary",
-          });
-          return;
-        }
-        if (errorCode === "ITEM_UNAVAILABLE") {
-          // The order rolled back, so the approval is still valid for the trimmed cart.
-          setComplimentaryToken(sessionToken);
-          await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
-          return;
-        }
-        if (errorCode === "COMPLIMENTARY_INVALID") {
-          // The approval wasn't used: keep it while the cashier fixes the form.
-          setComplimentaryToken(sessionToken);
-          setComplimentaryError(parseMessage(body, "This complimentary order isn't allowed. Check the reason and note."));
-          return;
-        }
-        if (res.status === 409) {
-          // The order rolled back, so the approval is still valid: retry after fixing the cart, no new PIN.
-          setComplimentaryToken(sessionToken);
-          applyConflictFeedback(body);
-          await loadMenuForPeriod(selectedPeriod?.name ?? "");
-          setComplimentaryError(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
-          return;
-        }
-        throw new Error(parseMessage(body, "Order submission failed."));
-      }
-
-      await finishOrder(body as OrderDto);
-    } catch (err) {
-      setComplimentaryError(err instanceof Error ? err.message : "Order submission failed.");
-    } finally {
-      setIsSubmitting(false);
+    setSaleReplayNotice(false);
+    // The approval goes out with the frozen body; a refused approval asks for a PIN and resends the same id.
+    setComplimentaryToken(null);
+    if (!pendingSale.start("COMPLIMENTARY", payload, saleSummary(0))) {
+      setComplimentaryToken(sessionToken);
+      setComplimentaryError("A sale is still being checked. Wait for it to finish.");
     }
   };
+
+  // Nothing was created. The approval wasn't used, so it is kept for the corrected cart, as before O1.
+  const handleComplimentaryRejection = async (sale: PendingSale, { status, code, body }: RejectedSale) => {
+    const complimentary = sale.body.complimentary as { authorization?: { sessionToken?: string } } | undefined;
+    const sessionToken = complimentary?.authorization?.sessionToken ?? null;
+    if (code === DeviceErrorCode.NOT_REGISTERED) {
+      setComplimentaryError(TILL_NOT_REGISTERED_MESSAGE);
+      return;
+    }
+    if (code === "NO_OPEN_SHIFT") {
+      setShiftClosedWhileSelling(true);
+      return;
+    }
+    if (code === "TILL_IN_USE") {
+      await refetchShift();
+      return;
+    }
+    setComplimentaryToken(sessionToken);
+    if (code === "ITEM_UNAVAILABLE") {
+      await handleItemUnavailable(parseMessage(body, "An item is not available right now."));
+      return;
+    }
+    if (code === "COMPLIMENTARY_INVALID") {
+      setComplimentaryError(parseMessage(body, "This complimentary order isn't allowed. Check the reason and note."));
+      return;
+    }
+    if (status === 409) {
+      applyConflictFeedback(body);
+      await loadMenuForPeriod(selectedPeriod?.name ?? "");
+      setComplimentaryError(parseMessage(body, "Stock changed while creating the order. Adjust and retry."));
+      return;
+    }
+    setComplimentaryError(parseMessage(body, "Order submission failed."));
+  };
+
+  // Covers the till while a sale's outcome is unknown. Rendered on both screens (till and completed sale).
+  const pendingSaleOverlay =
+    pendingSale.pending && pendingSale.phase !== "idle" ? (
+      <PendingSaleOverlay
+        sale={pendingSale.pending}
+        phase={pendingSale.phase}
+        isOnline={isOnline}
+        onCheckAgain={pendingSale.checkNow}
+        onEnterPin={() => requestManagementSession((token) => pendingSale.resendWithApproval(token), managerApprovalPrompt)}
+        // 401 AUTHORIZATION_INVALID: nothing was created, so the cashier can go back and change the order.
+        onCancelUnapproved={pendingSale.discard}
+        onSupervisorClear={() =>
+          requestManagementSession(() => pendingSale.discard(), {
+            title: "Supervisor approval",
+            description: "Clearing doesn't cancel the sale. Check Today's orders before ringing it again.",
+            submitLabel: "Clear it",
+          })
+        }
+        onSignOut={logout}
+        // A manager may finish another cashier's sale (O2): same body and id, so one that went through comes back as is.
+        onManagerFinish={isAdminRole(user?.role) ? pendingSale.sendAsIs : undefined}
+      />
+    ) : null;
 
   const complimentaryFormError = (): string | null => {
     if (!complimentaryReason) return "Choose a reason.";
@@ -1591,7 +1704,7 @@ export function PosOrderBuilder({
   };
 
   const confirmComplimentary = () => {
-    if (draftLines.length === 0 || saleDiscount || isSubmitting) return;
+    if (draftLines.length === 0 || saleDiscount || isSubmitting || !isOnline) return;
     const error = complimentaryFormError();
     if (error) {
       setComplimentaryError(error);
@@ -1618,6 +1731,10 @@ export function PosOrderBuilder({
     setAdjustmentSuccess(null);
   };
 
+  // Voids and refunds: one clientRequestId per action, kept in memory (not across a reload). Pressing again with the
+  // same order, action, scope, reason and note reuses it, so a lost answer can't get the action applied twice.
+  const adjustmentRequestRef = useRef<{ key: string; id: string } | null>(null);
+
   const submitOrderAdjustment = useCallback(
     async (order: OrderDto, sessionToken: string) => {
       if (!requestedAction) return;
@@ -1626,21 +1743,47 @@ export function PosOrderBuilder({
       setAdjustmentError(null);
 
       try {
+        const note = adjustmentNote.trim() || undefined;
+        // The contract's "same payload": the session token is not part of it.
+        const key = JSON.stringify([order.id, requestedAction, adjustmentScope, adjustmentReasonCode, note ?? null]);
+        if (adjustmentRequestRef.current?.key !== key) adjustmentRequestRef.current = { key, id: newRequestId() };
+
         const payload: Record<string, unknown> = {
+          clientRequestId: adjustmentRequestRef.current.id,
           requestedAction,
           reasonCode: adjustmentReasonCode,
-          note: adjustmentNote.trim() || undefined,
+          note,
           sessionToken,
           scope: adjustmentScope,
         };
 
-        const adjustmentRes = await authFetch(`/orders/${order.id}/adjustments`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        });
+        // Network error, timeout, 5xx or 429: resend the same body and id (Retry-After honoured).
+        let adjustmentRes: Response | null = null;
+        for (let attempt = 0; ; attempt += 1) {
+          let retryAfterMs: number | null = null;
+          try {
+            adjustmentRes = await authFetch(`/orders/${order.id}/adjustments`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(payload),
+            });
+            if (adjustmentRes.status < 500 && adjustmentRes.status !== 429) break; // a definite answer
+            if (adjustmentRes.status === 429) retryAfterMs = parseRetryAfter(adjustmentRes.headers.get("Retry-After"));
+          } catch {
+            adjustmentRes = null;
+          }
+          if (attempt === ADJUSTMENT_RETRY_DELAYS_MS.length) break;
+          await sleep(Math.max(ADJUSTMENT_RETRY_DELAYS_MS[attempt], retryAfterMs ?? 0));
+        }
+
+        if (!adjustmentRes || adjustmentRes.status >= 500 || adjustmentRes.status === 429) {
+          // Unknown outcome: keep the id, so pressing again replays it rather than applying it twice.
+          await loadOrderReceipt(order.id);
+          setAdjustmentError("Couldn't confirm the void or refund. Check the order, then press it again: it won't be applied twice.");
+          return;
+        }
 
         const adjustmentBody = (await adjustmentRes.json().catch(() => null)) as OrderDto | ApiErrorPayload | null;
 
@@ -1681,6 +1824,26 @@ export function PosOrderBuilder({
             return;
           }
 
+          // O2: voids and refunds book to this till's shift, which only its owner or a manager may use.
+          if (errorCode === TillErrorCode.TILL_IN_USE) {
+            await refetchShift();
+            setAdjustmentError("This till's shift belongs to someone else. Only they or a manager can void or refund here.");
+            return;
+          }
+
+          if (errorCode === DeviceErrorCode.NOT_REGISTERED) {
+            setAdjustmentError(TILL_NOT_REGISTERED_MESSAGE);
+            return;
+          }
+
+          if (errorCode === "IDEMPOTENCY_CONFLICT") {
+            // This id was already used for something else. Never retried; the next press gets a new id.
+            adjustmentRequestRef.current = null;
+            await loadOrderReceipt(order.id);
+            setAdjustmentError("This action wasn't applied: it was matched to a different request. Check the order before trying again.");
+            return;
+          }
+
           if (adjustmentRes.status === 409) {
             const refreshed = await loadOrderReceipt(order.id);
             await loadTodayOrders();
@@ -1698,6 +1861,8 @@ export function PosOrderBuilder({
           throw new Error(parsedMessage);
         }
 
+        // Done: 201, or 200 Idempotent-Replay with the order as it is now.
+        adjustmentRequestRef.current = null;
         const updatedOrder = adjustmentBody as OrderDto;
         const recent = latestAdjustment(updatedOrder);
 
@@ -1743,7 +1908,7 @@ export function PosOrderBuilder({
 
         setShowAdjustmentForm(false);
       } catch (err) {
-        setAdjustmentError(err instanceof Error ? err.message : "Unable to apply management action.");
+        setAdjustmentError(messageForError(err, "Unable to apply management action."));
       } finally {
         setIsApplyingAdjustment(false);
       }
@@ -1754,6 +1919,7 @@ export function PosOrderBuilder({
       adjustmentScope,
       authFetch,
       invalidateManagementSession,
+      refetchShift,
       loadOrderReceipt,
       loadTodayOrders,
       getAccountName,
@@ -1853,6 +2019,9 @@ export function PosOrderBuilder({
 
           <p className="mt-6 text-sm text-emerald-200/90">Order Number</p>
           <p className="text-7xl font-black text-white">#{shownOrder.orderNumber}</p>
+          {saleReplayNotice && (
+            <p className="mt-2 text-sm text-sky-200">This sale had already gone through. It was recorded once.</p>
+          )}
 
           {complimentaryOrder ? (
             <>
@@ -2010,6 +2179,28 @@ export function PosOrderBuilder({
               <RefreshCw className="h-4 w-4" />
               {receiptLoading ? "Loading Receipt..." : "Reload Receipt"}
             </button>
+            {justSoldOrderId === completedOrderId && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => salePrinting.reprintReceipt(shownOrder)}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-300/50 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-300/10"
+                >
+                  <Printer className="h-4 w-4" />
+                  Print receipt again
+                </button>
+                {hasKitchenLines(shownOrder) && (
+                  <button
+                    type="button"
+                    onClick={() => salePrinting.reprintKitchenTicket(shownOrder)}
+                    className="inline-flex items-center gap-2 rounded-xl border border-emerald-300/50 px-4 py-2 text-sm font-medium text-emerald-100 hover:bg-emerald-300/10"
+                  >
+                    <Printer className="h-4 w-4" />
+                    Print kitchen ticket again
+                  </button>
+                )}
+              </>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -2018,7 +2209,7 @@ export function PosOrderBuilder({
                     await markPrintFailed(completedOrderId);
                     await loadTodayOrders();
                   } catch (err) {
-                    setReceiptError(err instanceof Error ? err.message : "Unable to mark print as failed.");
+                    setReceiptError(messageForError(err, "Unable to mark print as failed."));
                   }
                 })();
               }}
@@ -2034,6 +2225,7 @@ export function PosOrderBuilder({
                 setCompletedOrderId(null);
                 setReceiptOrder(null);
                 setReceiptError(null);
+                setJustSoldOrderId(null);
               }}
               className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900"
             >
@@ -2233,6 +2425,8 @@ export function PosOrderBuilder({
           )}
         </aside>
       </main>
+      {pendingSaleOverlay}
+      {salePrinting.portal}
       </>
     );
   }
@@ -2300,6 +2494,13 @@ export function PosOrderBuilder({
             </button>
           </div>
         </div>
+
+        {menuStale && menuUpdatedAt && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            Last updated {formatHHMM(menuUpdatedAt)}. Couldn&apos;t refresh the menu; stock shown may be out of date.
+          </div>
+        )}
 
         {menuError && (
           <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
@@ -2723,13 +2924,15 @@ export function PosOrderBuilder({
               </button>
               <button
                 type="button"
-                disabled={isSubmitting || draftLines.length === 0 || complimentaryFormError() !== null}
+                disabled={isSubmitting || !isOnline || draftLines.length === 0 || complimentaryFormError() !== null}
                 onClick={confirmComplimentary}
                 className="rounded-lg bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-400 disabled:cursor-not-allowed disabled:bg-slate-700"
               >
                 {isSubmitting
                   ? "Sending..."
-                  : complimentaryToken || (managementSessionActive && managementSessionToken)
+                  : !isOnline
+                    ? "Waiting for connection"
+                    : complimentaryToken || (managementSessionActive && managementSessionToken)
                     ? `Give away ${toMoney(draftTotal)}`
                     : "Approve with PIN"}
               </button>
@@ -3196,7 +3399,7 @@ export function PosOrderBuilder({
                 onClick={() => void submitOrder()}
                 className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
               >
-                {isSubmitting ? "Processing..." : "Confirm Payment"}
+                {isSubmitting ? "Processing..." : !isOnline ? "Waiting for connection" : "Confirm Payment"}
               </button>
             </div>
           </div>
@@ -3260,6 +3463,53 @@ export function PosOrderBuilder({
           </div>
         </div>
       )}
+      {pendingSaleOverlay}
+      {keptCart && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="kept-cart-title"
+          className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+        >
+          <div className="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-900 p-6">
+            <h2 id="kept-cart-title" className="text-xl font-bold text-white">
+              {keptCart.owner.name ?? "Another cashier"}&apos;s order was kept
+            </h2>
+            <p className="mt-2 text-sm text-slate-300">
+              The till locked with {keptCart.lines.reduce((sum, line) => sum + line.quantity, 0)} item
+              {keptCart.lines.reduce((sum, line) => sum + line.quantity, 0) === 1 ? "" : "s"} in the cart. Keep it for{" "}
+              {keptCart.owner.name ?? "them"}, or discard it?
+            </p>
+            <ul className="mt-3 space-y-0.5 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-sm text-slate-300">
+              {keptCart.lines.map((line) => (
+                <li key={line.id}>
+                  {line.quantity} × {line.name}
+                </li>
+              ))}
+            </ul>
+            <div className="mt-5 grid gap-2">
+              <button
+                type="button"
+                onClick={() => setKeptCart(null)}
+                className="rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
+              >
+                Keep it for {keptCart.owner.name ?? "them"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearPendingCart();
+                  setKeptCart(null);
+                }}
+                className="rounded-xl border border-rose-400/40 px-4 py-3 text-sm font-medium text-rose-200 hover:bg-rose-500/10"
+              >
+                Discard it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {salePrinting.portal}
     </>
   );
 }

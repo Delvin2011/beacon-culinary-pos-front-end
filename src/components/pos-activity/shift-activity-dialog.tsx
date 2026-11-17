@@ -6,7 +6,9 @@ import { useAuth } from "@/hooks/use-auth"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { AdminChip, ShiftStatusBadge, VarianceText } from "@/components/pos-activity/shift-badges"
+import { AdminChip, CashCountBadge, ForceClosedChip, ShiftStatusBadge, VarianceText } from "@/components/pos-activity/shift-badges"
+import { CashCountDialog, type CashCountTarget } from "@/components/pos-activity/cash-count-dialog"
+import { tillLabel } from "@/lib/till"
 import { cn } from "@/lib/utils"
 import { isAdminRole } from "@/lib/roles"
 import { isComplimentary } from "@/lib/complimentary"
@@ -178,10 +180,13 @@ function BreakdownBlock({ breakdown }: { breakdown: ExpectedCashBreakdown }) {
 interface ShiftActivityDialogProps {
   shiftId: number | null
   onOpenChange: (open: boolean) => void
+  // After a late count or a confirmed "no count", so the lists behind the dialog reload.
+  onChanged?: () => void
 }
 
-export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDialogProps) {
+export function ShiftActivityDialog({ shiftId, onOpenChange, onChanged }: ShiftActivityDialogProps) {
   const { authFetch } = useAuth()
+  const [countTarget, setCountTarget] = useState<CashCountTarget | null>(null)
   const [activity, setActivity] = useState<ShiftActivity | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -230,6 +235,8 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
                 <span>{shift.owner.name}</span>
                 {isAdminRole(shift.owner.role) && <AdminChip />}
                 <ShiftStatusBadge status={shift.displayStatus} />
+                <CashCountBadge cashCount={shift.cashCount} />
+                {shift.forceClosed && <ForceClosedChip />}
               </>
             ) : (
               <span>Shift activity</span>
@@ -237,7 +244,7 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
           </DialogTitle>
           <DialogDescription>
             {shift
-              ? `${formatJhbDateTime(shift.openedAt)} → ${shift.closedAt ? formatJhbDateTime(shift.closedAt) : "still open"}`
+              ? `${shift.tillCode !== undefined ? `${tillLabel(shift.tillCode, shift.tillName)} · ` : ""}${formatJhbDateTime(shift.openedAt)} → ${shift.closedAt ? formatJhbDateTime(shift.closedAt) : "still open"}`
               : "Sales and adjustments for this shift."}
           </DialogDescription>
         </DialogHeader>
@@ -289,6 +296,33 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
                     <dd>{shift.varianceAuthorizedBy?.name ?? "—"}</dd>
                   </div>
                 </dl>
+              )}
+
+              {shift.cashCount === "UNCOUNTED" && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50/60 p-3 dark:border-amber-700 dark:bg-amber-950/30">
+                  <p className="text-sm">
+                    Force-closed without a cash count. Record the count, or confirm there is none to sign it off.
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() =>
+                        setCountTarget({ shiftId: shift.shiftId, ownerName: shift.owner.name, expectedCash: shift.expectedCash, mode: "count" })
+                      }
+                    >
+                      Record count
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setCountTarget({ shiftId: shift.shiftId, ownerName: shift.owner.name, expectedCash: shift.expectedCash, mode: "no-count" })
+                      }
+                    >
+                      Confirm no count
+                    </Button>
+                  </div>
+                </div>
               )}
 
               <BreakdownBlock breakdown={activity.expectedCashBreakdown} />
@@ -523,6 +557,15 @@ export function ShiftActivityDialog({ shiftId, onOpenChange }: ShiftActivityDial
             </>
           )}
         </div>
+        <CashCountDialog
+          target={countTarget}
+          onClose={() => setCountTarget(null)}
+          onDone={() => {
+            setCountTarget(null)
+            void loadActivity()
+            onChanged?.()
+          }}
+        />
       </DialogContent>
     </Dialog>
   )

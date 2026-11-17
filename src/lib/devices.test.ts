@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  TILL_CODE_PATTERN,
+  normaliseTillCode,
   DeviceApiError,
   editDevice,
   findThisBrowser,
@@ -81,7 +83,7 @@ describe("device calls", () => {
     expect(sent(authFetch)).toEqual({
       path: "/admin/devices/d1",
       method: "PUT",
-      body: { name: "Till 1 (front)", serialNumber: "PF3X9K2B", assetTag: null },
+      body: { name: "Till 1 (front)", serialNumber: "PF3X9K2B", assetTag: null, tillCode: null },
     })
   })
 
@@ -135,5 +137,16 @@ describe("findThisBrowser", () => {
     const other = { ...till, credentials: [{ ...till.credentials[0], thisBrowser: false }] }
     expect(findThisBrowser([other])).toBeNull()
     expect(findThisBrowser([])).toBeNull()
+  })
+})
+
+describe("till codes (O2)", () => {
+  it("normalises to upper case without spaces at the ends, and checks the pattern", () => {
+    expect(normaliseTillCode(" t1 ")).toBe("T1")
+    expect(TILL_CODE_PATTERN.test("T1")).toBe(true)
+    expect(TILL_CODE_PATTERN.test("BAR-2")).toBe(true)
+    expect(TILL_CODE_PATTERN.test("T 1")).toBe(false)
+    expect(TILL_CODE_PATTERN.test("TOOLONGCODE1")).toBe(false)
+    expect(TILL_CODE_PATTERN.test("")).toBe(false)
   })
 })

@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils"
+import { CASH_COUNT_LABELS, type CashCount } from "@/lib/tills-admin"
 import {
   SHIFT_STATUS_LABELS,
   describeVariance,
@@ -36,6 +37,30 @@ export function AdminChip() {
   return (
     <span className="ml-1.5 inline-flex items-center rounded border border-violet-300 bg-violet-50 px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide text-violet-800 dark:border-violet-700 dark:bg-violet-950 dark:text-violet-200">
       Admin
+    </span>
+  )
+}
+
+const CASH_COUNT_STYLES: Record<Exclude<CashCount, "COUNTED">, string> = {
+  UNCOUNTED: "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200",
+  NO_COUNT_CONFIRMED: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200",
+  COUNTED_LATE: "border-sky-300 bg-sky-50 text-sky-800 dark:border-sky-700 dark:bg-sky-950 dark:text-sky-200",
+}
+
+// Only when the shift wasn't counted at close; a normal count (COUNTED) shows nothing.
+export function CashCountBadge({ cashCount }: { cashCount?: CashCount | null }) {
+  if (!cashCount || cashCount === "COUNTED") return null
+  return (
+    <span className={cn("inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium", CASH_COUNT_STYLES[cashCount])}>
+      {CASH_COUNT_LABELS[cashCount]}
+    </span>
+  )
+}
+
+export function ForceClosedChip() {
+  return (
+    <span className="ml-1.5 inline-flex items-center rounded border border-rose-300 bg-rose-50 px-1.5 py-0 text-[10px] font-semibold uppercase tracking-wide text-rose-800 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-200">
+      Force-closed
     </span>
   )
 }

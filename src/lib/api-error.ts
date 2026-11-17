@@ -41,6 +41,11 @@ export async function errorCode(res: Response): Promise<string | null> {
   return res.ok ? null : (await readApiError(res)).code
 }
 
+export function detailNumber(details: Record<string, unknown> | null, key: string): number | null {
+  const value = details?.[key]
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
 export function detailString(details: Record<string, unknown> | null, key: string): string | null {
   const value = details?.[key]
   return typeof value === "string" && value.trim() ? value : null

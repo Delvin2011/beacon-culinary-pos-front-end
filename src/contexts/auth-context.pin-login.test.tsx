@@ -10,6 +10,7 @@ import {
   PinLoginError,
 } from "@/contexts/auth-context"
 import { PIN_FORMAT_MESSAGE } from "@/lib/pin"
+import { CONNECTION_MESSAGES } from "@/lib/net"
 
 type Auth = NonNullable<ContextType<typeof AuthContext>>
 
@@ -83,16 +84,25 @@ describe("pinLogin", () => {
   })
 
   it("never shows the backend's own text for other errors", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(500, { message: "Cashier 7 does not exist" }))
+    fetchMock.mockResolvedValueOnce(jsonResponse(404, { message: "Cashier 7 does not exist" }))
     const auth = renderAuth()
     expect((await pinLoginError(auth, "123456")).message).toBe(PIN_LOGIN_FAILED_MESSAGE)
     expect(auth().error).toBe(PIN_LOGIN_FAILED_MESSAGE)
   })
 
-  it("shows the generic message for a network error", async () => {
+  it("says the server has a problem on a 5xx, without the backend's own text", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(500, { message: "Cashier 7 does not exist" }))
+    const auth = renderAuth()
+    expect((await pinLoginError(auth, "123456")).message).toBe(CONNECTION_MESSAGES.server)
+    expect(auth().error).toBe(CONNECTION_MESSAGES.server)
+  })
+
+  it("says the server can't be reached on a network error, never the browser's text", async () => {
     fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"))
     const auth = renderAuth()
-    expect((await pinLoginError(auth, "123456")).message).toBe(PIN_LOGIN_FAILED_MESSAGE)
+    const err = await pinLoginError(auth, "123456")
+    expect(err.message).toBe(CONNECTION_MESSAGES.network)
+    expect(err.message).not.toContain("Failed to fetch")
   })
 
   it("signs in with a valid 6-digit PIN", async () => {

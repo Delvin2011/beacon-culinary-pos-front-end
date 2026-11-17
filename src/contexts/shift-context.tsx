@@ -5,10 +5,15 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { CONNECTION_MESSAGES, messageForError } from "@/lib/net";
+import { detailString, readApiError } from "@/lib/api-error";
+import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { TillErrorCode, shiftAlreadyOpenMessage, shiftOpenOnOtherTillMessage } from "@/lib/till";
 
 export interface ShiftOwner {
   id: number;
@@ -26,6 +31,9 @@ export interface Shift {
   closedAt?: string | null;
   owner: ShiftOwner;
   ownedByCaller: boolean;
+  // The till the shift is on; null (shown as "Unregistered till") for the NULL till or a pre-O2 server.
+  tillCode: string | null;
+  tillName: string | null;
 }
 
 interface ShiftContextValue {
@@ -77,6 +85,8 @@ function extractShift(payload: unknown): Shift | null {
     closedAt: null,
     owner,
     ownedByCaller: src.ownedByCaller === true,
+    tillCode: typeof src.tillCode === "string" ? src.tillCode : null,
+    tillName: typeof src.tillName === "string" ? src.tillName : null,
   };
 }
 
@@ -93,15 +103,23 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
   const [shift, setShift] = useState<Shift | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // The shift on screen, for a quiet refetch: once a shift is known, reloading it doesn't show the full-screen
+  // loader (which would unmount the till and its cart).
+  const shiftRef = useRef<Shift | null>(null);
+  useEffect(() => {
+    shiftRef.current = shift;
+  }, [shift]);
 
   const fetchCurrentShift = useCallback(async () => {
     if (!isAuthenticated) {
+      // No lookup without a sign-in. Stay "loading" so no screen treats this empty shift as "no open shift"
+      // (on a page load the sign-in arrives a render later, and the lookup runs then).
       setShift(null);
-      setIsLoading(false);
+      setIsLoading(true);
       return;
     }
 
-    setIsLoading(true);
+    if (!shiftRef.current) setIsLoading(true);
     setError(null);
     try {
       // /shifts/open returns the till's shift whoever owns it; /shifts/current only the caller's own.
@@ -111,13 +129,14 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
         return;
       }
       if (!res.ok) {
-        setError("Failed to load shift status.");
+        setError(res.status >= 500 ? CONNECTION_MESSAGES.server : "Failed to load shift status.");
         return;
       }
       const body = (await res.json().catch(() => null)) as unknown;
       setShift(extractShift(body));
-    } catch {
-      setError("Failed to load shift status.");
+    } catch (err) {
+      // No answer: keep the last known shift. Only a 404 means "no open shift".
+      setError(messageForError(err, "Failed to load shift status."));
     } finally {
       setIsLoading(false);
     }
@@ -135,18 +154,29 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ openingFloat }),
       });
 
+      // Before the body is read: readApiError reads its own copy.
+      const { code, details } = await readApiError(res);
       const body = (await res.json().catch(() => null)) as unknown;
 
-      const code = body && typeof body === "object" ? (body as Record<string, unknown>).code : undefined;
       if (res.status === 409 && code === "DAY_CLOSED") {
         const zNumber = (body as Record<string, unknown>).zNumber;
         throw new DayClosedError(typeof zNumber === "number" ? zNumber : null);
       }
 
-      if (res.status === 409) {
-        // Already open — sync state so the UI can redirect correctly
+      // O2: the caller already has a shift on another till (an ADMIN included).
+      if (code === TillErrorCode.SHIFT_OPEN_ON_OTHER_TILL) {
+        throw new Error(shiftOpenOnOtherTillMessage(detailString(details, "tillCode"), detailString(details, "tillName")));
+      }
+
+      // This till already has a shift (the caller's own included): load it. /pos/shift-open then moves on to /pos,
+      // which resumes the caller's shift or shows who holds the till.
+      if (code === TillErrorCode.SHIFT_ALREADY_OPEN) {
         await fetchCurrentShift();
-        throw new Error("A shift is currently open on this till. Ask the current cashier to close it first.");
+        throw new Error(shiftAlreadyOpenMessage(detailString(details, "ownerName"), detailString(details, "tillCode")));
+      }
+
+      if (code === DeviceErrorCode.NOT_REGISTERED) {
+        throw new Error(TILL_NOT_REGISTERED_MESSAGE);
       }
 
       if (!res.ok) {

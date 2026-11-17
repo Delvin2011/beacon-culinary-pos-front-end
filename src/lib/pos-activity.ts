@@ -1,5 +1,6 @@
 import { formatZarCurrency } from "@/lib/utils"
 import type { OrderKind } from "@/lib/complimentary"
+import type { CashCount } from "@/lib/tills-admin"
 
 // Types and formatting for the POS oversight endpoints (/admin/shifts, /shifts/open).
 // Timestamps on these endpoints are ISO-8601 UTC with a trailing "Z".
@@ -24,6 +25,11 @@ export interface AdminShiftRow {
   variance: number | null
   // Sale orders only; complimentary orders are not counted.
   orderCount: number
+  // O2 (contract 8.7). Optional: servers before O2 don't send them.
+  tillCode?: string | null
+  tillName?: string | null
+  forceClosed?: boolean
+  cashCount?: CashCount
 }
 
 export interface PageResponse<T> {

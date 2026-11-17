@@ -1,9 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import { useRouter } from "next/navigation"
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { type ColumnDef, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table"
-import { AlertTriangle, Info, RefreshCw } from "lucide-react"
+import { Info } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
@@ -14,33 +14,27 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { AdminChip, ShiftStatusBadge, VarianceText } from "@/components/pos-activity/shift-badges"
+import { AdminChip, CashCountBadge, ForceClosedChip, ShiftStatusBadge, VarianceText } from "@/components/pos-activity/shift-badges"
 import { ShiftActivityDialog } from "@/components/pos-activity/shift-activity-dialog"
+import { TillsView } from "@/components/pos-activity/tills-view"
+import { ForceCloseDialog, type ForceCloseTarget } from "@/components/pos-activity/force-close-dialog"
 import { isAdminRole } from "@/lib/roles"
 import { toShiftOwnerOptions } from "@/lib/users"
+import { UNREGISTERED_TILL, tillLabel } from "@/lib/till"
+import { loadForceCloseDraft, type ForceCloseDraft } from "@/lib/tills-admin"
 import {
   formatJhbDateTime,
-  formatJhbTime,
   formatMoney,
   jhbIsoDate,
   readApiError,
   type AdminShiftRow,
-  type OpenShift,
   type PageResponse,
   type PersonRef,
-  type ShiftActivity,
   type ShiftDisplayStatus,
 } from "@/lib/pos-activity"
 
 type DatePreset = "today" | "7d" | "30d" | "custom"
 type StatusFilter = "all" | ShiftDisplayStatus
-
-interface TillNow {
-  openShift: OpenShift
-  displayStatus: ShiftDisplayStatus
-  expectedCash: number
-  orderCount: number
-}
 
 const PAGE_SIZE = 25
 const POLL_INTERVAL_MS = 30_000
@@ -50,8 +44,18 @@ function presetRange(preset: Exclude<DatePreset, "custom">): { from: string; to:
   return { from: jhbIsoDate(days), to: jhbIsoDate() }
 }
 
+// useSearchParams (?shiftId) needs a Suspense boundary.
 export default function PosActivityPage() {
+  return (
+    <Suspense fallback={null}>
+      <PosActivityContent />
+    </Suspense>
+  )
+}
+
+function PosActivityContent() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth()
   const isAdmin = isAdminRole(user?.role)
 
@@ -66,12 +70,25 @@ export default function PosActivityPage() {
   const [shiftsLoading, setShiftsLoading] = useState(true)
   const [shiftsError, setShiftsError] = useState<string | null>(null)
 
-  const [tillNow, setTillNow] = useState<TillNow | null>(null)
-  const [tillLoading, setTillLoading] = useState(true)
-  const [tillError, setTillError] = useState<string | null>(null)
-
   const [cashiers, setCashiers] = useState<PersonRef[]>([])
   const [dialogShiftId, setDialogShiftId] = useState<number | null>(null)
+  const [tillsReload, setTillsReload] = useState(0)
+  const [forceClose, setForceClose] = useState<ForceCloseTarget | null>(null)
+  const [forceCloseDraft, setForceCloseDraft] = useState<ForceCloseDraft | null>(null)
+
+  // Back from the password re-sign-in: reopen the force close with the form as it was.
+  useEffect(() => {
+    const draft = loadForceCloseDraft()
+    if (!draft) return
+    setForceCloseDraft(draft)
+    setForceClose({ shiftId: draft.shiftId, ownerName: draft.ownerName, till: draft.till })
+  }, [])
+
+  // ?shiftId=412 opens that shift's details (the link from a refused sign-off in the reports).
+  useEffect(() => {
+    const shiftId = Number(searchParams.get("shiftId"))
+    if (Number.isInteger(shiftId) && shiftId > 0) setDialogShiftId(shiftId)
+  }, [searchParams])
 
   useEffect(() => {
     if (authLoading) return
@@ -108,45 +125,15 @@ export default function PosActivityPage() {
     }
   }, [authFetch, ownerFilter, page, range.from, range.to, rangeError, statusFilter])
 
-  const fetchTillNow = useCallback(async () => {
-    setTillError(null)
-    try {
-      const openRes = await authFetch("/shifts/open")
-      if (openRes.status === 404) {
-        setTillNow(null)
-        return
-      }
-      if (!openRes.ok) throw new Error((await readApiError(openRes, "Unable to check the till.")).message)
-      const openShift = (await openRes.json()) as OpenShift
-
-      const activityRes = await authFetch(`/admin/shifts/${openShift.shiftId}/activity`)
-      if (!activityRes.ok) throw new Error((await readApiError(activityRes, "Unable to load the open shift.")).message)
-      const activity = (await activityRes.json()) as ShiftActivity
-      setTillNow({
-        openShift,
-        displayStatus: activity.shift.displayStatus,
-        expectedCash: activity.shift.expectedCash,
-        orderCount: activity.shift.orderCount,
-      })
-    } catch (err) {
-      setTillError(err instanceof Error ? err.message : "Unable to check the till.")
-    } finally {
-      setTillLoading(false)
-    }
-  }, [authFetch])
-
+  // The Tills view polls itself; this reloads the shift list too (after a force close, a late count, …).
   const refreshAll = useCallback(() => {
     void fetchShifts()
-    void fetchTillNow()
-  }, [fetchShifts, fetchTillNow])
+    setTillsReload((n) => n + 1)
+  }, [fetchShifts])
 
   useEffect(() => {
     if (isAuthenticated && isAdmin) void fetchShifts()
   }, [fetchShifts, isAdmin, isAuthenticated])
-
-  useEffect(() => {
-    if (isAuthenticated && isAdmin) void fetchTillNow()
-  }, [fetchTillNow, isAdmin, isAuthenticated])
 
   useEffect(() => {
     if (!isAuthenticated || !isAdmin) return
@@ -164,22 +151,30 @@ export default function PosActivityPage() {
   useEffect(() => {
     if (!hasActiveShift) return
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") refreshAll()
+      if (document.visibilityState === "visible") void fetchShifts()
     }, POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [hasActiveShift, refreshAll])
+  }, [fetchShifts, hasActiveShift])
 
   // The cashier list can miss admins who own shifts, so merge in owners we've seen.
   const ownerOptions = useMemo(() => {
     const byId = new Map<number, PersonRef>()
     for (const person of cashiers) byId.set(person.id, person)
     for (const row of rows) if (!byId.has(row.owner.id)) byId.set(row.owner.id, row.owner)
-    if (tillNow && !byId.has(tillNow.openShift.owner.id)) byId.set(tillNow.openShift.owner.id, tillNow.openShift.owner)
     return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
-  }, [cashiers, rows, tillNow])
+  }, [cashiers, rows])
 
   const columns: ColumnDef<AdminShiftRow>[] = useMemo(
     () => [
+      {
+        id: "till",
+        header: "Till",
+        cell: ({ row }) => (
+          <span className="whitespace-nowrap" title={row.original.tillName ?? undefined}>
+            {row.original.tillCode ?? UNREGISTERED_TILL}
+          </span>
+        ),
+      },
       {
         id: "owner",
         header: "Cashier",
@@ -219,6 +214,16 @@ export default function PosActivityPage() {
         id: "variance",
         header: "Variance",
         cell: ({ row }) => <VarianceText variance={row.original.variance} />,
+      },
+      {
+        id: "cashCount",
+        header: "Cash count",
+        cell: ({ row }) => (
+          <span className="inline-flex items-center gap-1">
+            <CashCountBadge cashCount={row.original.cashCount} />
+            {row.original.forceClosed && <ForceClosedChip />}
+          </span>
+        ),
       },
       {
         id: "info",
@@ -277,54 +282,15 @@ export default function PosActivityPage() {
         </header>
 
         <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-          <section
-            className={`rounded-lg border p-4 ${
-              tillNow?.displayStatus === "OVERDUE" ? "border-amber-300 bg-amber-50/60 dark:border-amber-700 dark:bg-amber-950/30" : ""
-            }`}
-          >
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div className="space-y-1">
-                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">On the till now</p>
-                {tillLoading ? (
-                  <p className="animate-pulse text-sm text-muted-foreground">Checking…</p>
-                ) : tillError ? (
-                  <p className="text-sm text-destructive">{tillError}</p>
-                ) : tillNow ? (
-                  <>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-lg font-semibold">{tillNow.openShift.owner.name}</span>
-                      {isAdminRole(tillNow.openShift.owner.role) && <AdminChip />}
-                      <ShiftStatusBadge status={tillNow.displayStatus} />
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      {tillNow.displayStatus === "OVERDUE"
-                        ? `Opened ${formatJhbDateTime(tillNow.openShift.openedAt)}`
-                        : `On shift since ${formatJhbTime(tillNow.openShift.openedAt)}`}
-                      {" · "}Expected cash {formatMoney(tillNow.expectedCash)} · {tillNow.orderCount} sale order
-                      {tillNow.orderCount === 1 ? "" : "s"}
-                    </p>
-                    {tillNow.displayStatus === "OVERDUE" && (
-                      <p className="flex items-center gap-1.5 text-sm font-medium text-amber-800 dark:text-amber-300">
-                        <AlertTriangle className="h-4 w-4" />
-                        Opened yesterday — close it before a new shift can start.
-                      </p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-lg font-semibold">No shift open.</p>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="outline" onClick={refreshAll}>
-                  <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-                  Refresh
-                </Button>
-                <Button size="sm" asChild>
-                  <a href="/pos/login">Open Cashier Portal</a>
-                </Button>
-              </div>
-            </div>
-          </section>
+          <TillsView
+            reloadKey={tillsReload}
+            onActivity={setDialogShiftId}
+            onForceClose={(row) => {
+              if (!row.shift) return
+              setForceCloseDraft(null)
+              setForceClose({ shiftId: row.shift.shiftId, ownerName: row.shift.ownerName, till: tillLabel(row.tillCode, row.tillName) })
+            }}
+          />
 
           <div className="space-y-4">
             <div>
@@ -476,7 +442,25 @@ export default function PosActivityPage() {
           </div>
         </div>
 
-        <ShiftActivityDialog shiftId={dialogShiftId} onOpenChange={(open) => !open && setDialogShiftId(null)} />
+        <ShiftActivityDialog
+          shiftId={dialogShiftId}
+          onOpenChange={(open) => !open && setDialogShiftId(null)}
+          onChanged={refreshAll}
+        />
+        <ForceCloseDialog
+          target={forceClose}
+          draft={forceCloseDraft}
+          onClose={() => {
+            setForceClose(null)
+            setForceCloseDraft(null)
+          }}
+          onDone={() => {
+            setForceClose(null)
+            setForceCloseDraft(null)
+            refreshAll()
+          }}
+          onStale={refreshAll}
+        />
       </SidebarInset>
     </SidebarProvider>
   )

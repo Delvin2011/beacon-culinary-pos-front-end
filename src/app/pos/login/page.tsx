@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/use-auth";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { ChevronLeft, User } from "lucide-react";
-import { DeviceNotRegisteredError, LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE } from "@/contexts/auth-context";
+import { DeviceNotRegisteredError, LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE, PinLoginError } from "@/contexts/auth-context";
+import { fetchTillStatus, formatLocalTime, tillLabel, type TillStatus } from "@/lib/till";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { reauthLoginPath } from "@/lib/return-to";
 import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
+import { CONNECTION_MESSAGES, fetchWithTimeout, messageForError, timeoutFor } from "@/lib/net";
 
 // Shape returned by GET /users/cashiers
 interface CashierSummary {
@@ -20,6 +22,11 @@ interface CashierSummary {
 }
 
 const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
+
+const CASHIERS_FAILED_MESSAGE = "Could not load the cashier list. Contact the administrator if this keeps happening.";
+
+// A cashier-list failure whose message is already safe to show.
+class CashierListError extends Error {}
 
 type View = "select-cashier" | "enter-pin";
 
@@ -47,7 +54,18 @@ function tileColour(id: number) {
 
 export default function PosLoginPage() {
   const router = useRouter();
-  const { isAuthenticated, isLoading: authLoading, pinLogin, error, clearError } = useAuth();
+  const {
+    isAuthenticated,
+    isLoading: authLoading,
+    pinLogin,
+    error,
+    clearError,
+    sessionEndedNotice,
+    retryPendingLock,
+  } = useAuth();
+  // GET /pos/till-status: this till and who holds its shift. Null until the first answer; a failed read keeps the
+  // last one (the screen still works without it).
+  const [tillStatus, setTillStatus] = useState<TillStatus | null>(null);
 
   const [view, setView] = useState<View>("select-cashier");
   const [cashiers, setCashiers] = useState<CashierSummary[]>([]);
@@ -78,16 +96,18 @@ export default function PosLoginPage() {
     setCashiersError(null);
     setTillNotRegistered(false);
 
-    fetch(`${API_BASE}/users/cashiers`, { credentials: "include" })
+    const cashiersUrl = `${API_BASE}/users/cashiers`;
+    fetchWithTimeout(cashiersUrl, { credentials: "include" }, timeoutFor(cashiersUrl))
       .then(async (res) => {
         if (res.status === 403 && (await errorCode(res)) === DeviceErrorCode.NOT_REGISTERED) {
           setCashiers([]);
           setTillNotRegistered(true);
           return;
         }
-        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        if (res.status >= 500) throw new CashierListError(CONNECTION_MESSAGES.server);
+        if (!res.ok) throw new CashierListError(CASHIERS_FAILED_MESSAGE);
         const data = (await res.json()) as unknown;
-        if (!Array.isArray(data)) throw new Error("Unexpected response format");
+        if (!Array.isArray(data)) throw new CashierListError(CASHIERS_FAILED_MESSAGE);
         setCashiers(
           (data as Record<string, unknown>[]).map((u) => ({
             id: u.id as number,
@@ -95,10 +115,8 @@ export default function PosLoginPage() {
           })),
         );
       })
-      .catch(() => {
-        setCashiersError(
-          "Could not load cashier list. Please check your connection or contact the administrator.",
-        );
+      .catch((err: unknown) => {
+        setCashiersError(err instanceof CashierListError ? err.message : messageForError(err, CASHIERS_FAILED_MESSAGE));
       })
       .finally(() => setCashiersLoading(false));
   }, []);
@@ -106,6 +124,25 @@ export default function PosLoginPage() {
   useEffect(() => {
     loadCashiers();
   }, [loadCashiers]);
+
+  // On load (which covers arriving here after a lock or a sign-out) and after a refused sign-in.
+  const loadTillStatus = useCallback(() => {
+    fetchTillStatus(API_BASE)
+      .then((status) => {
+        setTillStatus(status);
+        // The server is reachable: send a lock that didn't get through.
+        retryPendingLock();
+      })
+      .catch(() => {});
+  }, [retryPendingLock]);
+
+  useEffect(() => {
+    loadTillStatus();
+  }, [loadTillStatus]);
+
+  const tillShift = tillStatus?.shift ?? null;
+  // requireRegistered on a browser that isn't a registered till: no POS sign-in here.
+  const blockedUnregistered = tillStatus !== null && tillStatus.requireRegistered && !tillStatus.registered;
 
   const handleCashierSelect = (cashier: CashierSummary) => {
     setSelectedCashier(cashier);
@@ -152,9 +189,12 @@ export default function PosLoginPage() {
         blocks.block(selectedCashier.id, err.block);
         clearError();
       } else {
-        // pinLogin's messages never reveal whether the cashier exists.
+        // pinLogin's messages never reveal whether the cashier exists. TillLockedError and
+        // ShiftOpenOnOtherTillError carry the O2 messages.
         setPinError(err instanceof Error ? err.message : PIN_LOGIN_FAILED_MESSAGE);
       }
+      // A refusal may mean the till's state changed (someone locked it, a shift opened): read it again.
+      if (err instanceof PinLoginError) loadTillStatus();
       setPin("");
     } finally {
       setSubmitting(false);
@@ -178,7 +218,7 @@ export default function PosLoginPage() {
   }
 
   // ── TILL NOT REGISTERED ─────────────────────────────────────────────────────
-  if (tillNotRegistered) {
+  if (tillNotRegistered || blockedUnregistered) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-6 bg-slate-950 p-8 text-center">
         <h1 className="text-2xl font-bold text-white">{TILL_NOT_REGISTERED_MESSAGE}</h1>
@@ -197,6 +237,7 @@ export default function PosLoginPage() {
               setSelectedCashier(null);
               setPin("");
               loadCashiers();
+              loadTillStatus();
             }}
             className="rounded-xl border border-slate-700 px-5 py-3 font-medium text-slate-200 hover:bg-slate-800"
           >
@@ -214,15 +255,39 @@ export default function PosLoginPage() {
         <div className="text-center">
           <h1 className="text-3xl font-bold text-white">Who&apos;s working?</h1>
           <p className="mt-1 text-slate-400">Tap your name to continue</p>
+          {tillStatus?.registered && (
+            <p className="mt-3 text-sm font-medium text-slate-300">{tillLabel(tillStatus.tillCode, tillStatus.tillName)}</p>
+          )}
+          {tillShift && (
+            <p className="mt-1 text-sm text-amber-200">
+              {tillShift.locked
+                ? `${tillStatus?.tillCode ?? "This till"} is locked. Shift of ${tillShift.ownerName} since ${formatLocalTime(tillShift.openedAt)}.`
+                : `In use by ${tillShift.ownerName}.`}{" "}
+              Only {tillShift.ownerName} or a manager can sign in.
+            </p>
+          )}
         </div>
+
+        {sessionEndedNotice && (
+          <div role="status" className="max-w-md rounded-xl border border-sky-400/30 bg-sky-500/10 px-5 py-3 text-center text-sm text-sky-100">
+            {sessionEndedNotice}
+          </div>
+        )}
 
         {cashiersLoading && (
           <p className="text-slate-400 animate-pulse">Loading cashiers…</p>
         )}
 
         {cashiersError && (
-          <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-6 py-4 text-center text-rose-300 max-w-sm">
-            {cashiersError}
+          <div className="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-6 py-4 text-center text-rose-300">
+            <p>{cashiersError}</p>
+            <button
+              type="button"
+              onClick={() => loadCashiers()}
+              className="rounded-lg border border-rose-400/40 px-4 py-2 text-sm font-medium text-rose-100 hover:bg-rose-500/20"
+            >
+              Try again
+            </button>
           </div>
         )}
 
@@ -239,7 +304,9 @@ export default function PosLoginPage() {
                 key={cashier.id}
                 type="button"
                 onClick={() => handleCashierSelect(cashier)}
-                className="flex flex-col items-center gap-3 rounded-2xl bg-slate-800 p-6 transition-colors hover:bg-slate-700 active:scale-95 active:bg-slate-600 select-none"
+                className={`flex flex-col items-center gap-3 rounded-2xl p-6 transition-colors hover:bg-slate-700 active:scale-95 active:bg-slate-600 select-none ${
+                  tillShift?.ownerId === cashier.id ? "bg-slate-700 ring-2 ring-amber-300" : "bg-slate-800"
+                }`}
               >
                 <div
                   className={`flex h-16 w-16 items-center justify-center rounded-full text-xl font-bold text-white ${tileColour(cashier.id)}`}
@@ -249,6 +316,11 @@ export default function PosLoginPage() {
                 <span className="text-sm font-medium text-white text-center leading-tight">
                   {cashier.name}
                 </span>
+                {tillShift?.ownerId === cashier.id && (
+                  <span className="rounded-full bg-amber-400/20 px-2 py-0.5 text-xs font-semibold text-amber-200">
+                    {tillShift.locked ? "Shift open · tap to resume" : "Signed in"}
+                  </span>
+                )}
                 <LoginBlockBadge state={blocks.get(cashier.id)} />
               </button>
             ))}
@@ -282,6 +354,9 @@ export default function PosLoginPage() {
         </div>
         <p className="text-xl font-semibold text-white">{selectedCashier?.name}</p>
         <p className="text-sm text-slate-400">Enter your PIN</p>
+        {tillStatus?.registered && (
+          <p className="text-xs text-slate-500">{tillLabel(tillStatus.tillCode, tillStatus.tillName)}</p>
+        )}
       </div>
 
       {/* PIN dots */}

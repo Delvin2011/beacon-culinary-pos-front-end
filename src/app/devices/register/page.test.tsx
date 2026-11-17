@@ -305,3 +305,26 @@ describe("Register this till: outcomes", () => {
     expect(screen.getByText("Serial is invalid")).toBeInTheDocument()
   })
 })
+
+describe("Register this till: till limit (O2)", () => {
+  it("TILL_LIMIT_REACHED says how many tills are allowed, links to the list and keeps the form", async () => {
+    registerResponses = [
+      () => json(409, { error: "x", code: "TILL_LIMIT_REACHED", details: { maxActive: 3, activeCount: 3 } }),
+    ]
+    renderAs("ADMIN")
+    await registerWith("Till 4 (patio)", "NEW4SER")
+
+    expect(await screen.findByText("The maximum number of tills (3) is registered. Revoke one first.")).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Open Registered tills" })).toHaveAttribute("href", "/devices")
+    expect(screen.getByLabelText(/Till name/)).toHaveValue("Till 4 (patio)")
+  })
+
+  it("shows the new till's code once registered", async () => {
+    registerResponses = [() => json(201, till({ id: "d3", name: "Till 3 (bar)", tillCode: "T3" }, true))]
+    lists = [[], [till({ id: "d3", name: "Till 3 (bar)", tillCode: "T3" }, true)]]
+    renderAs("ADMIN")
+    await registerWith("Till 3 (bar)", "BAR3SER")
+
+    expect(await screen.findByText("This browser is now registered as T3 · Till 3 (bar).")).toBeInTheDocument()
+  })
+})

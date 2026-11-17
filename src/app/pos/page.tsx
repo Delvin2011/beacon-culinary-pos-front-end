@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Clock, FileText, Lock, LogOut, RefreshCw, ShieldCheck, UserRound } from "lucide-react";
+import { Clock, FileText, Lock, LogOut, RefreshCw, ShieldCheck, UserRound, WifiOff } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useShift } from "@/hooks/use-shift";
 import { useManagementSession } from "@/hooks/use-management-session";
@@ -10,7 +10,9 @@ import { PosOrderBuilder } from "@/components/pos/order-builder";
 import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { formatAmountInput, parseAmountInput } from "@/lib/amount-input";
 import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-overlay";
+import { messageForError } from "@/lib/net";
 import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
+import { ConnectionIndicator } from "@/components/pos/connection-indicator";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
@@ -18,6 +20,9 @@ import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { readLoginBlock } from "@/lib/login-protection";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
+import { useLockBlocker, useLockBusy } from "@/lib/lock-guard";
+import { UNREGISTERED_TILL, tillLabel } from "@/lib/till";
+import { moneyOrDash } from "@/lib/money";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
 
@@ -48,9 +53,12 @@ type ShiftCloseResponse = {
   openingFloat: number;
   openedAt: string;
   closedAt?: string | null;
-  closingCash?: number;
+  closingCash?: number | null;
   expectedCash?: number;
-  variance?: number;
+  variance?: number | null;
+  // O2 ShiftDto (contract 8.5).
+  tillCode?: string | null;
+  tillName?: string | null;
   varianceReasonCode?: VarianceReasonCode;
   varianceNote?: string;
   varianceAuthorizedById?: number;
@@ -105,8 +113,8 @@ function formatRemainingMs(remainingMs: number): string {
 
 function PosMainContent() {
   const router = useRouter();
-  const { isAuthenticated, isLoading: authLoading, user, logout, authFetch } = useAuth();
-  const { shift, isLoading: shiftLoading, refetch } = useShift();
+  const { isAuthenticated, isLoading: authLoading, user, logout, lockTill, authFetch } = useAuth();
+  const { shift, isLoading: shiftLoading, error: shiftError, refetch } = useShift();
   const {
     sessionToken,
     remainingMs,
@@ -142,6 +150,19 @@ function PosMainContent() {
   const [managementSummaryError, setManagementSummaryError] = useState<string | null>(null);
   const [managementSummary, setManagementSummary] = useState<ShiftSummaryDto | null>(null);
 
+  // The cash-up and its manager PIN must finish before the till can lock (O2).
+  useLockBlocker("cash-up", confirmOwnerClose || confirmClose || showPinOverlay || closeoutRecord !== null);
+  const lockBusy = useLockBusy();
+  const [locking, setLocking] = useState(false);
+
+  // Lock till: for breaks. The shift stays open and the cart is kept for this person (order-builder).
+  const lockTheTill = async () => {
+    if (lockBusy || locking) return;
+    setLocking(true);
+    await lockTill();
+    router.replace("/pos/login");
+  };
+
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       router.replace("/pos/login");
@@ -149,10 +170,12 @@ function PosMainContent() {
   }, [isAuthenticated, authLoading, router]);
 
   useEffect(() => {
-    if (!shiftLoading && !shift) {
+    // Only a confirmed "no open shift" (404) goes to shift-open. A failed lookup stays here with a retry.
+    // Wait for the sign-in to load: before that the shift lookup hasn't run yet, so "no shift" means nothing.
+    if (!authLoading && isAuthenticated && !shiftLoading && !shift && !shiftError) {
       router.replace("/pos/shift-open");
     }
-  }, [shift, shiftLoading, router]);
+  }, [authLoading, isAuthenticated, shift, shiftLoading, shiftError, router]);
 
   const parseMessage = useCallback((payload: unknown, fallback: string): string => {
     if (!payload || typeof payload !== "object") return fallback;
@@ -215,7 +238,7 @@ function PosMainContent() {
 
       setCloseSummary(body as ShiftSummaryDto);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to load shift summary.";
+      const message = messageForError(err, "Unable to load shift summary.");
       setCloseError(message);
     } finally {
       setSummaryLoading(false);
@@ -255,7 +278,7 @@ function PosMainContent() {
         setManagementSummary(body as ShiftSummaryDto);
         setManagementSummaryOpen(true);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Unable to load cashup summary.";
+        const message = messageForError(err, "Unable to load cashup summary.");
         setManagementSummaryError(message);
         setManagementSummaryOpen(true);
       } finally {
@@ -326,7 +349,7 @@ function PosMainContent() {
       setConfirmClose(false);
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
-      const message = err instanceof Error ? err.message : "Failed to close shift.";
+      const message = messageForError(err, "Failed to close shift.");
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {
@@ -477,7 +500,7 @@ function PosMainContent() {
       setConfirmClose(false);
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
-      const message = err instanceof Error ? err.message : "Failed to close shift.";
+      const message = messageForError(err, "Failed to close shift.");
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {
@@ -504,6 +527,39 @@ function PosMainContent() {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-950">
         <span className="text-slate-400 text-lg animate-pulse">Loading…</span>
+      </div>
+    );
+  }
+
+  // The first lookup failed (e.g. the app restarted while offline): the shift isn't known yet.
+  if (!shift && shiftError && !closeoutRecord) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950 p-6">
+        <div className="w-full max-w-md rounded-3xl border border-slate-700 bg-slate-900 p-6 text-center">
+          <WifiOff className="mx-auto h-10 w-10 text-amber-300" />
+          <h1 className="mt-4 text-2xl font-bold text-white">Can&apos;t reach the server</h1>
+          <p className="mt-2 text-slate-300">{shiftError}</p>
+          <div className="mt-6 grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                logout();
+                router.replace("/pos/login");
+              }}
+              className="rounded-xl border border-slate-700 px-4 py-3 text-sm font-medium text-slate-300 hover:bg-slate-800"
+            >
+              Log Out
+            </button>
+            <button
+              type="button"
+              onClick={() => void refetch()}
+              className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Retry
+            </button>
+          </div>
+        </div>
       </div>
     );
   }
@@ -553,10 +609,11 @@ function PosMainContent() {
           </div>
 
           <div className="grid gap-2 text-sm text-slate-200">
+            <p>Till: {tillLabel(closeoutRecord.tillCode, closeoutRecord.tillName)}</p>
             <p>Opening Float: {formatZarCurrency(closeoutRecord.openingFloat ?? 0)}</p>
             <p>Expected Cash: {formatZarCurrency(closeoutRecord.expectedCash ?? 0)}</p>
-            <p>Counted Cash: {formatZarCurrency(closeoutRecord.closingCash ?? 0)}</p>
-            <p>Variance: {formatZarCurrency(closeoutRecord.variance ?? 0)}</p>
+            <p>Counted Cash: {moneyOrDash(closeoutRecord.closingCash)}</p>
+            <p>Variance: {moneyOrDash(closeoutRecord.variance)}</p>
             {closeoutRecord.varianceReasonCode && <p>Reason: {closeoutRecord.varianceReasonCode.replaceAll("_", " ")}</p>}
             {closeoutRecord.varianceNote && <p>Note: {closeoutRecord.varianceNote}</p>}
           </div>
@@ -595,6 +652,10 @@ function PosMainContent() {
     <div className="flex min-h-screen flex-col bg-slate-950">
       <header className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-6 py-3">
         <div className="flex items-center gap-3">
+          <span className="text-sm font-semibold text-white">
+            {shift?.tillCode ?? UNREGISTERED_TILL}
+            {user?.name ? ` · ${user.name}` : ""}
+          </span>
           <span className="flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-400 ring-1 ring-emerald-500/30">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
             Shift Open
@@ -615,13 +676,13 @@ function PosMainContent() {
         </div>
 
         <div className="flex items-center gap-3">
+          <ConnectionIndicator />
           {isManagementActive && (
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">
               <ShieldCheck className="h-3.5 w-3.5" />
               Management Active · {managementCountdown}
             </span>
           )}
-          {user?.name && <span className="text-sm text-slate-400">{user.name}</span>}
           <button
             type="button"
             onClick={openManagementMenu}
@@ -651,14 +712,41 @@ function PosMainContent() {
           )}
           <button
             type="button"
+            onClick={() => void lockTheTill()}
+            disabled={lockBusy || locking}
+            title={lockBusy ? "Finish the payment, sale or dialog first." : "Lock the till for a break. Your shift stays open."}
+            className="flex items-center gap-1.5 rounded-lg border border-sky-400/30 bg-sky-500/10 px-3 py-1.5 text-xs font-medium text-sky-200 transition-colors hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Lock className="h-3.5 w-3.5" />
+            Lock till
+          </button>
+          <button
+            type="button"
             onClick={requestCloseShift}
-            className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 active:bg-rose-500/30"
+            disabled={lockBusy}
+            title={lockBusy ? "Finish the payment, sale or dialog first." : "Close the shift and count the drawer."}
+            className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 active:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <LogOut className="h-3.5 w-3.5" />
-            Close Shift
+            End shift
           </button>
         </div>
       </header>
+
+      {shiftError && shift && (
+        <div className="flex items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-6 py-2 text-sm text-amber-100">
+          <WifiOff className="h-4 w-4 shrink-0" />
+          <span>Can&apos;t reach the server to check the shift. Showing the last known shift.</span>
+          <button
+            type="button"
+            onClick={() => void refetch()}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-amber-400/40 px-3 py-1 text-xs font-medium hover:bg-amber-500/20"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Retry
+          </button>
+        </div>
+      )}
 
       {sellingOnOthersShift && shift && (
         <div className="border-b border-sky-500/30 bg-sky-500/10 px-6 py-2 text-sm text-sky-100">
