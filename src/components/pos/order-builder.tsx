@@ -16,7 +16,7 @@ import { messageForError, parseRetryAfter } from "@/lib/net";
 import { useConnection } from "@/contexts/connection-context";
 import { usePendingSale } from "@/hooks/use-pending-sale";
 import { PendingSaleOverlay } from "@/components/pos/pending-sale-overlay";
-import { newRequestId, ownerKey, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
+import { newRequestId, ownerKey, type OfflineDraft, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
 import { useLockBlocker } from "@/lib/lock-guard";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { TillErrorCode } from "@/lib/till";
@@ -26,7 +26,7 @@ import { clearPendingCart, loadPendingCart, savePendingCart, type PendingCart } 
 import { useSalePrinting } from "@/hooks/use-sale-printing";
 import { hasKitchenLines, type ReceiptOrder } from "@/lib/receipt";
 import { useOffline } from "@/contexts/offline-context";
-import { serverToday } from "@/lib/offline/server-time";
+import { serverNow, serverToday } from "@/lib/offline/server-time";
 import { snapshotBeverages, snapshotMenuForPeriod, snapshotPeriods } from "@/lib/offline/snapshot-menu";
 import { useOfflineCheckout } from "@/hooks/use-offline-checkout";
 import { OfflineSaleComplete } from "@/components/pos/offline-sale-complete";
@@ -502,11 +502,13 @@ export function PosOrderBuilder({
   // A live load failed with nothing live on screen (e.g. a reload while offline): the tiles then come from today's
   // snapshot, derived at render so a period switch or a failed background refresh can't empty or mix them up.
   const [liveMenuFailed, setLiveMenuFailed] = useState(false);
-  const menuFromSnapshot = liveMenuFailed && todaySnapshot !== null;
   // O4: selling from the snapshot while offline and allowed (readiness holds, no stop). Otherwise the copy stays
   // read-only (O3). offlineActive: offline with offline on; online-only actions say so.
   const offlineCheckout = useOfflineCheckout();
-  const sellingOffline = menuFromSnapshot && !isOnline && offlineCheckout.selling.kind === "selling";
+  // O4: offline and allowed to sell: the snapshot's tiles, even over a live menu loaded earlier (going offline
+  // mid-shift). Back online, the live menu again. O3's rule stands online: a live menu is never replaced.
+  const sellingOffline = !isOnline && todaySnapshot !== null && offlineCheckout.selling.kind === "selling";
+  const menuFromSnapshot = (liveMenuFailed && todaySnapshot !== null) || sellingOffline;
   const readOnlyCopy = menuFromSnapshot && !sellingOffline;
   const offlineActive = !isOnline && todaySnapshot !== null;
   const [offlineSale, setOfflineSale] = useState<{ order: ReceiptOrder; clientOrderId: string } | null>(null);
@@ -1563,6 +1565,30 @@ export function PosOrderBuilder({
       })),
     }));
 
+  // O4 (H): the sale as charged, kept with the O1 pending sale so it can be recorded offline if its outcome is still
+  // unknown when the till goes offline. No manager approvals: offline sales carry none.
+  const buildOfflineDraft = (payments: DraftPaymentEntry[]): OfflineDraft => ({
+    lines: draftLines.map((line) => ({
+      dailyMealOptionId: line.dailyMealOptionId,
+      name: line.name,
+      unitPrice: line.unitPrice,
+      quantity: line.quantity,
+      extras: line.extras.map((ex) => ({
+        dailyComponentStockId: ex.dailyComponentStockId,
+        name: ex.name,
+        extraPrice: ex.extraPrice,
+        quantity: ex.quantity,
+      })),
+    })),
+    payments: payments.map((entry) => ({
+      method: entry.method,
+      amount: entry.amount,
+      ...(entry.amountTendered !== undefined ? { amountTendered: entry.amountTendered } : {}),
+      ...(entry.accountId !== undefined ? { accountId: entry.accountId } : {}),
+    })),
+    confirmedAt: new Date(serverNow()).toISOString(),
+  });
+
   // O4: an offline sale. Recorded on the till first (one IndexedDB transaction); only then is the cart cleared, the
   // completion screen shown and the receipt printed. A refusal keeps the cart and says why.
   const submitOfflineSale = async (payments: DraftPaymentEntry[]) => {
@@ -1743,7 +1769,10 @@ export function PosOrderBuilder({
 
     setSaleReplayNotice(false);
     // Confirm freezes this body with a new clientOrderId and sends it; retries reuse both.
-    if (!pendingSale.start("SALE", payload, saleSummary(payableCents / 100))) {
+    // O4 (H): with offline on, keep what's needed to record it offline if its outcome is still unknown when the
+    // till goes offline. Not for a discounted sale: offline sales carry no discount.
+    const offlineDraft = tillStatus?.offlineEnabled && !saleDiscount ? buildOfflineDraft(paymentsForSubmit) : null;
+    if (!pendingSale.start("SALE", payload, saleSummary(payableCents / 100), offlineDraft)) {
       setSubmissionError("A sale is still being checked. Wait for it to finish.");
     }
   };
@@ -1856,6 +1885,63 @@ export function PosOrderBuilder({
   };
 
   // Covers the till while a sale's outcome is unknown. Rendered on both screens (till and completed sale).
+  // O4 (H): an online sale stuck in "Checking the sale…" when the till is offline and may sell offline: recorded in
+  // the outbox with the SAME clientOrderId and its confirm time, then O1's record is cleared, then it prints. A card
+  // payment first asks for the slip reference ("No slip" allowed). Discounted and complimentary sales have no draft
+  // and stay pending. Never retried on its own after an error: the cashier presses Try again.
+  const [stuckError, setStuckError] = useState<string | null>(null);
+  const [stuckBusy, setStuckBusy] = useState(false);
+  const stuckAttemptedRef = useRef<string | null>(null);
+  const stuckSale = pendingSale.pending;
+  const stuckConvertible =
+    sellingOffline &&
+    stuckSale !== null &&
+    Boolean(stuckSale.offlineDraft) &&
+    (pendingSale.phase === "sending" || pendingSale.phase === "unconfirmed");
+  const stuckNeedsCardReference = Boolean(stuckSale?.offlineDraft?.payments.some((payment) => payment.method === "CARD"));
+
+  const convertStuckSale = useCallback(
+    async (sale: PendingSale, cardReference: string | null) => {
+      const draft = sale.offlineDraft;
+      if (!draft) return;
+      stuckAttemptedRef.current = sale.clientOrderId;
+      setStuckBusy(true);
+      setStuckError(null);
+      const result = await offlineCheckout.record(
+        draft.lines,
+        draft.payments.map((payment) => (payment.method === "CARD" ? { ...payment, cardReference } : payment)),
+        { stuck: { clientOrderId: sale.clientOrderId, soldAt: draft.confirmedAt, allowMissingCardReference: cardReference === null } },
+      );
+      setStuckBusy(false);
+      if (!result.ok) {
+        setStuckError(result.message);
+        return;
+      }
+      // Recorded (or already in the outbox): O1 stops checking it. Sync sends it with the same clientOrderId.
+      pendingSale.discard();
+      if (result.alreadyRecorded) return;
+      setOfflineSale({ order: result.order, clientOrderId: result.clientOrderId });
+      void salePrinting.autoPrint(result.order, result.clientOrderId);
+    },
+    [offlineCheckout, pendingSale, salePrinting],
+  );
+
+  useEffect(() => {
+    if (!stuckConvertible || !stuckSale || stuckNeedsCardReference) return;
+    if (stuckAttemptedRef.current === stuckSale.clientOrderId) return;
+    void convertStuckSale(stuckSale, null);
+  }, [stuckConvertible, stuckSale, stuckNeedsCardReference, convertStuckSale]);
+
+  const stuckConversion =
+    stuckConvertible && stuckSale
+      ? {
+          needsCardReference: stuckNeedsCardReference,
+          error: stuckError,
+          busy: stuckBusy,
+          onRecord: (cardReference: string | null) => void convertStuckSale(stuckSale, cardReference),
+        }
+      : null;
+
   const pendingSaleOverlay =
     pendingSale.pending && pendingSale.phase !== "idle" ? (
       <PendingSaleOverlay
@@ -1876,6 +1962,8 @@ export function PosOrderBuilder({
         onSignOut={logout}
         // A manager may finish another cashier's sale (O2): same body and id, so one that went through comes back as is.
         onManagerFinish={isAdminRole(user?.role) ? pendingSale.sendAsIs : undefined}
+        offlineConversion={stuckConversion}
+        signOutDisabledReason={offlineActive ? "Offline: lock the till instead" : null}
       />
     ) : null;
 

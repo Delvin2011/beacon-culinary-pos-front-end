@@ -15,6 +15,7 @@ import {
   ownerKey,
   savePendingSale,
   withNewApproval,
+  type OfflineDraft,
   type PendingSale,
   type PendingSaleKind,
   type PendingSaleSummary,
@@ -127,9 +128,9 @@ export function usePendingSale(options: UsePendingSaleOptions) {
 
   // Confirm: freeze the body with a new id, store it, then send. Refused while another sale is pending.
   const start = useCallback(
-    (kind: PendingSaleKind, body: Record<string, unknown>, summary: PendingSaleSummary): PendingSale | null => {
+    (kind: PendingSaleKind, body: Record<string, unknown>, summary: PendingSaleSummary, offlineDraft: OfflineDraft | null = null): PendingSale | null => {
       if (pendingRef.current || !userKey) return null;
-      const sale = createPendingSale(kind, body, summary, { key: userKey, name: user?.name ?? null });
+      const sale = createPendingSale(kind, body, summary, { key: userKey, name: user?.name ?? null }, offlineDraft);
       savePendingSale(sale);
       pendingRef.current = sale;
       setPending(sale);

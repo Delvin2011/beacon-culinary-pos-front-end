@@ -20,7 +20,80 @@ type PendingSaleOverlayProps = {
   onSignOut: () => void;
   // Set for a manager (O2): send another cashier's sale as it was rung, after a confirm step.
   onManagerFinish?: () => void;
+  // O4 (H): recording this stuck sale offline: ask for the card slip reference first (or "No slip"), show an error.
+  offlineConversion?: {
+    needsCardReference: boolean;
+    error: string | null;
+    busy: boolean;
+    onRecord: (cardReference: string | null) => void;
+  } | null;
+  // O4: offline, no change of cashier (D2): the sign-out button is disabled with this reason.
+  signOutDisabledReason?: string | null;
 };
+
+const CARD_REFERENCE_MAX_LENGTH = 50;
+
+function OfflineConversionPanel({ conversion }: { conversion: NonNullable<PendingSaleOverlayProps["offlineConversion"]> }) {
+  const [reference, setReference] = useState("");
+  const trimmed = reference.trim();
+  return (
+    <div className="mt-4 rounded-xl border border-sky-400/40 bg-sky-500/10 p-3 text-left text-sm text-sky-100">
+      <p className="font-semibold">The till is offline. Record this sale as an offline sale.</p>
+      {conversion.needsCardReference ? (
+        <>
+          <label htmlFor="stuck-card-reference" className="mt-3 block text-xs font-medium text-slate-200">
+            Card slip reference
+          </label>
+          <input
+            id="stuck-card-reference"
+            value={reference}
+            maxLength={CARD_REFERENCE_MAX_LENGTH}
+            onChange={(event) => setReference(event.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+            placeholder="The reference printed on the card slip"
+          />
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              disabled={conversion.busy}
+              onClick={() => conversion.onRecord(null)}
+              className="rounded-lg border border-slate-600 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+            >
+              No slip
+            </button>
+            <button
+              type="button"
+              disabled={conversion.busy || !trimmed}
+              onClick={() => conversion.onRecord(trimmed)}
+              className="rounded-lg bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-slate-700"
+            >
+              Record offline sale
+            </button>
+          </div>
+        </>
+      ) : (
+        !conversion.error && <p className="mt-2">Recording it as an offline sale…</p>
+      )}
+      {conversion.error && (
+        <div className="mt-3">
+          <p role="alert" className="text-rose-200">
+            {conversion.error}
+          </p>
+          {!conversion.needsCardReference && (
+            <button
+              type="button"
+              disabled={conversion.busy}
+              onClick={() => conversion.onRecord(null)}
+              className="mt-2 rounded-lg bg-sky-500 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-400 disabled:opacity-50"
+            >
+              Try again
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function PendingSaleOverlay({
   sale,
@@ -32,6 +105,8 @@ export function PendingSaleOverlay({
   onSupervisorClear,
   onSignOut,
   onManagerFinish,
+  offlineConversion = null,
+  signOutDisabledReason = null,
 }: PendingSaleOverlayProps) {
   const [confirmFinish, setConfirmFinish] = useState(false);
   const who = sale.owner.name ?? "another cashier";
@@ -86,6 +161,8 @@ export function PendingSaleOverlay({
           </ul>
           <p className="mt-2 font-semibold text-white">Total {formatZarCurrency(sale.summary.total)}</p>
         </div>
+
+        {offlineConversion && <OfflineConversionPanel conversion={offlineConversion} />}
 
         <div className="mt-6 grid gap-2">
           {phase === "unconfirmed" && (
@@ -153,13 +230,17 @@ export function PendingSaleOverlay({
             </div>
           )}
           {phase === "other-user" && (
-            <button
-              type="button"
-              onClick={onSignOut}
-              className="rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400"
-            >
-              Sign out so {who} can sign in
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={onSignOut}
+                disabled={Boolean(signOutDisabledReason)}
+                className="rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
+              >
+                Sign out so {who} can sign in
+              </button>
+              {signOutDisabledReason && <p className="text-xs text-slate-400">{signOutDisabledReason}</p>}
+            </>
           )}
           {(phase === "unconfirmed" || phase === "conflict" || phase === "other-user") && (
             <button

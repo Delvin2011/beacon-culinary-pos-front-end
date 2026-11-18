@@ -20,7 +20,7 @@ import {
   type OfflinePaymentDraft,
 } from "@/lib/offline/offline-sale"
 import { offlineReceiptOrder } from "@/lib/offline/offline-receipt"
-import { recordOfflineSale, remainingAfter, soldSinceSnapshot, type NewOutboxEntry } from "@/lib/offline/outbox"
+import { getOutboxEntry, recordOfflineSale, remainingAfter, soldSinceSnapshot, type NewOutboxEntry } from "@/lib/offline/outbox"
 import { offlineElapsedMs, offlineLimits } from "@/lib/offline/readiness"
 import { STOP_MESSAGES, stopReason } from "@/lib/offline/selling-state"
 import { serverNow } from "@/lib/offline/server-time"
@@ -44,8 +44,16 @@ export interface CheckoutPayment {
 }
 
 export type OfflineRecordResult =
-  | { ok: true; clientOrderId: string; order: ReceiptOrder }
+  // alreadyRecorded: a stuck sale already in the outbox (e.g. the page closed after writing it): only clear O1's record.
+  | { ok: true; clientOrderId: string; order: ReceiptOrder; alreadyRecorded?: boolean }
   | { ok: false; message: string }
+
+export interface RecordOptions {
+  // O4 (H): a stuck online sale. Same clientOrderId, its confirm time as soldAt, printed "was pending online".
+  // The money was already taken, so the local counts and the account cap don't refuse it; its account charge
+  // still counts against the cap for later sales. Without a card slip, the server raises CARD_REFERENCE_MISSING.
+  stuck?: { clientOrderId: string; soldAt: string; allowMissingCardReference: boolean }
+}
 
 export const SAVE_FAILED_MESSAGE = "This sale couldn't be saved on the till, so it isn't complete. Try Confirm again."
 const NOT_SELLING_MESSAGE = "This till can't sell offline right now."
@@ -77,8 +85,15 @@ export function useOfflineCheckout() {
   const accountCap = grant?.accountCap ?? snapshot?.accountCap ?? null
 
   const record = useCallback(
-    async (lines: CheckoutLine[], payments: CheckoutPayment[]): Promise<OfflineRecordResult> => {
+    async (lines: CheckoutLine[], payments: CheckoutPayment[], options: RecordOptions = {}): Promise<OfflineRecordResult> => {
+      const { stuck } = options
       if (selling.kind !== "selling" || !grant || !snapshot) return fail(NOT_SELLING_MESSAGE)
+
+      // A stuck sale already in the outbox: nothing to write or print again.
+      if (stuck) {
+        const existing = await getOutboxEntry(stuck.clientOrderId)
+        if (existing) return { ok: true, clientOrderId: existing.clientOrderId, order: offlineReceiptOrder(existing), alreadyRecorded: true }
+      }
       const tillCode = grant.tillCode ?? tillStatus?.tillCode ?? null
       if (!grant.grantId || !tillCode) return fail(NOT_SELLING_MESSAGE)
 
@@ -109,7 +124,7 @@ export function useOfflineCheckout() {
         cart.push({ dailyMealOptionId: line.dailyMealOptionId, name: line.name, station, unitPriceCents, quantity: line.quantity, extras })
       }
 
-      // D4: never more than the local count.
+      // D4: never more than the local count. Not for a stuck sale: it was already sold.
       const wanted = new Map<number, { name: string; quantity: number }>()
       const wantedExtras = new Map<number, { name: string; quantity: number }>()
       for (const line of cart) {
@@ -120,11 +135,11 @@ export function useOfflineCheckout() {
           wantedExtras.set(extra.dailyComponentStockId!, { ...current, quantity: current.quantity + extra.quantity })
         }
       }
-      for (const [id, item] of Array.from(wanted)) {
+      for (const [id, item] of stuck ? [] : Array.from(wanted)) {
         const left = optionRemaining(id, snapshot.options.find((option) => option.id === id)?.portionsRemaining ?? null)
         if (left !== null && item.quantity > left) return fail(left === 0 ? `${item.name} is sold out.` : `Only ${left} ${item.name} left.`)
       }
-      for (const [id, item] of Array.from(wantedExtras)) {
+      for (const [id, item] of stuck ? [] : Array.from(wantedExtras)) {
         const left = extraRemaining(id, snapshot.extras.find((extra) => extra.id === id)?.bufferRemaining ?? null)
         if (left !== null && item.quantity > left) return fail(left === 0 ? `${item.name} is sold out.` : `Only ${left} ${item.name} left.`)
       }
@@ -140,10 +155,10 @@ export function useOfflineCheckout() {
 
       const accountNames: Record<number, string> = {}
       for (const account of accounts) accountNames[account.id] = account.name
-      const clientOrderId = newRequestId()
-      const soldAt = new Date(now).toISOString()
+      const clientOrderId = stuck?.clientOrderId ?? newRequestId()
+      const soldAt = stuck?.soldAt ?? new Date(now).toISOString()
       const tradingDay = snapshot.tradingDay
-      const accountCapCents = accountCap === null ? null : toCents(accountCap)
+      const accountCapCents = stuck || accountCap === null ? null : toCents(accountCap)
 
       let seq = chooseOfflineSeq(await getOfflineSeq(), grant, tradingDay)
       for (let attempt = 0; attempt < SEQ_ATTEMPTS; attempt += 1) {
@@ -160,7 +175,7 @@ export function useOfflineCheckout() {
           vatRate: snapshot.vatRate ?? Number.NaN,
           lines: cart,
           payments: drafts,
-          rules: { accountsEnabled },
+          rules: { accountsEnabled, allowMissingCardReference: stuck?.allowMissingCardReference ?? false },
         })
         if (!built.ok) return fail(built.message)
 
@@ -173,7 +188,7 @@ export function useOfflineCheckout() {
           tradingDay,
           soldAt,
           recordedAt: soldAt,
-          wasPendingOnline: false,
+          wasPendingOnline: Boolean(stuck),
           print: { tillCode, tillName: tillStatus?.tillName ?? null, cashierName: grant.cashierName, accountNames },
         }
         const outcome = await recordOfflineSale(entry, accountCapCents)
