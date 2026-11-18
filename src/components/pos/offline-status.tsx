@@ -1,11 +1,15 @@
 "use client"
 
 // O3: the "Offline ready" marker (online) and the offline banner. Both show nothing while offlineEnabled is false.
-// Selling offline is O4: in O3 Confirm still waits for the connection.
+// O4: the banner shows the sales waiting to send, the warning from warnOfflineHours, and why selling has stopped
+// (the offline limit, the grant's expiry, midnight).
 
 import { CloudOff, ShieldCheck, TriangleAlert } from "lucide-react"
+import { useOutbox } from "@/contexts/outbox-context"
 import { useOfflineReadiness } from "@/hooks/use-offline-readiness"
+import { useOfflineSelling } from "@/hooks/use-offline-selling"
 import { formatElapsed, notReadyMessage } from "@/lib/offline/readiness"
+import { waitingText } from "@/lib/offline/selling-state"
 
 export function OfflineReadyMarker() {
   const { readiness, isOnline } = useOfflineReadiness()
@@ -22,22 +26,39 @@ export function OfflineReadyMarker() {
   )
 }
 
-export function OfflineBanner() {
-  const { readiness, isOnline, elapsedMs } = useOfflineReadiness()
-  if (isOnline || readiness.kind === "off") return null
+const STOPPED_CLASSES = "flex items-center gap-3 border-b border-rose-500/30 bg-rose-500/10 px-6 py-2 text-sm text-rose-100"
 
-  if (readiness.kind === "not-ready") {
+export function OfflineBanner() {
+  const { selling, isOnline, elapsedMs } = useOfflineSelling()
+  const { summary } = useOutbox()
+  if (isOnline || selling.kind === "off" || selling.kind === "online") return null
+
+  if (selling.kind === "not-ready") {
     return (
-      <div role="alert" className="flex items-center gap-3 border-b border-rose-500/30 bg-rose-500/10 px-6 py-2 text-sm text-rose-100">
+      <div role="alert" className={STOPPED_CLASSES}>
         <CloudOff className="h-4 w-4 shrink-0" />
-        <span>Offline. This till can&apos;t sell offline: {notReadyMessage(readiness.reasons[0])}</span>
+        <span>Offline. This till can&apos;t sell offline: {notReadyMessage(selling.reason)}</span>
       </div>
     )
   }
 
-  const { maxOfflineHours, warnOfflineHours } = readiness.limits
-  const warn = elapsedMs !== null && elapsedMs >= warnOfflineHours * 3_600_000
   const elapsed = elapsedMs !== null ? ` · ${formatElapsed(elapsedMs)}` : ""
+  const waiting = summary.pendingCount > 0 ? ` · ${waitingText(summary.pendingCount)}` : ""
+
+  if (selling.kind === "stopped") {
+    return (
+      <div role="alert" className={STOPPED_CLASSES}>
+        <CloudOff className="h-4 w-4 shrink-0" />
+        <span>
+          Offline{elapsed}
+          {waiting}. {selling.message}
+        </span>
+      </div>
+    )
+  }
+
+  const { warn } = selling
+  const { maxOfflineHours } = selling.limits
   return (
     <div
       role="status"
@@ -50,6 +71,7 @@ export function OfflineBanner() {
       {warn ? <TriangleAlert className="h-4 w-4 shrink-0" /> : <CloudOff className="h-4 w-4 shrink-0" />}
       <span>
         Offline mode{elapsed}
+        {waiting}
         {warn && <> · Get back online soon: selling offline stops at {maxOfflineHours} h.</>}
       </span>
     </div>
