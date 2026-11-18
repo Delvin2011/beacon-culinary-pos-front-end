@@ -134,7 +134,11 @@ export interface AuthUser {
   name?: string;
   role?: string;
   cashierId?: number;
+  // O3 (D13): unlocked offline with the check value. No token; never saved; ended when the till is back online.
+  offline?: boolean;
 }
+
+export const BACK_ONLINE_NOTICE = "Back online. Sign in again.";
 
 interface AuthState {
   token: string | null;
@@ -173,6 +177,9 @@ interface AuthContextValue {
   clearError: () => void;
   // A request that gets no answer within its limit throws RequestTimeoutError (see lib/net).
   authFetch: (path: string, init?: AuthFetchInit) => Promise<Response>;
+  // O3 (D13): the local offline session after an offline unlock, and its end once the till is back online.
+  startOfflineSession: (user: { cashierId: number; name: string; role?: string }) => void;
+  endOfflineSession: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -708,12 +715,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [endSession, refreshToken, sessionEnded]
   );
 
+  // O3 (D13): an offline unlock. Kept in memory only: a reload asks for the PIN again. logoutRequestedRef stays as the
+  // lock left it, so nothing tries to refresh.
+  const startOfflineSession = useCallback((offlineUser: { cashierId: number; name: string; role?: string }) => {
+    tokenRef.current = null;
+    setState({
+      token: null,
+      user: { email: "", name: offlineUser.name, role: offlineUser.role ?? "CASHIER", cashierId: offlineUser.cashierId, offline: true },
+    });
+    setError(null);
+    setSessionEndedNotice(null);
+  }, []);
+
+  // Back online: like a server-ended session (the cart is kept); the normal sign-in applies again.
+  const endOfflineSession = useCallback(() => {
+    notifySessionEnding("SESSION_ENDED");
+    tokenRef.current = null;
+    setState({ token: null, user: null });
+    setSessionEndedNotice(BACK_ONLINE_NOTICE);
+  }, []);
+
   const value = useMemo<AuthContextValue>(
     () => ({
       apiBaseUrl: AUTH_API_BASE_URL,
       token: state.token,
       user: state.user,
-      isAuthenticated: Boolean(state.token),
+      isAuthenticated: Boolean(state.token) || state.user?.offline === true,
       isLoading,
       error,
       login,
@@ -725,8 +752,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       retryPendingLock,
       clearError,
       authFetch,
+      startOfflineSession,
+      endOfflineSession,
     }),
     [
+      startOfflineSession,
+      endOfflineSession,
       state.token,
       state.user,
       isLoading,

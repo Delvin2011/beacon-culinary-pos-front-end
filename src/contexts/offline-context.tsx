@@ -19,6 +19,8 @@ import { OfflineErrorCode, type OfflineGrant, type OfflineSnapshot } from "@/lib
 import {
   clearSnapshotAccounts,
   deleteGrantAndUnlock,
+  deleteMeta,
+  deleteUnlockVerifier,
   getGrant,
   getMeta,
   getSnapshot,
@@ -26,6 +28,7 @@ import {
   offlineStorageStatus,
   onOfflineStorageStatus,
   persistServerTime,
+  putUnlockVerifier,
   requestPersistentStorage,
   restoreServerTime,
   setMeta,
@@ -58,7 +61,7 @@ const OfflineContext = createContext<OfflineContextValue | null>(null)
 export { signedInUserId }
 
 export function OfflineProvider({ children }: { children: ReactNode }) {
-  const { authFetch, user, isAuthenticated } = useAuth()
+  const { authFetch, user, isAuthenticated, endOfflineSession } = useAuth()
   const { shift } = useShift()
   const { isOnline } = useConnection()
 
@@ -97,8 +100,16 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     }
     setTillStatus(status)
     await setMeta("tillStatus", status)
+    // D13: the till is online again, so offline unlock may be tried again (the server's own sign-in applies now).
+    await deleteMeta("unlockFailures")
 
-    const [storedGrant, storedSnapshot, verifier] = await Promise.all([getGrant(), getSnapshot(), getUnlockVerifier()])
+    const [storedGrant, storedSnapshot, storedVerifier] = await Promise.all([getGrant(), getSnapshot(), getUnlockVerifier()])
+    let verifier = storedVerifier
+    // D13: a check value made at a sign-in before the shift opened is bound to the shift its owner opens.
+    if (verifier && verifier.shiftId === null && status.shift && status.shift.ownerId === verifier.userId) {
+      verifier = { ...verifier, shiftId: status.shift.shiftId }
+      await putUnlockVerifier(verifier)
+    }
     const tillShiftId = status.shift?.shiftId ?? null
     const previousShiftId = seenShiftIdRef.current
     seenShiftIdRef.current = tillShiftId
@@ -118,7 +129,8 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
 
     const grantForOtherShift = storedGrant !== null && storedGrant.grant.shiftId !== tillShiftId
     const verifierForOtherShift = verifier !== null && verifier.shiftId !== tillShiftId
-    if (grantForOtherShift || verifierForOtherShift) await deleteGrantAndUnlock()
+    if (grantForOtherShift) await deleteGrantAndUnlock()
+    else if (verifierForOtherShift) await deleteUnlockVerifier()
     const shiftEnded = previousShiftId !== undefined && previousShiftId !== null && previousShiftId !== tillShiftId
     if (grantForOtherShift || shiftEnded) await clearSnapshotAccounts()
 
@@ -211,6 +223,11 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       stopWatching()
     }
   }, [reloadStored])
+
+  // D13: back online during an offline unlock: the normal server sign-in applies again.
+  useEffect(() => {
+    if (isOnline && user?.offline) endOfflineSession()
+  }, [isOnline, user, endOfflineSession])
 
   // Sign-in or resume.
   useEffect(() => {

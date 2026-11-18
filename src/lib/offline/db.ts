@@ -30,7 +30,8 @@ export interface StoredSnapshot {
 // D13: the offline unlock check value. Never the PIN.
 export interface UnlockVerifier {
   userId: number
-  shiftId: number
+  // null: made at a sign-in before the shift opened; bound to the shift when its owner opens it.
+  shiftId: number | null
   salt: string // base64
   iterations: number
   hash: string // base64
@@ -59,6 +60,8 @@ export interface MetaValues {
   tillStatus: TillStatus
   // The last shift loaded online, restored after a reload while offline (only with a valid grant for it).
   lastShift: Shift
+  // PBKDF2 iterations for the offline unlock, measured once on this till (about 0.4 s per check).
+  unlockIterations: number
 }
 
 export type MetaKey = keyof MetaValues
@@ -287,6 +290,14 @@ export function deleteGrantAndUnlock(): Promise<boolean> {
   return withDb(false, async (db) => {
     const tx = db.transaction(["grant", "unlockVerifier"], "readwrite")
     await Promise.all([tx.objectStore("grant").delete(CURRENT), tx.objectStore("unlockVerifier").delete(CURRENT), tx.done])
+    return true
+  })
+}
+
+// Only the unlock value: it belongs to a shift that isn't this till's open shift (the grant may be another's).
+export function deleteUnlockVerifier(): Promise<boolean> {
+  return withDb(false, async (db) => {
+    await db.delete("unlockVerifier", CURRENT)
     return true
   })
 }
