@@ -13,6 +13,7 @@ import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
 import { useAuth } from "@/hooks/use-auth"
+import { fetchOpenExceptionCount } from "@/lib/sale-exceptions"
 import { canManageInventory, canManageMenu, canManageStockTakes, canViewDashboard, canViewReports, isAdminRole, isBaristaRole } from "@/lib/roles"
 import {
   Sidebar,
@@ -90,6 +91,11 @@ const data = {
           url: "/devices",
           access: "admin" as const,
         },
+        {
+          title: "Sale exceptions",
+          url: "/sale-exceptions",
+          access: "admin" as const,
+        },
       ],
     },
     {
@@ -126,8 +132,24 @@ const data = {
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const { user } = useAuth()
+  const { user, authFetch } = useAuth()
   const role = user?.role
+  // O4: open REVIEW sale exceptions (GET /admin/sale-exceptions?size=1, totalItems), for admins, every minute.
+  const [openExceptions, setOpenExceptions] = React.useState<number | null>(null)
+  React.useEffect(() => {
+    if (!isAdminRole(role)) return
+    let active = true
+    const load = () =>
+      void fetchOpenExceptionCount(authFetch).then((count) => {
+        if (active) setOpenExceptions(count)
+      })
+    load()
+    const timer = window.setInterval(load, 60_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [role, authFetch])
   const navMain = React.useMemo(() => {
     // A Barista only works the bar display: no back-office menus at all.
     if (isBaristaRole(role)) return []
@@ -144,9 +166,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     }
     return data.navMain
       .filter(allowed)
-      .map((group) => ({ ...group, items: group.items.filter(allowed) }))
+      .map((group) => ({
+        ...group,
+        items: group.items.filter(allowed).map((item) => (item.url === "/sale-exceptions" ? { ...item, badge: openExceptions } : item)),
+      }))
       .filter((group) => group.items.length > 0)
-  }, [role])
+  }, [role, openExceptions])
 
   return (
     <Sidebar collapsible="icon" {...props}>

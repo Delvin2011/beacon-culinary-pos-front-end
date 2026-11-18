@@ -31,6 +31,7 @@ import { snapshotBeverages, snapshotMenuForPeriod, snapshotPeriods } from "@/lib
 import { useOfflineCheckout } from "@/hooks/use-offline-checkout";
 import { OfflineSaleComplete } from "@/components/pos/offline-sale-complete";
 import { OfflineOrdersList } from "@/components/pos/offline-orders-list";
+import { OfflineOrderMarks } from "@/components/orders/offline-order-marks";
 import { useOutbox } from "@/contexts/outbox-context";
 import { CARD_REFERENCE_MAX_LENGTH } from "@/lib/offline/offline-sale";
 
@@ -238,6 +239,11 @@ type OrderDto = {
   payments?: OrderPaymentDto[];
   // Kitchen first, then Bar; [] for a cold-drinks-only order.
   stations?: OrderStation[];
+  // O4 (contract 7): a sale recorded through sync, its till numbers, when it was sold, and a late booking.
+  recordedOffline?: boolean;
+  soldAt?: string | null;
+  collectionNumber?: string | null;
+  bookedTradingDay?: string | null;
 };
 
 type AccountDto = {
@@ -564,6 +570,7 @@ export function PosOrderBuilder({
           <p className="font-semibold text-slate-100">
             #{order.orderNumber}
             {complimentary && renderComplimentaryBadge()}
+            <OfflineOrderMarks order={order} className="ml-2 align-middle" />
           </p>
           {complimentary ? (
             <p className="text-right text-sm font-medium text-slate-200">
@@ -575,7 +582,8 @@ export function PosOrderBuilder({
         </div>
         <p className="mt-1 text-xs text-slate-400">
           {complimentary ? `${toMoney(0)} paid · ` : ""}
-          {order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "Time unavailable"}
+          {/* O4: an offline sale's time is when it was sold. */}
+          {order.soldAt ?? order.createdAt ? new Date((order.soldAt ?? order.createdAt)!).toLocaleTimeString() : "Time unavailable"}
           {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
           {renderRungBy(order)}
         </p>

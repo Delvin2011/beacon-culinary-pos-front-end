@@ -36,6 +36,8 @@ export interface AdminTillOffline {
   clockSkewMs: number | null
   offlineSince: string | null
   appVersion: string | null
+  // O4: this till's open REVIEW sale exceptions (absent from a pre-O4 server).
+  openExceptions?: number | null
 }
 
 export interface AdminTillRow {

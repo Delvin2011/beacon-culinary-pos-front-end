@@ -41,7 +41,7 @@ function formatSkew(ms: number): string {
   return `Clock ${ms > 0 ? "+" : "−"}${minutes} min`
 }
 
-export function OfflineCell({ offline }: { offline: AdminTillOffline | null }) {
+export function OfflineCell({ offline, deviceId = null }: { offline: AdminTillOffline | null; deviceId?: string | null }) {
   if (!offline) return <span className="text-muted-foreground">—</span>
   const at = offline.lastReportAt ? formatJhbTime(offline.lastReportAt) : null
   const pending = offline.pendingCount ?? 0
@@ -72,6 +72,14 @@ export function OfflineCell({ offline }: { offline: AdminTillOffline | null }) {
   return (
     <div className="flex flex-col items-start gap-1">
       {main}
+      {(offline.openExceptions ?? 0) > 0 && (
+        <a
+          href={`/sale-exceptions${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`}
+          className="text-xs font-medium text-amber-700 underline dark:text-amber-300"
+        >
+          {offline.openExceptions} to review
+        </a>
+      )}
       {skew !== null && Math.abs(skew) > CLOCK_SKEW_WARN_MS && (
         <span className="text-xs font-medium text-rose-700 dark:text-rose-300">{formatSkew(skew)}</span>
       )}
@@ -162,7 +170,7 @@ export function TillsView({ reloadKey, onForceClose, onActivity }: TillsViewProp
                       <LockState row={row} />
                     </TableCell>
                     <TableCell>
-                      <OfflineCell offline={row.offline ?? null} />
+                      <OfflineCell offline={row.offline ?? null} deviceId={row.deviceId} />
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap justify-end gap-1.5">
