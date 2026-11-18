@@ -4,6 +4,7 @@
 
 import { openDB, type DBSchema, type IDBPDatabase } from "idb"
 import { parseGrant, parseSnapshot, type OfflineGrant, type OfflineSnapshot } from "@/lib/offline/contract"
+import type { OutboxEntry } from "@/lib/offline/outbox"
 import { onServerTimeChange, serverTimeOffsetMs, setServerTimeOffset } from "@/lib/offline/server-time"
 import type { TillStatus } from "@/lib/till"
 import type { Shift } from "@/contexts/shift-context"
@@ -14,6 +15,8 @@ export const OPEN_TIMEOUT_MS = 3_000
 
 // Single-record stores use this key.
 const CURRENT = "current"
+// O4: the key of the till's offline number counter, read and written in the outbox's sale transaction.
+export const OFFLINE_SEQ_KEY = CURRENT
 
 export interface StoredGrant {
   // The POST /pos/offline/grant response exactly as received.
@@ -71,8 +74,9 @@ interface OfflineDbSchema extends DBSchema {
   snapshot: { key: string; value: StoredSnapshot }
   unlockVerifier: { key: string; value: UnlockVerifier }
   meta: { key: string; value: unknown }
-  // Reserved for O4; empty in O3.
-  outbox: { key: string; value: { clientOrderId: string } & Record<string, unknown> }
+  // O4: every offline sale until the server has it (and 7 days after). See outbox.ts.
+  outbox: { key: string; value: OutboxEntry }
+  // Created in O3 but unused: O4 works the ledger out from the outbox. Kept so the database stays at version 1.
   accountLedger: { key: number; value: { accountId: number } & Record<string, unknown> }
   offlineSeq: { key: string; value: OfflineSeqRecord }
 }
@@ -302,7 +306,8 @@ export function deleteUnlockVerifier(): Promise<boolean> {
   })
 }
 
-// The till was revoked: everything goes, except the O4 outbox (empty in O3), whose unsynced sales O4 decides about.
+// The till was revoked: everything goes, except the outbox. Its sales still sync (the server accepts a revoked
+// till's sales, flagged), and each entry carries its own grant string.
 export function wipeAll(): Promise<boolean> {
   return withDb(false, async (db) => {
     const stores = ["grant", "snapshot", "unlockVerifier", "meta", "accountLedger", "offlineSeq"] as const
