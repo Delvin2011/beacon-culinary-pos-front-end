@@ -8,6 +8,7 @@ import { currentReceiptSettings, useReceiptSettings } from "@/hooks/use-receipt-
 import { claimAutoPrint, clearAutoPrinted } from "@/lib/auto-print-guard"
 import { loadPrintSettings } from "@/lib/print-settings"
 import { accountIdsOf, fetchAccountNames, hasKitchenLines, receiptCopy, type ReceiptOrder } from "@/lib/receipt"
+import type { ReceiptSettings } from "@/lib/receipt-settings"
 import { onSessionEnding } from "@/lib/session-events"
 
 type AuthFetch = (path: string, init?: RequestInit) => Promise<Response>
@@ -18,11 +19,13 @@ interface Options {
   owner: string | null
   // Accounts the till already has (the payment picker's list), so most ACCOUNT receipts need no extra call.
   knownAccounts: Array<{ id: number; name: string }>
+  // O4: the snapshot's receipt settings, used when this sign-in has none (offline, the fetch failed).
+  fallbackSettings?: ReceiptSettings | null
 }
 
 // The till's printing (O2b): after a sale, the receipt then the kitchen ticket, each when its switch is on; and the
 // local "print again" copies from the completion screen. Printing never throws and never touches the sale.
-export function useSalePrinting({ authFetch, owner, knownAccounts }: Options) {
+export function useSalePrinting({ authFetch, owner, knownAccounts, fallbackSettings = null }: Options) {
   const { enqueue, portal } = usePrintQueue()
   // Fetches GET /pos/receipt-settings once after this sign-in (O2b handoff 1); the prints read the cached answer.
   useReceiptSettings()
@@ -46,7 +49,8 @@ export function useSalePrinting({ authFetch, owner, knownAccounts }: Options) {
     async (order: ReceiptOrder, which: { receipt: boolean; kitchenTicket: boolean }, localCopy: boolean): Promise<PrintJob[]> => {
       const jobs: PrintJob[] = []
       if (which.receipt) {
-        const [settings, accountNames] = await Promise.all([currentReceiptSettings(), accountNamesFor(order)])
+        const [fetched, accountNames] = await Promise.all([currentReceiptSettings(), accountNamesFor(order)])
+        const settings = fetched ?? fallbackSettings
         jobs.push({
           medium: "RECEIPT80",
           content: <ReceiptView order={order} settings={settings} copy={receiptCopy(order, localCopy)} accountNames={accountNames} />,
@@ -57,17 +61,19 @@ export function useSalePrinting({ authFetch, owner, knownAccounts }: Options) {
       }
       return jobs
     },
-    [accountNamesFor],
+    [accountNamesFor, fallbackSettings],
   )
 
   // After a successful sale (once per clientOrderId, a replay included). At most once per order id.
+  // printKey: an offline sale's clientOrderId (it has no server id).
   const autoPrint = useCallback(
-    async (order: ReceiptOrder): Promise<void> => {
+    async (order: ReceiptOrder, printKey?: string): Promise<void> => {
       try {
-        if (typeof order.id !== "number" || !owner) return
+        const key = typeof order.id === "number" ? order.id : printKey
+        if (key === undefined || !owner) return
         const switches = loadPrintSettings()
         if (!switches.autoPrintReceipt && !switches.autoPrintKitchenTicket) return
-        if (!claimAutoPrint(owner, order.id)) return
+        if (!claimAutoPrint(owner, key)) return
         enqueue(...(await jobsFor(order, { receipt: switches.autoPrintReceipt, kitchenTicket: switches.autoPrintKitchenTicket }, false)))
       } catch {
         // Never block or fail a sale because of printing.

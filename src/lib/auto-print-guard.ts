@@ -8,7 +8,8 @@ const MAX_IDS = 50
 
 interface AutoPrinted {
   owner: string
-  ids: number[]
+  // Server order ids, or (O4) an offline sale's clientOrderId.
+  ids: Array<number | string>
 }
 
 function read(): AutoPrinted | null {
@@ -25,7 +26,7 @@ function read(): AutoPrinted | null {
 let memory: AutoPrinted | null = null
 
 // true the first time an order id is claimed for this person; false after that.
-export function claimAutoPrint(owner: string, orderId: number): boolean {
+export function claimAutoPrint(owner: string, orderId: number | string): boolean {
   const current = read() ?? memory
   const ids = current && current.owner === owner ? current.ids : []
   if (ids.includes(orderId)) return false

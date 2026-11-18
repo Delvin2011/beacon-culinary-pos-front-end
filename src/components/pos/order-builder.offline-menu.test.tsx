@@ -23,7 +23,10 @@ vi.mock("@/contexts/connection-context", () => ({
 }))
 
 let offline: Partial<OfflineContextValue>
-vi.mock("@/contexts/offline-context", () => ({ useOffline: () => offline }))
+vi.mock("@/contexts/offline-context", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/contexts/offline-context")>()),
+  useOffline: () => offline,
+}))
 
 const tillStatus = { offlineEnabled: true } as TillStatus
 

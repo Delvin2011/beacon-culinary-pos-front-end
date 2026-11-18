@@ -4,7 +4,9 @@ import { complimentaryReasonLabel } from "@/lib/complimentary"
 import {
   formatReceiptAmount,
   formatReceiptDateTime,
+  largeNumber,
   paymentMethodLabel,
+  receiptTime,
   receiptTillLabel,
   receiptTotal,
   vatLine,
@@ -44,7 +46,8 @@ export interface ReceiptViewProps {
 export function ReceiptView({ order, settings, copy = null, accountNames = {} }: ReceiptViewProps) {
   const complimentary = order.orderKind === "COMPLIMENTARY"
   const payments = order.payments ?? []
-  const when = formatReceiptDateTime(order.createdAt)
+  const when = formatReceiptDateTime(receiptTime(order))
+  const big = largeNumber(order)
   const till = receiptTillLabel(order)
   const vat = vatLine(order, settings?.showVatLine ?? false)
   const discount = order.saleDiscount ?? 0
@@ -67,14 +70,18 @@ export function ReceiptView({ order, settings, copy = null, accountNames = {} }:
 
       <div>
         {order.receiptNumber && <p>Receipt {order.receiptNumber}</p>}
-        {typeof order.orderNumber === "number" && (
+        {big && (
           <p className="text-center">
-            <span className="block text-[10px] uppercase tracking-widest">Order</span>
-            <span data-testid="order-number" className="block text-4xl font-black leading-none">
-              {order.orderNumber}
+            <span className="block text-[10px] uppercase tracking-widest">{big.label}</span>
+            <span
+              data-testid={big.label === "Collection" ? "collection-number" : "order-number"}
+              className="block text-4xl font-black leading-none"
+            >
+              {big.value}
             </span>
           </p>
         )}
+        {order.recordedOffline && <p className="text-center font-bold uppercase tracking-widest">Offline sale</p>}
         {(when || till) && (
           <p className="flex justify-between gap-2">
             {when && <span>{when}</span>}
