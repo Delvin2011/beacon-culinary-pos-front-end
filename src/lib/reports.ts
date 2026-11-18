@@ -156,6 +156,8 @@ export interface EndOfDayBlocker {
   shiftId?: number
   date?: string
   zNumber?: number
+  // O3: OFFLINE_SALES_PENDING names the till.
+  tillCode?: string
 }
 
 export interface EndOfDayError {
@@ -257,6 +259,8 @@ export function formatZNumber(zNumber: number): string {
 
 // Every Close Day blocker that points somewhere links there, so managers can fix them one by one.
 export function blockerHref(blocker: EndOfDayBlocker): string | null {
+  // O3: a till still holds unsynced sales for the day: the Tills view shows which and since when.
+  if (blocker.code === "OFFLINE_SALES_PENDING") return "/pos-activity"
   if ((blocker.code === "SHIFT_NOT_SIGNED_OFF" || blocker.code === "SHIFT_OPEN") && blocker.shiftId !== undefined) {
     return `/reports/cashier-reading?shiftId=${blocker.shiftId}`
   }

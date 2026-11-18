@@ -26,13 +26,30 @@ export interface AdminTillShift {
   locked: boolean | null
 }
 
+// O3 (offline contract 10.2): the till's latest status report.
+export type TillOfflineState = "NEVER_REPORTED" | "OK" | "PENDING" | "UNKNOWN"
+
+export interface AdminTillOffline {
+  state: TillOfflineState
+  pendingCount: number | null
+  lastReportAt: string | null
+  clockSkewMs: number | null
+  offlineSince: string | null
+  appVersion: string | null
+}
+
 export interface AdminTillRow {
   deviceId: string | null
   tillCode: string | null
   tillName: string
   registered: boolean
   shift: AdminTillShift | null
+  // O3: null for the unregistered till, and absent from a pre-O3 server.
+  offline?: AdminTillOffline | null
 }
+
+// A clock difference larger than this is shown as a warning (on the Tills view and the devices page).
+export const CLOCK_SKEW_WARN_MS = 2 * 60_000
 
 export type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER"
 

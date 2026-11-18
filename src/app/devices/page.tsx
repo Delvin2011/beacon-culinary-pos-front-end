@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DevicePageShell, useDeviceAdminGuard } from "@/components/devices/device-page-shell"
 import { PrintSettingsCard } from "@/components/devices/print-settings-card"
+import { OfflineStatusCard } from "@/components/devices/offline-status-card"
 import { ReceiptSettingsDialog } from "@/components/devices/receipt-settings-dialog"
 import { toast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
@@ -420,6 +421,9 @@ export default function RegisteredTillsPage() {
 
       {/* O2b: this browser's automatic printing switches, set on each till. */}
       <PrintSettingsCard />
+
+      {/* O3: what this browser holds for offline use, and its status reports. */}
+      <OfflineStatusCard />
 
       {pageMessage && (
         <div role="alert" className="flex items-start justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">

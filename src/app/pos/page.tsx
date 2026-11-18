@@ -20,13 +20,17 @@ import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { readLoginBlock } from "@/lib/login-protection";
-import { errorCode } from "@/lib/api-error";
+import { detailNumber, errorCode, readApiError } from "@/lib/api-error";
+import { OfflineErrorCode, offlineSalesPendingMessage } from "@/lib/offline/contract";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { useLockBlocker, useLockBusy } from "@/lib/lock-guard";
 import { UNREGISTERED_TILL, tillLabel } from "@/lib/till";
 import { moneyOrDash } from "@/lib/money";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
+
+// O3 (offline contract 10.4): shift close refused with OFFLINE_SALES_PENDING. Its message is safe to show.
+class OfflineSalesPendingError extends Error {}
 
 type ShiftSummaryDto = {
   shiftId?: number;
@@ -325,7 +329,14 @@ function PosMainContent() {
       body: JSON.stringify(payload),
     });
 
+    // Before the body is read: readApiError reads its own copy.
+    const { code, details } = await readApiError(res);
     const body = (await res.json().catch(() => null)) as ShiftCloseResponse | Record<string, unknown> | null;
+
+    // O3 (offline contract 10.4): the till still holds unsynced sales for this shift. The count comes from details.
+    if (res.status === 409 && code === OfflineErrorCode.OFFLINE_SALES_PENDING) {
+      throw new OfflineSalesPendingError(offlineSalesPendingMessage(detailNumber(details, "pendingCount")));
+    }
 
     if (res.status === 401) {
       const error = new Error("Session expired or unauthorized. Please log in again.");
@@ -354,6 +365,12 @@ function PosMainContent() {
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
       const message = messageForError(err, "Failed to close shift.");
+
+      // O3: not "already closed": the shift stays open until the till's sales are synced.
+      if (err instanceof OfflineSalesPendingError) {
+        setCloseError(err.message);
+        return;
+      }
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {
@@ -505,6 +522,13 @@ function PosMainContent() {
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
       const message = messageForError(err, "Failed to close shift.");
+
+      // O3: not "already closed" and not a PIN problem: the shift stays open until the till's sales are synced.
+      if (err instanceof OfflineSalesPendingError) {
+        setShowPinOverlay(false);
+        setCloseError(err.message);
+        return;
+      }
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {
