@@ -5,6 +5,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb"
 import { parseGrant, parseSnapshot, type OfflineGrant, type OfflineSnapshot } from "@/lib/offline/contract"
 import { onServerTimeChange, serverTimeOffsetMs, setServerTimeOffset } from "@/lib/offline/server-time"
+import type { TillStatus } from "@/lib/till"
 
 export const OFFLINE_DB_NAME = "beacon-pos-offline"
 export const OFFLINE_DB_VERSION = 1
@@ -53,6 +54,8 @@ export interface MetaValues {
   heartbeatStopped: boolean
   persistResult: PersistResult
   clockSkewMs: number
+  // The last till-status answer, for readiness after a reload while offline.
+  tillStatus: TillStatus
 }
 
 export type MetaKey = keyof MetaValues

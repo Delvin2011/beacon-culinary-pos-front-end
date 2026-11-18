@@ -13,6 +13,7 @@ import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-
 import { messageForError } from "@/lib/net";
 import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ConnectionIndicator } from "@/components/pos/connection-indicator";
+import { OfflineBanner, OfflineReadyMarker } from "@/components/pos/offline-status";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
@@ -677,6 +678,7 @@ function PosMainContent() {
 
         <div className="flex items-center gap-3">
           <ConnectionIndicator />
+          <OfflineReadyMarker />
           {isManagementActive && (
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">
               <ShieldCheck className="h-3.5 w-3.5" />
@@ -732,6 +734,9 @@ function PosMainContent() {
           </button>
         </div>
       </header>
+
+      {/* O3: offline mode and its elapsed time, or why this till can't sell offline. Nothing when offline is off. */}
+      <OfflineBanner />
 
       {shiftError && shift && (
         <div className="flex items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-6 py-2 text-sm text-amber-100">

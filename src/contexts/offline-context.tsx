@@ -20,6 +20,7 @@ import {
   clearSnapshotAccounts,
   deleteGrantAndUnlock,
   getGrant,
+  getMeta,
   getSnapshot,
   getUnlockVerifier,
   offlineStorageStatus,
@@ -27,6 +28,7 @@ import {
   persistServerTime,
   requestPersistentStorage,
   restoreServerTime,
+  setMeta,
   wipeAll,
   type StorageStatus,
 } from "@/lib/offline/db"
@@ -99,6 +101,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
       return // No answer: keep everything.
     }
     setTillStatus(status)
+    await setMeta("tillStatus", status)
 
     const [storedGrant, storedSnapshot, verifier] = await Promise.all([getGrant(), getSnapshot(), getUnlockVerifier()])
     const tillShiftId = status.shift?.shiftId ?? null
@@ -204,6 +207,10 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
     void restoreServerTime()
     void requestPersistentStorage().then(() => setStorage(offlineStorageStatus()))
     void reloadStored()
+    // After a reload while offline: the last answer, until a fresh one arrives.
+    void getMeta("tillStatus").then((stored) => {
+      if (stored) setTillStatus((current) => current ?? stored)
+    })
     return () => {
       stopSaving()
       stopWatching()
