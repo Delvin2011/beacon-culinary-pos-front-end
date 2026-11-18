@@ -22,6 +22,8 @@ import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { readLoginBlock } from "@/lib/login-protection";
 import { detailNumber, errorCode, readApiError } from "@/lib/api-error";
 import { OfflineErrorCode, offlineSalesPendingMessage } from "@/lib/offline/contract";
+import { useOutbox } from "@/contexts/outbox-context";
+import { waitingForShift } from "@/lib/offline/outbox";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { useLockBlocker, useLockBusy } from "@/lib/lock-guard";
 import { UNREGISTERED_TILL, tillLabel } from "@/lib/till";
@@ -159,6 +161,11 @@ function PosMainContent() {
   // The cash-up and its manager PIN must finish before the till can lock (O2).
   useLockBlocker("cash-up", confirmOwnerClose || confirmClose || showPinOverlay || closeoutRecord !== null);
   const lockBusy = useLockBusy();
+  // O4: this shift's offline sales still waiting (unsent, or kept for support): End shift waits for them. The
+  // server's 409 OFFLINE_SALES_PENDING is still handled. A manager can force-close in POS Activity.
+  const { entries: outboxEntries } = useOutbox();
+  const waitingOfflineSales = shift ? waitingForShift(outboxEntries, shift.id) : 0;
+  const waitingOfflineText = `${waitingOfflineSales} offline sale${waitingOfflineSales === 1 ? "" : "s"} still to send`;
   // O3: the reading and the cash-up need the server.
   const { isOnline } = useConnection();
   const [locking, setLocking] = useState(false);
@@ -751,14 +758,19 @@ function PosMainContent() {
             <Lock className="h-3.5 w-3.5" />
             Lock till
           </button>
+          {waitingOfflineSales > 0 && isOnline && (
+            <span className="text-xs font-medium text-amber-300">{waitingOfflineText}</span>
+          )}
           <button
             type="button"
             onClick={requestCloseShift}
-            disabled={lockBusy || !isOnline}
+            disabled={lockBusy || !isOnline || waitingOfflineSales > 0}
             title={
               !isOnline
                 ? "Not available offline"
-                : lockBusy
+                : waitingOfflineSales > 0
+                  ? waitingOfflineText
+                  : lockBusy
                   ? "Finish the payment, sale or dialog first."
                   : "Close the shift and count the drawer."
             }

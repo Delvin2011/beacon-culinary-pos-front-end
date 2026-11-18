@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { DevicePageShell, useDeviceAdminGuard } from "@/components/devices/device-page-shell"
 import { PrintSettingsCard } from "@/components/devices/print-settings-card"
 import { OfflineStatusCard } from "@/components/devices/offline-status-card"
+import { OfflineSalesSupportCard } from "@/components/devices/offline-sales-support-card"
 import { ReceiptSettingsDialog } from "@/components/devices/receipt-settings-dialog"
 import { toast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
@@ -424,6 +425,8 @@ export default function RegisteredTillsPage() {
 
       {/* O3: what this browser holds for offline use, and its status reports. */}
       <OfflineStatusCard />
+      {/* O4: offline sales the server couldn't take (INVALID / REFUSED), for support. Nothing when there are none. */}
+      <OfflineSalesSupportCard />
 
       {pageMessage && (
         <div role="alert" className="flex items-start justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">

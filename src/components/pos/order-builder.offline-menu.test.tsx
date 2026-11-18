@@ -159,12 +159,12 @@ describe("the offline menu", () => {
 })
 
 describe("Today's orders offline", () => {
-  it("says Not available offline and asks the server for nothing", async () => {
+  it("lists this till's offline sales (none here) and asks the server for nothing", async () => {
     renderTill()
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: /Today's Orders/ }))
     })
-    expect(await screen.findByText("Not available offline.")).toBeInTheDocument()
+    expect(await screen.findByText("No offline sales today.")).toBeInTheDocument()
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/orders/today"))).toBe(false)
   })
 })

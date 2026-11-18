@@ -30,6 +30,8 @@ import { serverNow, serverToday } from "@/lib/offline/server-time";
 import { snapshotBeverages, snapshotMenuForPeriod, snapshotPeriods } from "@/lib/offline/snapshot-menu";
 import { useOfflineCheckout } from "@/hooks/use-offline-checkout";
 import { OfflineSaleComplete } from "@/components/pos/offline-sale-complete";
+import { OfflineOrdersList } from "@/components/pos/offline-orders-list";
+import { useOutbox } from "@/contexts/outbox-context";
 import { CARD_REFERENCE_MAX_LENGTH } from "@/lib/offline/offline-sale";
 
 // O4: an extra the snapshot doesn't count (bufferRemaining null) has no limit offline.
@@ -505,6 +507,8 @@ export function PosOrderBuilder({
   // O4: selling from the snapshot while offline and allowed (readiness holds, no stop). Otherwise the copy stays
   // read-only (O3). offlineActive: offline with offline on; online-only actions say so.
   const offlineCheckout = useOfflineCheckout();
+  // O4 task 8: Today's Orders offline lists this till's offline sales.
+  const { entries: outboxEntries } = useOutbox();
   // O4: offline and allowed to sell: the snapshot's tiles, even over a live menu loaded earlier (going offline
   // mid-shift). Back online, the live menu again. O3's rule stands online: a live menu is never replaced.
   const sellingOffline = !isOnline && todaySnapshot !== null && offlineCheckout.selling.kind === "selling";
@@ -2696,7 +2700,11 @@ export function PosOrderBuilder({
           )}
 
           {!isOnline ? (
-            <p className="text-sm text-slate-400">Not available offline.</p>
+            tillStatus?.offlineEnabled ? (
+              <OfflineOrdersList entries={outboxEntries} tradingDay={serverToday()} />
+            ) : (
+              <p className="text-sm text-slate-400">Not available offline.</p>
+            )
           ) : todayOrdersLoading ? (
             <p className="text-sm text-slate-400">Loading today&apos;s orders...</p>
           ) : todayOrders.length === 0 ? (
@@ -3774,7 +3782,11 @@ export function PosOrderBuilder({
             )}
 
             {!isOnline ? (
-              <p className="text-sm text-slate-400">Not available offline.</p>
+              tillStatus?.offlineEnabled ? (
+                <OfflineOrdersList entries={outboxEntries} tradingDay={serverToday()} />
+              ) : (
+                <p className="text-sm text-slate-400">Not available offline.</p>
+              )
             ) : todayOrdersLoading ? (
               <p className="text-sm text-slate-400">Loading today&apos;s orders...</p>
             ) : todayOrders.length === 0 ? (
