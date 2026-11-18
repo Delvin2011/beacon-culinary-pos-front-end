@@ -52,6 +52,7 @@ export interface MetaValues {
   unlockFailures: number
   heartbeatStopped: boolean
   persistResult: PersistResult
+  clockSkewMs: number
 }
 
 export type MetaKey = keyof MetaValues
