@@ -14,6 +14,7 @@ import { loginBlockMessage, readLoginBlock, type LoginBlock } from "@/lib/login-
 import { detailString, errorCode, readApiError } from "@/lib/api-error";
 import { TillErrorCode, readSessionEnded, sessionEndedMessage, shiftOpenOnOtherTillMessage, tillLockedMessage } from "@/lib/till";
 import { notifySessionEnding } from "@/lib/session-events";
+import { clearSnapshotAccounts } from "@/lib/offline/db";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { CONNECTION_MESSAGES, RequestTimeoutError, fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
 import { reportConnectionSignal, signalForError, signalForResponse } from "@/lib/connection-signals";
@@ -484,6 +485,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logoutRequestedRef.current = true;
     sessionStorage.setItem(AUTH_LOGOUT_MARKER_KEY, "true");
     clearAuthState();
+    // O3 (contract 11): signing out of the till removes the snapshot's accounts list; the menu stays.
+    void clearSnapshotAccounts();
     setError(null);
     await requestServerLogout(token);
   }, [clearAuthState]);
