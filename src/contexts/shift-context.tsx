@@ -14,6 +14,7 @@ import { CONNECTION_MESSAGES, messageForError } from "@/lib/net";
 import { detailString, readApiError } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { TillErrorCode, shiftAlreadyOpenMessage, shiftOpenOnOtherTillMessage } from "@/lib/till";
+import { restoreOfflineShift, saveLastShift } from "@/lib/offline/offline-shift";
 
 export interface ShiftOwner {
   id: number;
@@ -99,7 +100,10 @@ function extractErrorMessage(payload: unknown, fallback: string): string {
 }
 
 export function ShiftProvider({ children }: { children: ReactNode }) {
-  const { authFetch, isAuthenticated } = useAuth();
+  const { authFetch, isAuthenticated, user } = useAuth();
+  // O3: the signed-in user, for restoring the shift offline (a ref: the lookup doesn't re-run when it changes).
+  const userRef = useRef(user);
+  userRef.current = user;
   const [shift, setShift] = useState<Shift | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +130,7 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
       const res = await authFetch("/shifts/open");
       if (res.status === 404) {
         setShift(null);
+        void saveLastShift(null);
         return;
       }
       if (!res.ok) {
@@ -133,10 +138,18 @@ export function ShiftProvider({ children }: { children: ReactNode }) {
         return;
       }
       const body = (await res.json().catch(() => null)) as unknown;
-      setShift(extractShift(body));
+      const loaded = extractShift(body);
+      setShift(loaded);
+      // O3: only while the saved till-status says offline is on.
+      void saveLastShift(loaded);
     } catch (err) {
       // No answer: keep the last known shift. Only a 404 means "no open shift".
       setError(messageForError(err, "Failed to load shift status."));
+      // O3: a reload while offline. The saved shift, if this till may sell offline on it.
+      if (!shiftRef.current) {
+        const restored = await restoreOfflineShift(userRef.current);
+        if (restored) setShift(restored);
+      }
     } finally {
       setIsLoading(false);
     }

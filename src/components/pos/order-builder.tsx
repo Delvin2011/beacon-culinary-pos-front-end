@@ -25,6 +25,9 @@ import { onSessionEnding } from "@/lib/session-events";
 import { clearPendingCart, loadPendingCart, savePendingCart, type PendingCart } from "@/lib/pending-cart";
 import { useSalePrinting } from "@/hooks/use-sale-printing";
 import { hasKitchenLines } from "@/lib/receipt";
+import { useOffline } from "@/contexts/offline-context";
+import { serverToday } from "@/lib/offline/server-time";
+import { snapshotBeverages, snapshotMenuForPeriod, snapshotPeriods } from "@/lib/offline/snapshot-menu";
 
 // Voids and refunds: waits before each resend of the same request (network error, timeout, 5xx, 429).
 const ADJUSTMENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -484,6 +487,15 @@ export function PosOrderBuilder({
   const [beveragesTab, setBeveragesTab] = useState(false);
   const [beverageOptions, setBeverageOptions] = useState<DailyMealOption[]>([]);
 
+  // O3: today's snapshot (offline on), and whether the tiles come from it. Read-only in O3: selling offline is O4.
+  const { snapshot, snapshotReceivedAt, tillStatus } = useOffline();
+  const todaySnapshot = tillStatus?.offlineEnabled && snapshot?.tradingDay === serverToday() ? snapshot : null;
+  // A live load failed with nothing live on screen (e.g. a reload while offline): the tiles then come from today's
+  // snapshot, derived at render so a period switch or a failed background refresh can't empty or mix them up.
+  const [liveMenuFailed, setLiveMenuFailed] = useState(false);
+  const menuFromSnapshot = liveMenuFailed && todaySnapshot !== null;
+  const periodsFromSnapshotRef = useRef(false);
+
   const [selectedOption, setSelectedOption] = useState<DailyMealOption | null>(null);
   const [lineQty, setLineQty] = useState(1);
   const [selectedExtraQty, setSelectedExtraQty] = useState<Record<number, number>>({});
@@ -701,6 +713,7 @@ export function PosOrderBuilder({
     }
 
     setPeriods(payload);
+    periodsFromSnapshotRef.current = false;
 
     if (payload.length === 0) {
       setSelectedPeriodId(null);
@@ -732,6 +745,7 @@ export function PosOrderBuilder({
         menuPeriodRef.current = periodName.toUpperCase();
         setMenuUpdatedAt(new Date());
         setMenuStale(false);
+        setLiveMenuFailed(false);
       } catch (err) {
         if (menuPeriodRef.current === periodName.toUpperCase()) {
           // Keep what's on screen; the server still refuses anything that has sold out.
@@ -740,6 +754,7 @@ export function PosOrderBuilder({
           menuPeriodRef.current = null;
           setMenu({ options: [], availableExtras: [] });
           setMenuError(messageForError(err, "Unable to load today's menu."));
+          setLiveMenuFailed(true);
         }
       } finally {
         setIsLoadingMenu(false);
@@ -764,12 +779,14 @@ export function PosOrderBuilder({
         beveragesLoadedRef.current = true;
         setMenuUpdatedAt(new Date());
         setMenuStale(false);
+        setLiveMenuFailed(false);
       } catch (err) {
         if (beveragesLoadedRef.current) {
           setMenuStale(true);
         } else {
           setBeverageOptions([]);
           setMenuError(messageForError(err, "Unable to load beverages."));
+          setLiveMenuFailed(true);
         }
       } finally {
         setIsLoadingMenu(false);
@@ -794,9 +811,22 @@ export function PosOrderBuilder({
       } catch (err) {
         const msg = messageForError(err, "Unable to load meal periods.");
         setMenuError(msg);
+        setLiveMenuFailed(true);
       }
     })();
   }, [loadPeriods]);
+
+  // O3: no live periods, but today's snapshot: its periods, the current one chosen by the time as loadPeriods does.
+  useEffect(() => {
+    if (!menuFromSnapshot || !todaySnapshot || periods.length > 0) return;
+    const fromSnapshot = snapshotPeriods(todaySnapshot);
+    if (fromSnapshot.length === 0) return;
+    periodsFromSnapshotRef.current = true;
+    setPeriods(fromSnapshot);
+    const now = nowTimeHHMMSS();
+    const active = fromSnapshot.find((p) => isWithinPeriod(p.startTime, p.endTime, now));
+    setSelectedPeriodId(active?.id ?? fromSnapshot[0].id);
+  }, [menuFromSnapshot, todaySnapshot, periods.length]);
 
   useEffect(() => {
     if (!selectedPeriod) return;
@@ -806,17 +836,23 @@ export function PosOrderBuilder({
     void loadMenuForPeriod(selectedPeriod.name);
   }, [selectedPeriod, loadMenuForPeriod]);
 
-  const periodExtras = useMemo(() => {
+  const periodExtras = useMemo<DailyComponentStock[]>(() => {
     if (!selectedPeriod) return [];
+    if (menuFromSnapshot && todaySnapshot) return snapshotMenuForPeriod(todaySnapshot, selectedPeriod.id).availableExtras;
     return menu.availableExtras.filter((e) => e.mealPeriodId === selectedPeriod.id);
-  }, [menu.availableExtras, selectedPeriod]);
+  }, [menu.availableExtras, selectedPeriod, menuFromSnapshot, todaySnapshot]);
 
-  // The tiles on screen: the Beverages tab, or the selected period's menu.
-  const periodOptions = useMemo(() => {
+  // The tiles on screen: the Beverages tab, or the selected period's menu (O3: from today's snapshot when the live
+  // menu couldn't be loaded).
+  const periodOptions = useMemo<DailyMealOption[]>(() => {
+    if (menuFromSnapshot && todaySnapshot) {
+      if (beveragesTab) return snapshotBeverages(todaySnapshot);
+      return selectedPeriod ? snapshotMenuForPeriod(todaySnapshot, selectedPeriod.id).options : [];
+    }
     if (beveragesTab) return beverageOptions;
     if (!selectedPeriod) return [];
     return menu.options.filter((o) => o.mealPeriodId === selectedPeriod.id || o.period?.id === selectedPeriod.id);
-  }, [beveragesTab, beverageOptions, menu.options, selectedPeriod]);
+  }, [beveragesTab, beverageOptions, menu.options, selectedPeriod, menuFromSnapshot, todaySnapshot]);
 
   // Planned set meals keep today's tiles; always-on items are grouped into sections by category
   // (sections by category sortOrder, tiles by name). The server returns them in id order.
@@ -854,6 +890,17 @@ export function PosOrderBuilder({
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [refreshShownMenu]);
+
+  // O3: back online after the live menu failed: load it again at once (periods first if they came from the snapshot;
+  // choosing a period then loads its menu).
+  const wasOnlineRef = useRef(isOnline);
+  useEffect(() => {
+    const cameBack = isOnline && !wasOnlineRef.current;
+    wasOnlineRef.current = isOnline;
+    if (!cameBack || !liveMenuFailed) return;
+    if (periodsFromSnapshotRef.current) void loadPeriods().catch(() => {});
+    else refreshShownMenu(true);
+  }, [isOnline, liveMenuFailed, loadPeriods, refreshShownMenu]);
 
   const draftSubtotal = useMemo(
     () => draftLines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
@@ -954,7 +1001,8 @@ export function PosOrderBuilder({
 
   // One tap adds one. Always-on lines never carry extras, so repeat taps just raise the quantity.
   const addAlwaysOnOption = (option: DailyMealOption) => {
-    if (option.outToday) return;
+    // O3: the offline copy of the menu is read-only (selling offline is O4).
+    if (option.outToday || menuFromSnapshot) return;
     setDraftLines((prev) => {
       const existing = prev.find((line) => line.alwaysOn && line.dailyMealOptionId === option.id);
       if (existing) {
@@ -977,6 +1025,7 @@ export function PosOrderBuilder({
   };
 
   const openBuilderForOption = (option: DailyMealOption) => {
+    if (menuFromSnapshot) return; // O3: read-only offline copy.
     if (isAlwaysOnOption(option)) {
       addAlwaysOnOption(option);
       return;
@@ -1392,6 +1441,8 @@ export function PosOrderBuilder({
   );
 
   const loadTodayOrders = useCallback(async () => {
+    // O3: a server-only view; the panels say "Not available offline".
+    if (!isOnline) return;
     setTodayOrdersLoading(true);
     setTodayOrdersError(null);
     try {
@@ -1407,7 +1458,7 @@ export function PosOrderBuilder({
     } finally {
       setTodayOrdersLoading(false);
     }
-  }, [authFetch]);
+  }, [authFetch, isOnline]);
 
   const markPrintFailed = useCallback(
     async (orderId: number) => {
@@ -2395,13 +2446,15 @@ export function PosOrderBuilder({
             </button>
           </div>
 
-          {todayOrdersError && (
+          {todayOrdersError && isOnline && (
             <div className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">
               {todayOrdersError}
             </div>
           )}
 
-          {todayOrdersLoading ? (
+          {!isOnline ? (
+            <p className="text-sm text-slate-400">Not available offline.</p>
+          ) : todayOrdersLoading ? (
             <p className="text-sm text-slate-400">Loading today&apos;s orders...</p>
           ) : todayOrders.length === 0 ? (
             <p className="text-sm text-slate-400">No completed orders for today yet.</p>
@@ -2495,20 +2548,28 @@ export function PosOrderBuilder({
           </div>
         </div>
 
-        {menuStale && menuUpdatedAt && (
+        {menuFromSnapshot && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-sky-400/40 bg-sky-500/10 p-3 text-sm text-sky-100">
+            <Info className="h-4 w-4 shrink-0" />
+            Offline copy of today&apos;s menu{snapshotReceivedAt ? ` from ${formatHHMM(new Date(snapshotReceivedAt))}` : ""}. Read-only
+            until the connection is back.
+          </div>
+        )}
+
+        {menuStale && menuUpdatedAt && !menuFromSnapshot && (
           <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-200">
             <AlertCircle className="h-4 w-4 shrink-0" />
             Last updated {formatHHMM(menuUpdatedAt)}. Couldn&apos;t refresh the menu; stock shown may be out of date.
           </div>
         )}
 
-        {menuError && (
+        {menuError && !menuFromSnapshot && (
           <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
             {menuError}
           </div>
         )}
 
-        {isLoadingMenu ? (
+        {isLoadingMenu && !menuFromSnapshot ? (
           <p className="text-sm text-slate-400">Loading menu...</p>
         ) : periodOptions.length === 0 ? (
           <p className="text-sm text-slate-400">
@@ -2558,9 +2619,9 @@ export function PosOrderBuilder({
                   <button
                     key={option.id}
                     type="button"
-                    disabled={soldOut}
+                    disabled={soldOut || menuFromSnapshot}
                     onClick={() => openBuilderForOption(option)}
-                    className={`rounded-2xl border p-4 text-left transition ${stockStyle.card}`}
+                    className={`rounded-2xl border p-4 text-left transition ${stockStyle.card}${menuFromSnapshot ? " cursor-not-allowed opacity-70" : ""}`}
                   >
                     <p className="text-base font-semibold">{option.name}</p>
                     {option.description && (
@@ -2590,13 +2651,13 @@ export function PosOrderBuilder({
                     <button
                       key={option.id}
                       type="button"
-                      disabled={out}
+                      disabled={out || menuFromSnapshot}
                       onClick={() => addAlwaysOnOption(option)}
                       className={`rounded-2xl border p-4 text-left transition active:scale-[0.98] ${
                         out
                           ? "cursor-not-allowed border-slate-700 bg-slate-800/40 text-slate-500"
                           : "border-sky-400/40 bg-sky-500/10 text-slate-100 hover:border-sky-300/70 hover:bg-sky-500/20"
-                      }`}
+                      }${menuFromSnapshot ? " cursor-not-allowed opacity-70" : ""}`}
                     >
                       <p className="text-base font-semibold">{option.name}</p>
                       <div className="mt-4 flex items-end justify-between gap-2">
@@ -3431,13 +3492,15 @@ export function PosOrderBuilder({
               </div>
             </div>
 
-            {todayOrdersError && (
+            {todayOrdersError && isOnline && (
               <div className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">
                 {todayOrdersError}
               </div>
             )}
 
-            {todayOrdersLoading ? (
+            {!isOnline ? (
+              <p className="text-sm text-slate-400">Not available offline.</p>
+            ) : todayOrdersLoading ? (
               <p className="text-sm text-slate-400">Loading today&apos;s orders...</p>
             ) : todayOrders.length === 0 ? (
               <p className="text-sm text-slate-400">No completed orders for today yet.</p>

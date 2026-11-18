@@ -34,6 +34,7 @@ import {
 } from "@/lib/offline/db"
 import { GRANT_DELETING_CODES, grantNeedsRenewal, isGrantValid, requestGrant } from "@/lib/offline/grant-sync"
 import { serverNow } from "@/lib/offline/server-time"
+import { signedInUserId } from "@/lib/offline/signed-in-user"
 import { SNAPSHOT_REFRESH_MS, refreshSnapshot } from "@/lib/offline/snapshot-sync"
 import { fetchTillStatus, type TillStatus } from "@/lib/till"
 
@@ -54,13 +55,7 @@ export interface OfflineContextValue {
 
 const OfflineContext = createContext<OfflineContextValue | null>(null)
 
-// The signed-in person as a cashier id: PIN sign-ins carry cashierId; otherwise the numeric user id.
-export function signedInUserId(user: { id?: string; cashierId?: number } | null | undefined): number | null {
-  if (!user) return null
-  if (typeof user.cashierId === "number") return user.cashierId
-  const id = Number(user.id)
-  return Number.isInteger(id) && id > 0 ? id : null
-}
+export { signedInUserId }
 
 export function OfflineProvider({ children }: { children: ReactNode }) {
   const { authFetch, user, isAuthenticated } = useAuth()

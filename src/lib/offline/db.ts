@@ -6,6 +6,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb"
 import { parseGrant, parseSnapshot, type OfflineGrant, type OfflineSnapshot } from "@/lib/offline/contract"
 import { onServerTimeChange, serverTimeOffsetMs, setServerTimeOffset } from "@/lib/offline/server-time"
 import type { TillStatus } from "@/lib/till"
+import type { Shift } from "@/contexts/shift-context"
 
 export const OFFLINE_DB_NAME = "beacon-pos-offline"
 export const OFFLINE_DB_VERSION = 1
@@ -56,6 +57,8 @@ export interface MetaValues {
   clockSkewMs: number
   // The last till-status answer, for readiness after a reload while offline.
   tillStatus: TillStatus
+  // The last shift loaded online, restored after a reload while offline (only with a valid grant for it).
+  lastShift: Shift
 }
 
 export type MetaKey = keyof MetaValues

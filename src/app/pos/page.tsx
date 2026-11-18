@@ -14,6 +14,7 @@ import { messageForError } from "@/lib/net";
 import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ConnectionIndicator } from "@/components/pos/connection-indicator";
 import { OfflineBanner, OfflineReadyMarker } from "@/components/pos/offline-status";
+import { useConnection } from "@/contexts/connection-context";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
@@ -154,6 +155,8 @@ function PosMainContent() {
   // The cash-up and its manager PIN must finish before the till can lock (O2).
   useLockBlocker("cash-up", confirmOwnerClose || confirmClose || showPinOverlay || closeoutRecord !== null);
   const lockBusy = useLockBusy();
+  // O3: the reading and the cash-up need the server.
+  const { isOnline } = useConnection();
   const [locking, setLocking] = useState(false);
 
   // Lock till: for breaks. The shift stays open and the cart is kept for this person (order-builder).
@@ -706,7 +709,9 @@ function PosMainContent() {
             <button
               type="button"
               onClick={() => setReadingShiftId(shift.id)}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700"
+              disabled={!isOnline}
+              title={isOnline ? undefined : "Not available offline"}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <FileText className="h-3.5 w-3.5" />
               Reading
@@ -725,8 +730,14 @@ function PosMainContent() {
           <button
             type="button"
             onClick={requestCloseShift}
-            disabled={lockBusy}
-            title={lockBusy ? "Finish the payment, sale or dialog first." : "Close the shift and count the drawer."}
+            disabled={lockBusy || !isOnline}
+            title={
+              !isOnline
+                ? "Not available offline"
+                : lockBusy
+                  ? "Finish the payment, sale or dialog first."
+                  : "Close the shift and count the drawer."
+            }
             className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 active:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <LogOut className="h-3.5 w-3.5" />
