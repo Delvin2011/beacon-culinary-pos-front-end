@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useRef } from "react"
 import { useConnection } from "@/contexts/connection-context"
 import { deleteMeta, getMeta, setMeta } from "@/lib/offline/db"
-import { HEARTBEAT_INTERVAL_MS, buildStatusReport, sendStatusReport } from "@/lib/offline/heartbeat"
+import { HEARTBEAT_INTERVAL_MS, buildStatusReport, onStatusReportRequested, sendStatusReport } from "@/lib/offline/heartbeat"
+import { listOutbox, pendingSummary } from "@/lib/offline/outbox"
 import { recordServerTime, serverNow } from "@/lib/offline/server-time"
 import { fetchTillStatus } from "@/lib/till"
 
@@ -36,16 +37,22 @@ export function OfflineHeartbeat() {
   onlineRef.current = isOnline
   const stoppedRef = useRef<Promise<boolean> | null>(null)
   const sendingRef = useRef(false)
+  // O4: a report asked for while one is out: one more goes straight after, so the latest counts always reach the server.
+  const againRef = useRef(false)
 
-  const send = useCallback(async () => {
-    if (sendingRef.current) return
+  const send = useCallback(async (): Promise<void> => {
+    if (sendingRef.current) {
+      againRef.current = true
+      return
+    }
     sendingRef.current = true
     try {
       stoppedRef.current ??= loadStopped()
       if (await stoppedRef.current) return
 
-      const offlineSince = await getMeta("offlineSince")
-      const result = await sendStatusReport(API_BASE, buildStatusReport({ offlineSince }))
+      // O4: the outbox's waiting sales and the last sync.
+      const [offlineSince, entries, lastSyncAt] = await Promise.all([getMeta("offlineSince"), listOutbox(), getMeta("lastSyncAt")])
+      const result = await sendStatusReport(API_BASE, buildStatusReport({ offlineSince, pending: pendingSummary(entries), lastSyncAt }))
       if (result.kind === "not-registered") {
         stoppedRef.current = Promise.resolve(true)
         await setMeta("heartbeatStopped", true)
@@ -64,7 +71,16 @@ export function OfflineHeartbeat() {
     } finally {
       sendingRef.current = false
     }
+    if (againRef.current) {
+      againRef.current = false
+      if (onlineRef.current) await send()
+    }
   }, [])
+
+  // O4: sync asks for a report straight after each batch.
+  useEffect(() => onStatusReportRequested(() => {
+    if (onlineRef.current) void send()
+  }), [send])
 
   useEffect(() => {
     if (!isOnline) {

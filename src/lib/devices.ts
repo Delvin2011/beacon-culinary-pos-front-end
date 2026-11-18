@@ -3,7 +3,7 @@
 // edit, rename and revoke also need a password sign-in within 30 minutes (403 REAUTH_REQUIRED otherwise).
 
 import { readApiError, type ApiError } from "@/lib/api-error"
-import { deleteMeta } from "@/lib/offline/db"
+import { deleteMeta, getMeta } from "@/lib/offline/db"
 
 type AuthFetch = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -143,6 +143,8 @@ export async function registerDevice(authFetch: AuthFetch, input: RegisterDevice
   const device = await call<Device>(authFetch, "/admin/devices", jsonBody("POST", body), "Unable to register this till.")
   // O3: a heartbeat stopped by DEVICE_NOT_REGISTERED starts again now this browser has a till cookie.
   void deleteMeta("heartbeatStopped")
+  // O4: so does a sales sync stopped by it.
+  void getMeta("syncStopped").then((stopped) => (stopped?.reason === "DEVICE_NOT_REGISTERED" ? deleteMeta("syncStopped") : undefined))
   return device
 }
 

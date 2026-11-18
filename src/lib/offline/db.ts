@@ -5,6 +5,7 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb"
 import { parseGrant, parseSnapshot, type OfflineGrant, type OfflineSnapshot } from "@/lib/offline/contract"
 import type { OutboxEntry } from "@/lib/offline/outbox"
+import type { SyncStopReason } from "@/lib/offline/sales-sync"
 import { onServerTimeChange, serverTimeOffsetMs, setServerTimeOffset } from "@/lib/offline/server-time"
 import type { TillStatus } from "@/lib/till"
 import type { Shift } from "@/contexts/shift-context"
@@ -65,6 +66,10 @@ export interface MetaValues {
   lastShift: Shift
   // PBKDF2 iterations for the offline unlock, measured once on this till (about 0.4 s per check).
   unlockIterations: number
+  // O4: when the last sales batch was answered (server time).
+  lastSyncAt: string
+  // O4: sales sync stopped by a whole-batch refusal; see offline-sync.tsx for when it resumes.
+  syncStopped: { reason: SyncStopReason; at: string; appVersion: string }
 }
 
 export type MetaKey = keyof MetaValues

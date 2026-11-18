@@ -4,6 +4,7 @@ import { AutoLock } from "@/components/pos/auto-lock";
 import { OfflineHeartbeat } from "@/components/pos/offline-heartbeat";
 import { OfflineProvider } from "@/contexts/offline-context";
 import { OutboxProvider } from "@/contexts/outbox-context";
+import { OfflineSync } from "@/components/pos/offline-sync";
 import { ServiceWorker } from "@/components/pos/service-worker";
 
 export default function PosLayout({ children }: { children: React.ReactNode }) {
@@ -15,6 +16,8 @@ export default function PosLayout({ children }: { children: React.ReactNode }) {
       <OfflineHeartbeat />
       {/* O4: the offline sales waiting to send, on every POS screen (sign-in included: sync needs only the cookie). */}
       <OutboxProvider>
+        {/* O4: sends the offline sales whenever online (till cookie only), with its progress and alerts. */}
+        <OfflineSync />
         <ShiftProvider>
           {/* O3: offline grant, snapshot and the deletion rules. Needs the session and the shift. */}
           <OfflineProvider>{children}</OfflineProvider>
