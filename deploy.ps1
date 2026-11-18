@@ -45,3 +45,7 @@ az webapp deploy --resource-group $RG --name $APP --src-path .\frontend.zip --ty
 # 5. Verify
 $resp = Invoke-WebRequest -Uri "https://$APP.azurewebsites.net/" -UseBasicParsing -TimeoutSec 30
 Write-Output "Status: $($resp.StatusCode)"
+
+# O3: the POS service worker must be there and never cached long (an old worker would keep an old POS).
+$sw = Invoke-WebRequest -Uri "https://$APP.azurewebsites.net/sw.js" -UseBasicParsing -TimeoutSec 30
+Write-Output "sw.js: $($sw.StatusCode), Cache-Control: $($sw.Headers['Cache-Control'])"

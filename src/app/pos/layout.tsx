@@ -3,10 +3,13 @@ import { ConnectionProvider } from "@/contexts/connection-context";
 import { AutoLock } from "@/components/pos/auto-lock";
 import { OfflineHeartbeat } from "@/components/pos/offline-heartbeat";
 import { OfflineProvider } from "@/contexts/offline-context";
+import { ServiceWorker } from "@/components/pos/service-worker";
 
 export default function PosLayout({ children }: { children: React.ReactNode }) {
   return (
     <ConnectionProvider>
+      {/* O3: the POS shell offline (production builds only). Updates activate on the sign-in screen. */}
+      <ServiceWorker />
       {/* O3: every POS screen, signed in or not, whatever offlineEnabled says. Needs only the till cookie. */}
       <OfflineHeartbeat />
       <ShiftProvider>
