@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Printer } from "lucide-react"
 import { ReceiptView } from "@/components/receipts/receipt-view"
+import { OfflineOrderMarks } from "@/components/orders/offline-order-marks"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useAuth } from "@/hooks/use-auth"
@@ -48,6 +49,7 @@ export function ReceiptReprintDialog({ receipt, onClose }: { receipt: ReceiptPay
               Receipt reprint{receipt?.reprint ? ` · COPY ${receipt.reprint.copyNumber}` : ""}
             </DialogTitle>
             <DialogDescription>Order #{receipt?.orderNumber}. Reprinting doesn&apos;t change the order.</DialogDescription>
+            {receipt && <OfflineOrderMarks order={receipt} />}
           </DialogHeader>
           {receipt && <div className="flex justify-center rounded-md border bg-white p-3 text-black">{slip}</div>}
           <DialogFooter className="gap-2 sm:gap-0">

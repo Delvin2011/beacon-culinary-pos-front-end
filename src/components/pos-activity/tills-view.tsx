@@ -9,8 +9,8 @@ import { RefreshCw } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { Button } from "@/components/ui/button"
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { formatJhbDateTime } from "@/lib/pos-activity"
-import { listAdminTills, type AdminTillRow } from "@/lib/tills-admin"
+import { formatJhbDateTime, formatJhbTime } from "@/lib/pos-activity"
+import { CLOCK_SKEW_WARN_MS, listAdminTills, type AdminTillOffline, type AdminTillRow } from "@/lib/tills-admin"
 import { tillLabel } from "@/lib/till"
 
 const POLL_INTERVAL_MS = 30_000
@@ -25,6 +25,66 @@ function LockState({ row }: { row: AdminTillRow }) {
   }
   // The unregistered till has no lock state.
   return <span className="text-muted-foreground">Shift open</span>
+}
+
+// O3 (offline contract 10.2): the till's latest status report. UNKNOWN: silent for longer than the server's limit
+// (10 minutes); its last report still counts.
+const chip = "rounded-full border px-2 py-0.5 text-xs font-medium"
+const CHIP_STYLES = {
+  ok: `${chip} border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-200`,
+  pending: `${chip} border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200`,
+  unknown: `${chip} border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-700 dark:bg-rose-950 dark:text-rose-200`,
+}
+
+function formatSkew(ms: number): string {
+  const minutes = Math.round(Math.abs(ms) / 60_000)
+  return `Clock ${ms > 0 ? "+" : "−"}${minutes} min`
+}
+
+export function OfflineCell({ offline, deviceId = null }: { offline: AdminTillOffline | null; deviceId?: string | null }) {
+  if (!offline) return <span className="text-muted-foreground">—</span>
+  const at = offline.lastReportAt ? formatJhbTime(offline.lastReportAt) : null
+  const pending = offline.pendingCount ?? 0
+  let main: JSX.Element
+  switch (offline.state) {
+    case "OK":
+      main = <span className={CHIP_STYLES.ok}>OK{at ? ` · ${at}` : ""}</span>
+      break
+    case "PENDING":
+      main = (
+        <span className={CHIP_STYLES.pending}>
+          {pending} unsynced{at ? ` · ${at}` : ""}
+        </span>
+      )
+      break
+    case "UNKNOWN":
+      main = (
+        <span className={CHIP_STYLES.unknown}>
+          Not heard since {at ?? "—"}
+          {pending > 0 ? ` · ${pending} unsynced` : ""}
+        </span>
+      )
+      break
+    default:
+      main = <span className="text-muted-foreground">No report yet</span>
+  }
+  const skew = offline.clockSkewMs
+  return (
+    <div className="flex flex-col items-start gap-1">
+      {main}
+      {(offline.openExceptions ?? 0) > 0 && (
+        <a
+          href={`/sale-exceptions${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`}
+          className="text-xs font-medium text-amber-700 underline dark:text-amber-300"
+        >
+          {offline.openExceptions} to review
+        </a>
+      )}
+      {skew !== null && Math.abs(skew) > CLOCK_SKEW_WARN_MS && (
+        <span className="text-xs font-medium text-rose-700 dark:text-rose-300">{formatSkew(skew)}</span>
+      )}
+    </div>
+  )
 }
 
 interface TillsViewProps {
@@ -89,13 +149,14 @@ export function TillsView({ reloadKey, onForceClose, onActivity }: TillsViewProp
                 <TableHead>Cashier</TableHead>
                 <TableHead>Opened</TableHead>
                 <TableHead>State</TableHead>
+                <TableHead>Offline</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
+                  <TableCell colSpan={6} className="py-6 text-center text-muted-foreground">
                     No tills registered.
                   </TableCell>
                 </TableRow>
@@ -107,6 +168,9 @@ export function TillsView({ reloadKey, onForceClose, onActivity }: TillsViewProp
                     <TableCell className="whitespace-nowrap">{row.shift ? formatJhbDateTime(row.shift.openedAt) : "—"}</TableCell>
                     <TableCell>
                       <LockState row={row} />
+                    </TableCell>
+                    <TableCell>
+                      <OfflineCell offline={row.offline ?? null} deviceId={row.deviceId} />
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap justify-end gap-1.5">

@@ -13,18 +13,26 @@ import { AdminAuthorizationOverlay } from "@/components/pos/admin-authorization-
 import { messageForError } from "@/lib/net";
 import { ShiftReadingDialog } from "@/components/pos/shift-reading-dialog";
 import { ConnectionIndicator } from "@/components/pos/connection-indicator";
+import { OfflineBanner, OfflineReadyMarker } from "@/components/pos/offline-status";
+import { useConnection } from "@/contexts/connection-context";
 import { ManagementSessionProvider } from "@/contexts/management-session-context";
 import { formatZarCurrency } from "@/lib/utils";
 import { isAdminRole } from "@/lib/roles";
 import { PIN_FORMAT_MESSAGE, PIN_PATTERN, isPinFormatError } from "@/lib/pin";
 import { readLoginBlock } from "@/lib/login-protection";
-import { errorCode } from "@/lib/api-error";
+import { detailNumber, errorCode, readApiError } from "@/lib/api-error";
+import { OfflineErrorCode, offlineSalesPendingMessage } from "@/lib/offline/contract";
+import { useOutbox } from "@/contexts/outbox-context";
+import { waitingForShift } from "@/lib/offline/outbox";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { useLockBlocker, useLockBusy } from "@/lib/lock-guard";
 import { UNREGISTERED_TILL, tillLabel } from "@/lib/till";
 import { moneyOrDash } from "@/lib/money";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
+
+// O3 (offline contract 10.4): shift close refused with OFFLINE_SALES_PENDING. Its message is safe to show.
+class OfflineSalesPendingError extends Error {}
 
 type ShiftSummaryDto = {
   shiftId?: number;
@@ -153,6 +161,13 @@ function PosMainContent() {
   // The cash-up and its manager PIN must finish before the till can lock (O2).
   useLockBlocker("cash-up", confirmOwnerClose || confirmClose || showPinOverlay || closeoutRecord !== null);
   const lockBusy = useLockBusy();
+  // O4: this shift's offline sales still waiting (unsent, or kept for support): End shift waits for them. The
+  // server's 409 OFFLINE_SALES_PENDING is still handled. A manager can force-close in POS Activity.
+  const { entries: outboxEntries } = useOutbox();
+  const waitingOfflineSales = shift ? waitingForShift(outboxEntries, shift.id) : 0;
+  const waitingOfflineText = `${waitingOfflineSales} offline sale${waitingOfflineSales === 1 ? "" : "s"} still to send`;
+  // O3: the reading and the cash-up need the server.
+  const { isOnline } = useConnection();
   const [locking, setLocking] = useState(false);
 
   // Lock till: for breaks. The shift stays open and the cart is kept for this person (order-builder).
@@ -321,7 +336,14 @@ function PosMainContent() {
       body: JSON.stringify(payload),
     });
 
+    // Before the body is read: readApiError reads its own copy.
+    const { code, details } = await readApiError(res);
     const body = (await res.json().catch(() => null)) as ShiftCloseResponse | Record<string, unknown> | null;
+
+    // O3 (offline contract 10.4): the till still holds unsynced sales for this shift. The count comes from details.
+    if (res.status === 409 && code === OfflineErrorCode.OFFLINE_SALES_PENDING) {
+      throw new OfflineSalesPendingError(offlineSalesPendingMessage(detailNumber(details, "pendingCount")));
+    }
 
     if (res.status === 401) {
       const error = new Error("Session expired or unauthorized. Please log in again.");
@@ -350,6 +372,12 @@ function PosMainContent() {
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
       const message = messageForError(err, "Failed to close shift.");
+
+      // O3: not "already closed": the shift stays open until the till's sales are synced.
+      if (err instanceof OfflineSalesPendingError) {
+        setCloseError(err.message);
+        return;
+      }
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {
@@ -501,6 +529,13 @@ function PosMainContent() {
     } catch (err) {
       const status = (err as Error & { status?: number }).status;
       const message = messageForError(err, "Failed to close shift.");
+
+      // O3: not "already closed" and not a PIN problem: the shift stays open until the till's sales are synced.
+      if (err instanceof OfflineSalesPendingError) {
+        setShowPinOverlay(false);
+        setCloseError(err.message);
+        return;
+      }
 
       // Sign out on the HTTP status only, never on message text.
       if (status === 401) {
@@ -677,6 +712,7 @@ function PosMainContent() {
 
         <div className="flex items-center gap-3">
           <ConnectionIndicator />
+          <OfflineReadyMarker />
           {isManagementActive && (
             <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-500/10 px-3 py-1 text-xs font-semibold text-amber-200">
               <ShieldCheck className="h-3.5 w-3.5" />
@@ -704,7 +740,9 @@ function PosMainContent() {
             <button
               type="button"
               onClick={() => setReadingShiftId(shift.id)}
-              className="flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700"
+              disabled={!isOnline}
+              title={isOnline ? undefined : "Not available offline"}
+              className="flex items-center gap-1.5 rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <FileText className="h-3.5 w-3.5" />
               Reading
@@ -720,11 +758,22 @@ function PosMainContent() {
             <Lock className="h-3.5 w-3.5" />
             Lock till
           </button>
+          {waitingOfflineSales > 0 && isOnline && (
+            <span className="text-xs font-medium text-amber-300">{waitingOfflineText}</span>
+          )}
           <button
             type="button"
             onClick={requestCloseShift}
-            disabled={lockBusy}
-            title={lockBusy ? "Finish the payment, sale or dialog first." : "Close the shift and count the drawer."}
+            disabled={lockBusy || !isOnline || waitingOfflineSales > 0}
+            title={
+              !isOnline
+                ? "Not available offline"
+                : waitingOfflineSales > 0
+                  ? waitingOfflineText
+                  : lockBusy
+                  ? "Finish the payment, sale or dialog first."
+                  : "Close the shift and count the drawer."
+            }
             className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-400 transition-colors hover:bg-rose-500/20 active:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <LogOut className="h-3.5 w-3.5" />
@@ -732,6 +781,9 @@ function PosMainContent() {
           </button>
         </div>
       </header>
+
+      {/* O3: offline mode and its elapsed time, or why this till can't sell offline. Nothing when offline is off. */}
+      <OfflineBanner />
 
       {shiftError && shift && (
         <div className="flex items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-6 py-2 text-sm text-amber-100">

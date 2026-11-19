@@ -13,6 +13,7 @@ import {
   type OfflineReason,
 } from "@/lib/connection-signals";
 import { HEALTH_TIMEOUT_MS, fetchWithTimeout } from "@/lib/net";
+import { recordServerTime } from "@/lib/offline/server-time";
 
 export const OFFLINE_AFTER = 3; // consecutive failures before going offline
 export const ONLINE_AFTER = 2; // consecutive successes before coming back online
@@ -73,6 +74,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       const res = await fetchWithTimeout(url, { cache: "no-store", credentials: "omit" }, HEALTH_TIMEOUT_MS);
       const signal = signalForHealth(res.status);
       if (signal) apply(signal, false);
+      // O3: the server's clock, for "today" and grant expiry. Never decides online or offline.
+      if (res.status === 200 || res.status === 503) {
+        const body = (await res.clone().json().catch(() => null)) as { serverTimeUtc?: unknown } | null;
+        if (typeof body?.serverTimeUtc === "string") recordServerTime(body.serverTimeUtc);
+      }
     } catch (err) {
       const signal = signalForError(err);
       if (signal) apply(signal, false);

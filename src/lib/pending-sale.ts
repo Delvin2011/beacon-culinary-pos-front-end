@@ -21,6 +21,21 @@ export type PendingSaleSummary = {
 
 export type PendingSaleOwner = { key: string; name: string | null };
 
+// O4 (H): what the till needs to record this sale offline if its outcome is still unknown when the till goes offline:
+// the priced lines and payments as charged, and the server-corrected confirm time (its soldAt). Not stored for a
+// complimentary or discounted sale (offline sales carry neither): those stay pending until the connection is back.
+export type OfflineDraft = {
+  lines: Array<{
+    dailyMealOptionId: number;
+    name: string;
+    unitPrice: number;
+    quantity: number;
+    extras: Array<{ dailyComponentStockId: number; name: string; extraPrice: number; quantity: number }>;
+  }>;
+  payments: Array<{ method: "CASH" | "CARD" | "ACCOUNT"; amount: number; amountTendered?: number; accountId?: number }>;
+  confirmedAt: string;
+};
+
 export type PendingSale = {
   clientOrderId: string;
   kind: PendingSaleKind;
@@ -31,6 +46,8 @@ export type PendingSale = {
   createdAt: string;
   // A 409 IDEMPOTENCY_CONFLICT: never retried; kept for a supervisor.
   conflict: boolean;
+  // O4 (H): set only for a plain sale with offline on.
+  offlineDraft?: OfflineDraft | null;
 };
 
 type PendingSaleStore = {
@@ -114,6 +131,7 @@ export function createPendingSale(
   body: Record<string, unknown>,
   summary: PendingSaleSummary,
   owner: PendingSaleOwner,
+  offlineDraft: OfflineDraft | null = null,
 ): PendingSale {
   const clientOrderId = newRequestId();
   const frozen = JSON.parse(JSON.stringify(body)) as Record<string, unknown>;
@@ -125,6 +143,7 @@ export function createPendingSale(
     owner,
     createdAt: new Date().toISOString(),
     conflict: false,
+    offlineDraft,
   };
 }
 

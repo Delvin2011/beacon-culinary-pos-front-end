@@ -84,9 +84,17 @@ export interface TillStatus {
   shift: TillStatusShift | null
   idleLockMinutes: number
   requireRegistered: boolean
+  // O3 (contract 10.1). The master switch for offline; false from a pre-O3 server.
+  offlineEnabled: boolean
+  maxOfflineHours: number
+  warnOfflineHours: number
 }
 
 export const DEFAULT_IDLE_LOCK_MINUTES = 5
+export const DEFAULT_MAX_OFFLINE_HOURS = 6
+export const DEFAULT_WARN_OFFLINE_HOURS = 5
+
+const positiveOr = (value: unknown, fallback: number) => (typeof value === "number" && value > 0 ? value : fallback)
 
 // Public: credentials send the deviceToken cookie. Throws on no answer or a non-2xx.
 export async function fetchTillStatus(apiBase: string): Promise<TillStatus> {
@@ -99,9 +107,11 @@ export async function fetchTillStatus(apiBase: string): Promise<TillStatus> {
     tillCode: typeof body.tillCode === "string" ? body.tillCode : null,
     tillName: typeof body.tillName === "string" ? body.tillName : null,
     shift: body.shift && typeof body.shift.shiftId === "number" ? body.shift : null,
-    idleLockMinutes:
-      typeof body.idleLockMinutes === "number" && body.idleLockMinutes > 0 ? body.idleLockMinutes : DEFAULT_IDLE_LOCK_MINUTES,
+    idleLockMinutes: positiveOr(body.idleLockMinutes, DEFAULT_IDLE_LOCK_MINUTES),
     requireRegistered: body.requireRegistered === true,
+    offlineEnabled: body.offlineEnabled === true,
+    maxOfflineHours: positiveOr(body.maxOfflineHours, DEFAULT_MAX_OFFLINE_HOURS),
+    warnOfflineHours: positiveOr(body.warnOfflineHours, DEFAULT_WARN_OFFLINE_HOURS),
   }
 }
 

@@ -1,6 +1,7 @@
 // What a printed receipt or kitchen ticket needs from an order (O2b contract 1, 3–7). The server's OrderDto fits it
-// as is: the 201, the O1 replay, GET /orders/{id} and the admin reprint. O4 will build one locally, so the
-// server-made values (orderNumber, receiptNumber, VAT) may be missing. Never build any of them here.
+// as is: the 201, the O1 replay, GET /orders/{id} and the admin reprint. O4 builds one locally for an offline sale
+// (offline-receipt.ts): it has the till's receipt and collection numbers and the local VAT, but no orderNumber.
+// Never build any of them here.
 
 import type { OrderComplimentary } from "@/lib/complimentary"
 
@@ -62,6 +63,26 @@ export interface ReceiptOrder {
   complimentary?: OrderComplimentary | null
   // Admin reprints only (POST /admin/orders/{id}/reprint-receipt).
   reprint?: ReceiptReprint | null
+  // O4: the till's collection number ("T1-7"), on an offline sale and on an online sale that took a slip's numbers
+  // through sync (DUPLICATE). Printed as the large number instead of orderNumber.
+  collectionNumber?: string | null
+  // O4: when an offline sale was made (UTC, with Z); null for online sales (createdAt is the time).
+  soldAt?: string | null
+  // O4: a sale made offline (the server's recordedOffline, or a local one).
+  recordedOffline?: boolean
+  // O4 (H): an online sale stuck in "Checking the sale…", printed as an offline sale.
+  wasPendingOnline?: boolean
+}
+
+// O4: the time to print: an offline sale's soldAt, else createdAt.
+export function receiptTime(order: ReceiptOrder): string | null {
+  return order.soldAt ?? order.createdAt ?? null
+}
+
+// O4: the large number: the collection number when there is one (what the customer holds), else orderNumber.
+export function largeNumber(order: ReceiptOrder): { label: "Collection" | "Order"; value: string } | null {
+  if (order.collectionNumber) return { label: "Collection", value: order.collectionNumber }
+  return typeof order.orderNumber === "number" ? { label: "Order", value: String(order.orderNumber) } : null
 }
 
 // "COPY n" on an admin reprint, "COPY" on a local reprint from the completion screen, nothing on the original.

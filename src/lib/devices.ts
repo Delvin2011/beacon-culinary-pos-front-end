@@ -3,6 +3,7 @@
 // edit, rename and revoke also need a password sign-in within 30 minutes (403 REAUTH_REQUIRED otherwise).
 
 import { readApiError, type ApiError } from "@/lib/api-error"
+import { deleteMeta, getMeta } from "@/lib/offline/db"
 
 type AuthFetch = (path: string, init?: RequestInit) => Promise<Response>
 
@@ -132,14 +133,19 @@ export interface RegisterDeviceInput {
 }
 
 // Registers the browser making the request (the server sets its deviceToken cookie). 201 with the till.
-export function registerDevice(authFetch: AuthFetch, input: RegisterDeviceInput): Promise<Device> {
+export async function registerDevice(authFetch: AuthFetch, input: RegisterDeviceInput): Promise<Device> {
   const body: Record<string, unknown> = {
     name: input.name.trim(),
     serialNumber: optional(input.serialNumber),
     assetTag: optional(input.assetTag),
   }
   if (input.joinDeviceId) body.joinDeviceId = input.joinDeviceId
-  return call(authFetch, "/admin/devices", jsonBody("POST", body), "Unable to register this till.")
+  const device = await call<Device>(authFetch, "/admin/devices", jsonBody("POST", body), "Unable to register this till.")
+  // O3: a heartbeat stopped by DEVICE_NOT_REGISTERED starts again now this browser has a till cookie.
+  void deleteMeta("heartbeatStopped")
+  // O4: so does a sales sync stopped by it.
+  void getMeta("syncStopped").then((stopped) => (stopped?.reason === "DEVICE_NOT_REGISTERED" ? deleteMeta("syncStopped") : undefined))
+  return device
 }
 
 export interface EditDeviceInput {

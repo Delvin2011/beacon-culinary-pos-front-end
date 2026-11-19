@@ -29,6 +29,8 @@ export function NavMain({
     items?: {
       title: string
       url: string
+      // O4: a count shown after the title (e.g. open sale exceptions); hidden when 0 or unknown.
+      badge?: number | null
     }[]
   }[]
 }) {
@@ -58,6 +60,14 @@ export function NavMain({
                       <SidebarMenuSubButton asChild>
                         <a href={subItem.url}>
                           <span>{subItem.title}</span>
+                          {typeof subItem.badge === "number" && subItem.badge > 0 && (
+                            <span
+                              aria-label={`${subItem.badge} open`}
+                              className="ml-auto rounded-full bg-rose-500 px-1.5 text-[10px] font-bold leading-4 text-white"
+                            >
+                              {subItem.badge}
+                            </span>
+                          )}
                         </a>
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>

@@ -16,7 +16,7 @@ import { messageForError, parseRetryAfter } from "@/lib/net";
 import { useConnection } from "@/contexts/connection-context";
 import { usePendingSale } from "@/hooks/use-pending-sale";
 import { PendingSaleOverlay } from "@/components/pos/pending-sale-overlay";
-import { newRequestId, ownerKey, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
+import { newRequestId, ownerKey, type OfflineDraft, type PendingSale, type SaleSendOutcome } from "@/lib/pending-sale";
 import { useLockBlocker } from "@/lib/lock-guard";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { TillErrorCode } from "@/lib/till";
@@ -24,7 +24,20 @@ import { isAdminRole } from "@/lib/roles";
 import { onSessionEnding } from "@/lib/session-events";
 import { clearPendingCart, loadPendingCart, savePendingCart, type PendingCart } from "@/lib/pending-cart";
 import { useSalePrinting } from "@/hooks/use-sale-printing";
-import { hasKitchenLines } from "@/lib/receipt";
+import { hasKitchenLines, type ReceiptOrder } from "@/lib/receipt";
+import { useOffline } from "@/contexts/offline-context";
+import { serverNow, serverToday } from "@/lib/offline/server-time";
+import { snapshotBeverages, snapshotMenuForPeriod, snapshotPeriods } from "@/lib/offline/snapshot-menu";
+import { useOfflineCheckout } from "@/hooks/use-offline-checkout";
+import { OfflineSaleComplete } from "@/components/pos/offline-sale-complete";
+import { OfflineOrdersList } from "@/components/pos/offline-orders-list";
+import { OfflineOrderMarks } from "@/components/orders/offline-order-marks";
+import { useOutbox } from "@/contexts/outbox-context";
+import { CARD_REFERENCE_MAX_LENGTH } from "@/lib/offline/offline-sale";
+
+// O4: an extra the snapshot doesn't count (bufferRemaining null) has no limit offline.
+const UNLIMITED = Number.MAX_SAFE_INTEGER;
+const NOT_AVAILABLE_OFFLINE = "Not available offline";
 
 // Voids and refunds: waits before each resend of the same request (network error, timeout, 5xx, 429).
 const ADJUSTMENT_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -226,6 +239,11 @@ type OrderDto = {
   payments?: OrderPaymentDto[];
   // Kitchen first, then Bar; [] for a cold-drinks-only order.
   stations?: OrderStation[];
+  // O4 (contract 7): a sale recorded through sync, its till numbers, when it was sold, and a late booking.
+  recordedOffline?: boolean;
+  soldAt?: string | null;
+  collectionNumber?: string | null;
+  bookedTradingDay?: string | null;
 };
 
 type AccountDto = {
@@ -242,6 +260,8 @@ type DraftPaymentEntry = {
   amount: number;
   amountTendered?: number;
   accountId?: number;
+  // O4: the card slip reference, required offline (D8). Never sent online.
+  cardReference?: string;
 };
 
 type OrderLineDto = {
@@ -484,6 +504,28 @@ export function PosOrderBuilder({
   const [beveragesTab, setBeveragesTab] = useState(false);
   const [beverageOptions, setBeverageOptions] = useState<DailyMealOption[]>([]);
 
+  // O3: today's snapshot (offline on), and whether the tiles come from it. Read-only in O3: selling offline is O4.
+  const { snapshot, snapshotReceivedAt, tillStatus } = useOffline();
+  const todaySnapshot = tillStatus?.offlineEnabled && snapshot?.tradingDay === serverToday() ? snapshot : null;
+  // A live load failed with nothing live on screen (e.g. a reload while offline): the tiles then come from today's
+  // snapshot, derived at render so a period switch or a failed background refresh can't empty or mix them up.
+  const [liveMenuFailed, setLiveMenuFailed] = useState(false);
+  // O4: selling from the snapshot while offline and allowed (readiness holds, no stop). Otherwise the copy stays
+  // read-only (O3). offlineActive: offline with offline on; online-only actions say so.
+  const offlineCheckout = useOfflineCheckout();
+  // O4 task 8: Today's Orders offline lists this till's offline sales.
+  const { entries: outboxEntries } = useOutbox();
+  // O4: offline and allowed to sell: the snapshot's tiles, even over a live menu loaded earlier (going offline
+  // mid-shift). Back online, the live menu again. O3's rule stands online: a live menu is never replaced.
+  const sellingOffline = !isOnline && todaySnapshot !== null && offlineCheckout.selling.kind === "selling";
+  const menuFromSnapshot = (liveMenuFailed && todaySnapshot !== null) || sellingOffline;
+  const readOnlyCopy = menuFromSnapshot && !sellingOffline;
+  const offlineActive = !isOnline && todaySnapshot !== null;
+  const [offlineSale, setOfflineSale] = useState<{ order: ReceiptOrder; clientOrderId: string } | null>(null);
+  const [offlineSaving, setOfflineSaving] = useState(false);
+  const [cardReferenceInput, setCardReferenceInput] = useState("");
+  const periodsFromSnapshotRef = useRef(false);
+
   const [selectedOption, setSelectedOption] = useState<DailyMealOption | null>(null);
   const [lineQty, setLineQty] = useState(1);
   const [selectedExtraQty, setSelectedExtraQty] = useState<Record<number, number>>({});
@@ -528,6 +570,7 @@ export function PosOrderBuilder({
           <p className="font-semibold text-slate-100">
             #{order.orderNumber}
             {complimentary && renderComplimentaryBadge()}
+            <OfflineOrderMarks order={order} className="ml-2 align-middle" />
           </p>
           {complimentary ? (
             <p className="text-right text-sm font-medium text-slate-200">
@@ -539,7 +582,8 @@ export function PosOrderBuilder({
         </div>
         <p className="mt-1 text-xs text-slate-400">
           {complimentary ? `${toMoney(0)} paid · ` : ""}
-          {order.createdAt ? new Date(order.createdAt).toLocaleTimeString() : "Time unavailable"}
+          {/* O4: an offline sale's time is when it was sold. */}
+          {order.soldAt ?? order.createdAt ? new Date((order.soldAt ?? order.createdAt)!).toLocaleTimeString() : "Time unavailable"}
           {typeof order.printFailed === "boolean" ? ` · Print failed: ${order.printFailed ? "Yes" : "No"}` : ""}
           {renderRungBy(order)}
         </p>
@@ -615,7 +659,7 @@ export function PosOrderBuilder({
     },
   });
   // A sale is out and its outcome is unknown: nothing on the till may change it or start another.
-  const isSubmitting = pendingSale.pending !== null;
+  const isSubmitting = pendingSale.pending !== null || offlineSaving;
 
   // A payment on screen, or a sale being sent or not yet confirmed (O1): the till can't lock or end the shift.
   useLockBlocker("payment", showPayment);
@@ -649,7 +693,12 @@ export function PosOrderBuilder({
   }, [userKey]);
 
   // O2b printing: the receipt, then the kitchen ticket, after each sale; local copies from the completion screen.
-  const salePrinting = useSalePrinting({ authFetch, owner: userKey, knownAccounts: checkoutAccounts });
+  const salePrinting = useSalePrinting({
+    authFetch,
+    owner: userKey,
+    knownAccounts: sellingOffline ? offlineCheckout.accounts : checkoutAccounts,
+    fallbackSettings: todaySnapshot?.receiptSettings ?? null,
+  });
   // The sale just finished on this screen: only it gets the "print again" buttons, until the next sale starts.
   const [justSoldOrderId, setJustSoldOrderId] = useState<number | null>(null);
   // Discount at checkout: the draft being edited, and the one a manager approved.
@@ -701,6 +750,7 @@ export function PosOrderBuilder({
     }
 
     setPeriods(payload);
+    periodsFromSnapshotRef.current = false;
 
     if (payload.length === 0) {
       setSelectedPeriodId(null);
@@ -732,6 +782,7 @@ export function PosOrderBuilder({
         menuPeriodRef.current = periodName.toUpperCase();
         setMenuUpdatedAt(new Date());
         setMenuStale(false);
+        setLiveMenuFailed(false);
       } catch (err) {
         if (menuPeriodRef.current === periodName.toUpperCase()) {
           // Keep what's on screen; the server still refuses anything that has sold out.
@@ -740,6 +791,7 @@ export function PosOrderBuilder({
           menuPeriodRef.current = null;
           setMenu({ options: [], availableExtras: [] });
           setMenuError(messageForError(err, "Unable to load today's menu."));
+          setLiveMenuFailed(true);
         }
       } finally {
         setIsLoadingMenu(false);
@@ -764,12 +816,14 @@ export function PosOrderBuilder({
         beveragesLoadedRef.current = true;
         setMenuUpdatedAt(new Date());
         setMenuStale(false);
+        setLiveMenuFailed(false);
       } catch (err) {
         if (beveragesLoadedRef.current) {
           setMenuStale(true);
         } else {
           setBeverageOptions([]);
           setMenuError(messageForError(err, "Unable to load beverages."));
+          setLiveMenuFailed(true);
         }
       } finally {
         setIsLoadingMenu(false);
@@ -794,9 +848,22 @@ export function PosOrderBuilder({
       } catch (err) {
         const msg = messageForError(err, "Unable to load meal periods.");
         setMenuError(msg);
+        setLiveMenuFailed(true);
       }
     })();
   }, [loadPeriods]);
+
+  // O3: no live periods, but today's snapshot: its periods, the current one chosen by the time as loadPeriods does.
+  useEffect(() => {
+    if (!menuFromSnapshot || !todaySnapshot || periods.length > 0) return;
+    const fromSnapshot = snapshotPeriods(todaySnapshot);
+    if (fromSnapshot.length === 0) return;
+    periodsFromSnapshotRef.current = true;
+    setPeriods(fromSnapshot);
+    const now = nowTimeHHMMSS();
+    const active = fromSnapshot.find((p) => isWithinPeriod(p.startTime, p.endTime, now));
+    setSelectedPeriodId(active?.id ?? fromSnapshot[0].id);
+  }, [menuFromSnapshot, todaySnapshot, periods.length]);
 
   useEffect(() => {
     if (!selectedPeriod) return;
@@ -806,17 +873,58 @@ export function PosOrderBuilder({
     void loadMenuForPeriod(selectedPeriod.name);
   }, [selectedPeriod, loadMenuForPeriod]);
 
-  const periodExtras = useMemo(() => {
-    if (!selectedPeriod) return [];
-    return menu.availableExtras.filter((e) => e.mealPeriodId === selectedPeriod.id);
-  }, [menu.availableExtras, selectedPeriod]);
+  // O4 (D4): while selling offline, a tile's count is the snapshot's, less what the outbox sold, less what's in the
+  // cart. null stays null (not counted). An always-on item with a count goes "out" at 0.
+  const { optionRemaining, extraRemaining } = offlineCheckout;
+  const withLocalCount = useCallback(
+    <T extends DailyMealOption>(option: T): T => {
+      const raw = todaySnapshot?.options.find((o) => o.id === option.id)?.portionsRemaining ?? null;
+      const left = optionRemaining(option.id, raw);
+      if (left === null) return option;
+      const inCart = draftLines.filter((line) => line.dailyMealOptionId === option.id).reduce((sum, line) => sum + line.quantity, 0);
+      const remaining = Math.max(0, left - inCart);
+      return { ...option, portionsRemaining: remaining, outToday: option.outToday || (isAlwaysOnOption(option) && remaining === 0) };
+    },
+    [draftLines, optionRemaining, todaySnapshot],
+  );
+  const withLocalBuffer = useCallback(
+    <T extends DailyComponentStock>(extra: T): T => {
+      const raw = todaySnapshot?.extras.find((e) => e.id === extra.id)?.bufferRemaining ?? null;
+      const left = extraRemaining(extra.id, raw);
+      if (left === null) return { ...extra, bufferRemaining: UNLIMITED };
+      const inCart = draftLines.reduce(
+        (sum, line) => sum + line.extras.filter((ex) => ex.dailyComponentStockId === extra.id).reduce((s, ex) => s + ex.quantity, 0),
+        0,
+      );
+      return { ...extra, bufferRemaining: Math.max(0, left - inCart) };
+    },
+    [draftLines, extraRemaining, todaySnapshot],
+  );
 
-  // The tiles on screen: the Beverages tab, or the selected period's menu.
-  const periodOptions = useMemo(() => {
+  const periodExtras = useMemo<DailyComponentStock[]>(() => {
+    if (!selectedPeriod) return [];
+    if (menuFromSnapshot && todaySnapshot) {
+      const extras = snapshotMenuForPeriod(todaySnapshot, selectedPeriod.id).availableExtras;
+      return sellingOffline ? extras.map((extra) => withLocalBuffer(extra)) : extras;
+    }
+    return menu.availableExtras.filter((e) => e.mealPeriodId === selectedPeriod.id);
+  }, [menu.availableExtras, selectedPeriod, menuFromSnapshot, todaySnapshot, sellingOffline, withLocalBuffer]);
+
+  // The tiles on screen: the Beverages tab, or the selected period's menu (O3: from today's snapshot when the live
+  // menu couldn't be loaded; O4: with the local counts while selling offline).
+  const periodOptions = useMemo<DailyMealOption[]>(() => {
+    if (menuFromSnapshot && todaySnapshot) {
+      const options = beveragesTab
+        ? snapshotBeverages(todaySnapshot)
+        : selectedPeriod
+          ? snapshotMenuForPeriod(todaySnapshot, selectedPeriod.id).options
+          : [];
+      return sellingOffline ? options.map((option) => withLocalCount(option)) : options;
+    }
     if (beveragesTab) return beverageOptions;
     if (!selectedPeriod) return [];
     return menu.options.filter((o) => o.mealPeriodId === selectedPeriod.id || o.period?.id === selectedPeriod.id);
-  }, [beveragesTab, beverageOptions, menu.options, selectedPeriod]);
+  }, [beveragesTab, beverageOptions, menu.options, selectedPeriod, menuFromSnapshot, todaySnapshot, sellingOffline, withLocalCount]);
 
   // Planned set meals keep today's tiles; always-on items are grouped into sections by category
   // (sections by category sortOrder, tiles by name). The server returns them in id order.
@@ -854,6 +962,17 @@ export function PosOrderBuilder({
     }, 60_000);
     return () => window.clearInterval(timer);
   }, [refreshShownMenu]);
+
+  // O3: back online after the live menu failed: load it again at once (periods first if they came from the snapshot;
+  // choosing a period then loads its menu).
+  const wasOnlineRef = useRef(isOnline);
+  useEffect(() => {
+    const cameBack = isOnline && !wasOnlineRef.current;
+    wasOnlineRef.current = isOnline;
+    if (!cameBack || !liveMenuFailed) return;
+    if (periodsFromSnapshotRef.current) void loadPeriods().catch(() => {});
+    else refreshShownMenu(true);
+  }, [isOnline, liveMenuFailed, loadPeriods, refreshShownMenu]);
 
   const draftSubtotal = useMemo(
     () => draftLines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0),
@@ -894,25 +1013,33 @@ export function PosOrderBuilder({
 
   const hasAccountEntry = paymentEntries.some((entry) => entry.method === "ACCOUNT");
   const hasCashOrCardEntry = paymentEntries.some((entry) => entry.method === "CASH" || entry.method === "CARD");
+  // O4: offline, ACCOUNT only when the grant and snapshot allow account sales (decision A).
+  const accountsOffered = !sellingOffline || offlineCheckout.accountsEnabled;
   const availableMethods = useMemo(() => {
     if (hasAccountEntry) return ["ACCOUNT"] as PaymentMethod[];
     if (hasCashOrCardEntry) return ["CASH", "CARD"] as PaymentMethod[];
-    return ["CASH", "CARD", "ACCOUNT"] as PaymentMethod[];
-  }, [hasAccountEntry, hasCashOrCardEntry]);
+    return (accountsOffered ? ["CASH", "CARD", "ACCOUNT"] : ["CASH", "CARD"]) as PaymentMethod[];
+  }, [hasAccountEntry, hasCashOrCardEntry, accountsOffered]);
 
+  // O4: offline, the snapshot's accounts; GET /accounts is never called.
+  const accountsForCheckout = useMemo<AccountDto[]>(
+    () => (sellingOffline ? offlineCheckout.accounts : checkoutAccounts),
+    [sellingOffline, offlineCheckout.accounts, checkoutAccounts],
+  );
   const accountSearchLower = accountSearch.trim().toLowerCase();
   const filteredAccounts = useMemo(() => {
-    if (!accountSearchLower) return checkoutAccounts;
-    return checkoutAccounts.filter(
+    if (!accountSearchLower) return accountsForCheckout;
+    return accountsForCheckout.filter(
       (account) =>
         account.name.toLowerCase().includes(accountSearchLower) ||
         (account.accountNumber ?? "").toLowerCase().includes(accountSearchLower),
     );
-  }, [accountSearchLower, checkoutAccounts]);
+  }, [accountSearchLower, accountsForCheckout]);
   const selectedAccount = useMemo(
-    () => checkoutAccounts.find((account) => account.id === selectedAccountId) ?? null,
-    [checkoutAccounts, selectedAccountId],
+    () => accountsForCheckout.find((account) => account.id === selectedAccountId) ?? null,
+    [accountsForCheckout, selectedAccountId],
   );
+  const cardReference = cardReferenceInput.trim();
 
   const existingMethodSet = useMemo(
     () => new Set(paymentEntries.map((entry) => entry.method)),
@@ -931,6 +1058,8 @@ export function PosOrderBuilder({
     }
 
     if (paymentMethod === "CARD") {
+      // O4 (D8): offline, the card slip reference is required.
+      if (sellingOffline) return cardReference ? { method: "CARD", amount, cardReference } : null;
       return { method: "CARD", amount };
     }
 
@@ -944,17 +1073,20 @@ export function PosOrderBuilder({
     remainingToPay,
     remainingToPayCents,
     selectedAccountId,
+    sellingOffline,
+    cardReference,
   ]);
 
   const canConfirmPayment =
     draftLines.length > 0 &&
     !isSubmitting &&
-    isOnline &&
+    (isOnline || sellingOffline) &&
     ((paymentEntries.length > 0 && remainingToPayCents === 0) || singlePaymentDraft !== null);
 
   // One tap adds one. Always-on lines never carry extras, so repeat taps just raise the quantity.
   const addAlwaysOnOption = (option: DailyMealOption) => {
-    if (option.outToday) return;
+    // O3: the offline copy of the menu is read-only unless the till may sell offline (O4).
+    if (option.outToday || readOnlyCopy) return;
     setDraftLines((prev) => {
       const existing = prev.find((line) => line.alwaysOn && line.dailyMealOptionId === option.id);
       if (existing) {
@@ -977,6 +1109,7 @@ export function PosOrderBuilder({
   };
 
   const openBuilderForOption = (option: DailyMealOption) => {
+    if (readOnlyCopy) return; // O3: read-only offline copy, unless selling offline (O4).
     if (isAlwaysOnOption(option)) {
       addAlwaysOnOption(option);
       return;
@@ -1240,7 +1373,7 @@ export function PosOrderBuilder({
       return;
     }
 
-    if (paymentMethod === "ACCOUNT" && checkoutAccounts.length === 0 && !accountsLoading) {
+    if (paymentMethod === "ACCOUNT" && !sellingOffline && checkoutAccounts.length === 0 && !accountsLoading) {
       void loadCheckoutAccounts();
     }
   }, [
@@ -1249,6 +1382,7 @@ export function PosOrderBuilder({
     checkoutAccounts.length,
     loadCheckoutAccounts,
     paymentMethod,
+    sellingOffline,
     showPayment,
   ]);
 
@@ -1300,13 +1434,20 @@ export function PosOrderBuilder({
     }
 
     if (paymentMethod === "CARD") {
+      // O4 (D8): offline, the card slip reference is required.
+      if (sellingOffline && !cardReference) {
+        setPaymentEntryError("Enter the card slip reference.");
+        return;
+      }
       setPaymentEntries((prev) => [
         ...prev,
         {
           method: "CARD",
           amount,
+          ...(sellingOffline ? { cardReference } : {}),
         },
       ]);
+      setCardReferenceInput("");
       resetPaymentEditor(remainingToPayCents - amountCents);
       return;
     }
@@ -1335,9 +1476,9 @@ export function PosOrderBuilder({
   const getAccountName = useCallback(
     (accountId?: number) => {
       if (!accountId) return null;
-      return checkoutAccounts.find((account) => account.id === accountId)?.name ?? `Account #${accountId}`;
+      return accountsForCheckout.find((account) => account.id === accountId)?.name ?? `Account #${accountId}`;
     },
-    [checkoutAccounts],
+    [accountsForCheckout],
   );
 
   const applyConflictFeedback = (payload: unknown) => {
@@ -1392,6 +1533,8 @@ export function PosOrderBuilder({
   );
 
   const loadTodayOrders = useCallback(async () => {
+    // O3: a server-only view; the panels say "Not available offline".
+    if (!isOnline) return;
     setTodayOrdersLoading(true);
     setTodayOrdersError(null);
     try {
@@ -1407,7 +1550,7 @@ export function PosOrderBuilder({
     } finally {
       setTodayOrdersLoading(false);
     }
-  }, [authFetch]);
+  }, [authFetch, isOnline]);
 
   const markPrintFailed = useCallback(
     async (orderId: number) => {
@@ -1433,6 +1576,77 @@ export function PosOrderBuilder({
         quantity: ex.quantity,
       })),
     }));
+
+  // O4 (H): the sale as charged, kept with the O1 pending sale so it can be recorded offline if its outcome is still
+  // unknown when the till goes offline. No manager approvals: offline sales carry none.
+  const buildOfflineDraft = (payments: DraftPaymentEntry[]): OfflineDraft => ({
+    lines: draftLines.map((line) => ({
+      dailyMealOptionId: line.dailyMealOptionId,
+      name: line.name,
+      unitPrice: line.unitPrice,
+      quantity: line.quantity,
+      extras: line.extras.map((ex) => ({
+        dailyComponentStockId: ex.dailyComponentStockId,
+        name: ex.name,
+        extraPrice: ex.extraPrice,
+        quantity: ex.quantity,
+      })),
+    })),
+    payments: payments.map((entry) => ({
+      method: entry.method,
+      amount: entry.amount,
+      ...(entry.amountTendered !== undefined ? { amountTendered: entry.amountTendered } : {}),
+      ...(entry.accountId !== undefined ? { accountId: entry.accountId } : {}),
+    })),
+    confirmedAt: new Date(serverNow()).toISOString(),
+  });
+
+  // O4: an offline sale. Recorded on the till first (one IndexedDB transaction); only then is the cart cleared, the
+  // completion screen shown and the receipt printed. A refusal keeps the cart and says why.
+  const submitOfflineSale = async (payments: DraftPaymentEntry[]) => {
+    if (offlineSaving) return;
+    setOfflineSaving(true);
+    setSubmissionError(null);
+    const result = await offlineCheckout.record(
+      draftLines.map((line) => ({
+        dailyMealOptionId: line.dailyMealOptionId,
+        name: line.name,
+        unitPrice: line.unitPrice,
+        quantity: line.quantity,
+        extras: line.extras.map((ex) => ({
+          dailyComponentStockId: ex.dailyComponentStockId,
+          name: ex.name,
+          extraPrice: ex.extraPrice,
+          quantity: ex.quantity,
+        })),
+      })),
+      payments.map((entry) => ({
+        method: entry.method,
+        amount: entry.amount,
+        amountTendered: entry.amountTendered,
+        cardReference: entry.cardReference,
+        accountId: entry.accountId,
+      })),
+    );
+    setOfflineSaving(false);
+    if (!result.ok) {
+      setSubmissionError(result.message);
+      return;
+    }
+    setOfflineSale({ order: result.order, clientOrderId: result.clientOrderId });
+    resetSaleDiscount();
+    resetComplimentary();
+    setDraftLines([]);
+    setShowPayment(false);
+    setPaymentMethod("CASH");
+    setPaymentEntries([]);
+    setPaymentAmountInput("");
+    setCashTenderedInput("");
+    setPaymentEntryError(null);
+    setAccountSearch("");
+    setCardReferenceInput("");
+    void salePrinting.autoPrint(result.order, result.clientOrderId);
+  };
 
   // After POST /orders succeeds, sale or complimentary: clear checkout and show the receipt.
   const finishOrder = async (order: OrderDto) => {
@@ -1512,6 +1726,12 @@ export function PosOrderBuilder({
       return;
     }
 
+    // O4: offline, the sale is recorded on the till (no manager PIN, decision A); never sent to POST /orders.
+    if (!isOnline) {
+      if (sellingOffline) void submitOfflineSale(paymentsForSubmit);
+      return;
+    }
+
     const chargesAccount = paymentsForSubmit.some((entry) => entry.method === "ACCOUNT");
     const approvalPrompt = {
       title: "Manager PIN Required",
@@ -1561,7 +1781,10 @@ export function PosOrderBuilder({
 
     setSaleReplayNotice(false);
     // Confirm freezes this body with a new clientOrderId and sends it; retries reuse both.
-    if (!pendingSale.start("SALE", payload, saleSummary(payableCents / 100))) {
+    // O4 (H): with offline on, keep what's needed to record it offline if its outcome is still unknown when the
+    // till goes offline. Not for a discounted sale: offline sales carry no discount.
+    const offlineDraft = tillStatus?.offlineEnabled && !saleDiscount ? buildOfflineDraft(paymentsForSubmit) : null;
+    if (!pendingSale.start("SALE", payload, saleSummary(payableCents / 100), offlineDraft)) {
       setSubmissionError("A sale is still being checked. Wait for it to finish.");
     }
   };
@@ -1674,6 +1897,63 @@ export function PosOrderBuilder({
   };
 
   // Covers the till while a sale's outcome is unknown. Rendered on both screens (till and completed sale).
+  // O4 (H): an online sale stuck in "Checking the sale…" when the till is offline and may sell offline: recorded in
+  // the outbox with the SAME clientOrderId and its confirm time, then O1's record is cleared, then it prints. A card
+  // payment first asks for the slip reference ("No slip" allowed). Discounted and complimentary sales have no draft
+  // and stay pending. Never retried on its own after an error: the cashier presses Try again.
+  const [stuckError, setStuckError] = useState<string | null>(null);
+  const [stuckBusy, setStuckBusy] = useState(false);
+  const stuckAttemptedRef = useRef<string | null>(null);
+  const stuckSale = pendingSale.pending;
+  const stuckConvertible =
+    sellingOffline &&
+    stuckSale !== null &&
+    Boolean(stuckSale.offlineDraft) &&
+    (pendingSale.phase === "sending" || pendingSale.phase === "unconfirmed");
+  const stuckNeedsCardReference = Boolean(stuckSale?.offlineDraft?.payments.some((payment) => payment.method === "CARD"));
+
+  const convertStuckSale = useCallback(
+    async (sale: PendingSale, cardReference: string | null) => {
+      const draft = sale.offlineDraft;
+      if (!draft) return;
+      stuckAttemptedRef.current = sale.clientOrderId;
+      setStuckBusy(true);
+      setStuckError(null);
+      const result = await offlineCheckout.record(
+        draft.lines,
+        draft.payments.map((payment) => (payment.method === "CARD" ? { ...payment, cardReference } : payment)),
+        { stuck: { clientOrderId: sale.clientOrderId, soldAt: draft.confirmedAt, allowMissingCardReference: cardReference === null } },
+      );
+      setStuckBusy(false);
+      if (!result.ok) {
+        setStuckError(result.message);
+        return;
+      }
+      // Recorded (or already in the outbox): O1 stops checking it. Sync sends it with the same clientOrderId.
+      pendingSale.discard();
+      if (result.alreadyRecorded) return;
+      setOfflineSale({ order: result.order, clientOrderId: result.clientOrderId });
+      void salePrinting.autoPrint(result.order, result.clientOrderId);
+    },
+    [offlineCheckout, pendingSale, salePrinting],
+  );
+
+  useEffect(() => {
+    if (!stuckConvertible || !stuckSale || stuckNeedsCardReference) return;
+    if (stuckAttemptedRef.current === stuckSale.clientOrderId) return;
+    void convertStuckSale(stuckSale, null);
+  }, [stuckConvertible, stuckSale, stuckNeedsCardReference, convertStuckSale]);
+
+  const stuckConversion =
+    stuckConvertible && stuckSale
+      ? {
+          needsCardReference: stuckNeedsCardReference,
+          error: stuckError,
+          busy: stuckBusy,
+          onRecord: (cardReference: string | null) => void convertStuckSale(stuckSale, cardReference),
+        }
+      : null;
+
   const pendingSaleOverlay =
     pendingSale.pending && pendingSale.phase !== "idle" ? (
       <PendingSaleOverlay
@@ -1694,6 +1974,8 @@ export function PosOrderBuilder({
         onSignOut={logout}
         // A manager may finish another cashier's sale (O2): same body and id, so one that went through comes back as is.
         onManagerFinish={isAdminRole(user?.role) ? pendingSale.sendAsIs : undefined}
+        offlineConversion={stuckConversion}
+        signOutDisabledReason={offlineActive ? "Offline: lock the till instead" : null}
       />
     ) : null;
 
@@ -1971,6 +2253,28 @@ export function PosOrderBuilder({
     }, 0);
     return selectedOption.price * lineQty + extrasTotal;
   }, [selectedOption, lineQty, periodExtras, selectedExtraQty]);
+
+  // O4: an offline sale was recorded: its own completion screen (there is no server order yet).
+  if (offlineSale) {
+    const offlineAccountNames: Record<number, string> = {};
+    for (const account of offlineCheckout.accounts) offlineAccountNames[account.id] = account.name;
+    return (
+      <>
+        <main className="flex-1 p-4">
+          <OfflineSaleComplete
+            order={offlineSale.order}
+            settings={todaySnapshot?.receiptSettings ?? null}
+            accountNames={offlineAccountNames}
+            onPrintReceipt={() => salePrinting.reprintReceipt(offlineSale.order)}
+            onPrintKitchenTicket={() => salePrinting.reprintKitchenTicket(offlineSale.order)}
+            onNext={() => setOfflineSale(null)}
+          />
+        </main>
+        {pendingSaleOverlay}
+        {salePrinting.portal}
+      </>
+    );
+  }
 
   if (completedOrderId !== null && completedOrder) {
     const shownOrder = receiptOrder ?? completedOrder;
@@ -2293,7 +2597,8 @@ export function PosOrderBuilder({
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  disabled={!canCancelOrder}
+                  disabled={!canCancelOrder || offlineActive}
+                  title={offlineActive ? NOT_AVAILABLE_OFFLINE : undefined}
                   onClick={() => beginAdjustment("WHOLE_ORDER")}
                   className="rounded-lg border border-rose-300/40 bg-rose-500/20 px-3 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -2302,7 +2607,8 @@ export function PosOrderBuilder({
                 {!complimentaryOrder && (
                   <button
                     type="button"
-                    disabled={!canRemoveExtras}
+                    disabled={!canRemoveExtras || offlineActive}
+                    title={offlineActive ? NOT_AVAILABLE_OFFLINE : undefined}
                     onClick={() => beginAdjustment("EXTRAS_ONLY")}
                     className="rounded-lg border border-amber-200/40 bg-amber-500/20 px-3 py-2 text-sm font-semibold text-amber-50 hover:bg-amber-500/30 disabled:cursor-not-allowed disabled:opacity-50"
                   >
@@ -2395,13 +2701,19 @@ export function PosOrderBuilder({
             </button>
           </div>
 
-          {todayOrdersError && (
+          {todayOrdersError && isOnline && (
             <div className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">
               {todayOrdersError}
             </div>
           )}
 
-          {todayOrdersLoading ? (
+          {!isOnline ? (
+            tillStatus?.offlineEnabled ? (
+              <OfflineOrdersList entries={outboxEntries} tradingDay={serverToday()} />
+            ) : (
+              <p className="text-sm text-slate-400">Not available offline.</p>
+            )
+          ) : todayOrdersLoading ? (
             <p className="text-sm text-slate-400">Loading today&apos;s orders...</p>
           ) : todayOrders.length === 0 ? (
             <p className="text-sm text-slate-400">No completed orders for today yet.</p>
@@ -2495,20 +2807,30 @@ export function PosOrderBuilder({
           </div>
         </div>
 
-        {menuStale && menuUpdatedAt && (
+        {menuFromSnapshot && (
+          <div className="mb-4 flex items-center gap-2 rounded-xl border border-sky-400/40 bg-sky-500/10 p-3 text-sm text-sky-100">
+            <Info className="h-4 w-4 shrink-0" />
+            Offline copy of today&apos;s menu{snapshotReceivedAt ? ` from ${formatHHMM(new Date(snapshotReceivedAt))}` : ""}.{" "}
+            {sellingOffline
+              ? "Selling offline: discounts, complimentary, voids and refunds need the connection."
+              : "Read-only until the connection is back."}
+          </div>
+        )}
+
+        {menuStale && menuUpdatedAt && !menuFromSnapshot && (
           <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-200">
             <AlertCircle className="h-4 w-4 shrink-0" />
             Last updated {formatHHMM(menuUpdatedAt)}. Couldn&apos;t refresh the menu; stock shown may be out of date.
           </div>
         )}
 
-        {menuError && (
+        {menuError && !menuFromSnapshot && (
           <div className="mb-4 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-300">
             {menuError}
           </div>
         )}
 
-        {isLoadingMenu ? (
+        {isLoadingMenu && !menuFromSnapshot ? (
           <p className="text-sm text-slate-400">Loading menu...</p>
         ) : periodOptions.length === 0 ? (
           <p className="text-sm text-slate-400">
@@ -2558,9 +2880,9 @@ export function PosOrderBuilder({
                   <button
                     key={option.id}
                     type="button"
-                    disabled={soldOut}
+                    disabled={soldOut || readOnlyCopy}
                     onClick={() => openBuilderForOption(option)}
-                    className={`rounded-2xl border p-4 text-left transition ${stockStyle.card}`}
+                    className={`rounded-2xl border p-4 text-left transition ${stockStyle.card}${readOnlyCopy ? " cursor-not-allowed opacity-70" : ""}`}
                   >
                     <p className="text-base font-semibold">{option.name}</p>
                     {option.description && (
@@ -2590,13 +2912,13 @@ export function PosOrderBuilder({
                     <button
                       key={option.id}
                       type="button"
-                      disabled={out}
+                      disabled={out || readOnlyCopy}
                       onClick={() => addAlwaysOnOption(option)}
                       className={`rounded-2xl border p-4 text-left transition active:scale-[0.98] ${
                         out
                           ? "cursor-not-allowed border-slate-700 bg-slate-800/40 text-slate-500"
                           : "border-sky-400/40 bg-sky-500/10 text-slate-100 hover:border-sky-300/70 hover:bg-sky-500/20"
-                      }`}
+                      }${readOnlyCopy ? " cursor-not-allowed opacity-70" : ""}`}
                     >
                       <p className="text-base font-semibold">{option.name}</p>
                       <div className="mt-4 flex items-end justify-between gap-2">
@@ -2681,7 +3003,10 @@ export function PosOrderBuilder({
                             <p className={`text-sm font-medium ${soldOut ? "text-slate-500" : "text-slate-100"}`}>
                               {extra.componentName ?? extra.name ?? `Extra #${extra.id}`}
                             </p>
-                            <p className="text-xs text-slate-400">{toMoney(extra.extraPrice)} · Remaining {extra.bufferRemaining}</p>
+                            <p className="text-xs text-slate-400">
+                              {toMoney(extra.extraPrice)}
+                              {extra.bufferRemaining < UNLIMITED ? ` · Remaining ${extra.bufferRemaining}` : ""}
+                            </p>
                           </div>
                           {soldOut ? (
                             <span className="rounded-full border border-slate-700 px-2 py-0.5 text-[10px] uppercase text-slate-500">Sold out</span>
@@ -2956,12 +3281,14 @@ export function PosOrderBuilder({
             </button>
             <button
               type="button"
-              disabled={draftLines.length === 0}
+              disabled={draftLines.length === 0 || offlineActive}
+              title={offlineActive ? NOT_AVAILABLE_OFFLINE : undefined}
               onClick={openComplimentaryForm}
               className="inline-flex flex-col items-center justify-center gap-0.5 rounded-xl bg-violet-600 px-2 py-2 text-xs font-semibold text-white hover:bg-violet-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
             >
               <Gift className="h-4 w-4" aria-hidden />
               Complimentary
+              {offlineActive && <span className="text-[10px] font-normal">{NOT_AVAILABLE_OFFLINE}</span>}
             </button>
           </div>
         ) : (
@@ -3103,18 +3430,22 @@ export function PosOrderBuilder({
                 <div className="mb-3 flex flex-wrap gap-2">
                   <button
                     type="button"
+                    disabled={offlineActive}
+                    title={offlineActive ? NOT_AVAILABLE_OFFLINE : undefined}
                     onClick={() => setShowSaleDiscountForm(true)}
-                    className="rounded-lg border border-amber-300/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/20"
+                    className="rounded-lg border border-amber-300/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/20 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    Add Discount
+                    Add Discount{offlineActive ? ` · ${NOT_AVAILABLE_OFFLINE}` : ""}
                   </button>
                   <button
                     type="button"
+                    disabled={offlineActive}
+                    title={offlineActive ? NOT_AVAILABLE_OFFLINE : undefined}
                     onClick={openComplimentaryForm}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300/30 px-3 py-1.5 text-xs font-semibold text-violet-200 hover:bg-violet-500/10"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-violet-300/30 px-3 py-1.5 text-xs font-semibold text-violet-200 hover:bg-violet-500/10 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Gift className="h-3.5 w-3.5" />
-                    Complimentary…
+                    Complimentary…{offlineActive ? ` · ${NOT_AVAILABLE_OFFLINE}` : ""}
                   </button>
                 </div>
               )
@@ -3272,6 +3603,21 @@ export function PosOrderBuilder({
                 <p className="text-xs uppercase tracking-wider text-blue-100">Card Payment</p>
                 <p className="mt-2 text-3xl font-black text-white">{toMoney(paymentAmount)}</p>
                 <p className="mt-2 text-sm text-slate-300">Process the payment on the physical card machine, then confirm here.</p>
+                {sellingOffline && (
+                  <div className="mt-3">
+                    <label htmlFor="card-reference" className="text-xs font-medium text-slate-200">
+                      Card slip reference (required offline)
+                    </label>
+                    <Input
+                      id="card-reference"
+                      value={cardReferenceInput}
+                      maxLength={CARD_REFERENCE_MAX_LENGTH}
+                      onChange={(event) => setCardReferenceInput(event.target.value)}
+                      className="mt-1 border-slate-700 bg-slate-950 text-slate-100"
+                      placeholder="The reference printed on the card slip"
+                    />
+                  </div>
+                )}
               </div>
             ) : (
               <div className="mt-4 rounded-xl border border-amber-300/25 bg-amber-500/10 p-4">
@@ -3399,7 +3745,13 @@ export function PosOrderBuilder({
                 onClick={() => void submitOrder()}
                 className="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700"
               >
-                {isSubmitting ? "Processing..." : !isOnline ? "Waiting for connection" : "Confirm Payment"}
+                {isSubmitting
+                  ? "Processing..."
+                  : !isOnline
+                    ? sellingOffline
+                      ? "Confirm offline sale"
+                      : "Waiting for connection"
+                    : "Confirm Payment"}
               </button>
             </div>
           </div>
@@ -3431,13 +3783,19 @@ export function PosOrderBuilder({
               </div>
             </div>
 
-            {todayOrdersError && (
+            {todayOrdersError && isOnline && (
               <div className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 p-2 text-xs text-rose-300">
                 {todayOrdersError}
               </div>
             )}
 
-            {todayOrdersLoading ? (
+            {!isOnline ? (
+              tillStatus?.offlineEnabled ? (
+                <OfflineOrdersList entries={outboxEntries} tradingDay={serverToday()} />
+              ) : (
+                <p className="text-sm text-slate-400">Not available offline.</p>
+              )
+            ) : todayOrdersLoading ? (
               <p className="text-sm text-slate-400">Loading today&apos;s orders...</p>
             ) : todayOrders.length === 0 ? (
               <p className="text-sm text-slate-400">No completed orders for today yet.</p>

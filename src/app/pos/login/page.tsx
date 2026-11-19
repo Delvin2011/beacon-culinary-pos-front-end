@@ -13,7 +13,11 @@ import { reauthLoginPath } from "@/lib/return-to";
 import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
-import { CONNECTION_MESSAGES, fetchWithTimeout, messageForError, timeoutFor } from "@/lib/net";
+import { CONNECTION_MESSAGES, classifyError, fetchWithTimeout, isNoAnswer, messageForError, timeoutFor } from "@/lib/net";
+import { useConnection } from "@/contexts/connection-context";
+import { useOfflineUnlock } from "@/hooks/use-offline-unlock";
+import { OfflineUnlockScreen } from "@/components/pos/offline-unlock-screen";
+import { saveUnlockVerifierAfterSignIn } from "@/lib/offline/unlock";
 
 // Shape returned by GET /users/cashiers
 interface CashierSummary {
@@ -25,8 +29,12 @@ const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080"
 
 const CASHIERS_FAILED_MESSAGE = "Could not load the cashier list. Contact the administrator if this keeps happening.";
 
-// A cashier-list failure whose message is already safe to show.
-class CashierListError extends Error {}
+// A cashier-list failure whose message is already safe to show. unreachable: the server can't serve (5xx).
+class CashierListError extends Error {
+  constructor(message: string, readonly unreachable = false) {
+    super(message);
+  }
+}
 
 type View = "select-cashier" | "enter-pin";
 
@@ -82,6 +90,13 @@ export default function PosLoginPage() {
   // retried automatically; "Try again" reloads the list by hand.
   const [tillNotRegistered, setTillNotRegistered] = useState(false);
 
+  // O3 (D13): offline here means the connection indicator says so, or the cashier list got no answer (after a
+  // reload offline the indicator takes a few failed pings to turn).
+  const { isOnline } = useConnection();
+  const [cashiersUnreachable, setCashiersUnreachable] = useState(false);
+  const offlineHere = !isOnline || cashiersUnreachable;
+  const offlineUnlock = useOfflineUnlock(offlineHere);
+
   // Already authenticated — let /pos handle shift routing
   useEffect(() => {
     if (!authLoading && isAuthenticated) {
@@ -95,6 +110,7 @@ export default function PosLoginPage() {
     setCashiersLoading(true);
     setCashiersError(null);
     setTillNotRegistered(false);
+    setCashiersUnreachable(false);
 
     const cashiersUrl = `${API_BASE}/users/cashiers`;
     fetchWithTimeout(cashiersUrl, { credentials: "include" }, timeoutFor(cashiersUrl))
@@ -104,7 +120,7 @@ export default function PosLoginPage() {
           setTillNotRegistered(true);
           return;
         }
-        if (res.status >= 500) throw new CashierListError(CONNECTION_MESSAGES.server);
+        if (res.status >= 500) throw new CashierListError(CONNECTION_MESSAGES.server, true);
         if (!res.ok) throw new CashierListError(CASHIERS_FAILED_MESSAGE);
         const data = (await res.json()) as unknown;
         if (!Array.isArray(data)) throw new CashierListError(CASHIERS_FAILED_MESSAGE);
@@ -117,6 +133,7 @@ export default function PosLoginPage() {
       })
       .catch((err: unknown) => {
         setCashiersError(err instanceof CashierListError ? err.message : messageForError(err, CASHIERS_FAILED_MESSAGE));
+        setCashiersUnreachable(err instanceof CashierListError ? err.unreachable : isNoAnswer(classifyError(err)));
       })
       .finally(() => setCashiersLoading(false));
   }, []);
@@ -179,6 +196,8 @@ export default function PosLoginPage() {
     blocks.clear(selectedCashier.id);
     try {
       await pinLogin({ cashierId: selectedCashier.id, pin });
+      // O3 (D13): the check value for offline unlock, in the background; the PIN stays in memory only.
+      void saveUnlockVerifierAfterSignIn({ pin, cashierId: selectedCashier.id, tillStatus });
       router.replace("/pos");
     } catch (err) {
       if (err instanceof DeviceNotRegisteredError) {
@@ -248,6 +267,20 @@ export default function PosLoginPage() {
     );
   }
 
+  // ── OFFLINE UNLOCK (O3, D13) ────────────────────────────────────────────────
+  if (offlineHere && view === "select-cashier" && (offlineUnlock.state === "available" || offlineUnlock.state === "disabled")) {
+    return (
+      <OfflineUnlockScreen
+        owner={offlineUnlock.owner}
+        disabled={offlineUnlock.state === "disabled"}
+        triesLeft={offlineUnlock.state === "available" ? offlineUnlock.triesLeft : null}
+        notice={sessionEndedNotice}
+        unlock={offlineUnlock.unlock}
+        onUnlocked={() => router.replace("/pos")}
+      />
+    );
+  }
+
   // ── SELECT CASHIER ──────────────────────────────────────────────────────────
   if (view === "select-cashier") {
     return (
@@ -281,6 +314,9 @@ export default function PosLoginPage() {
         {cashiersError && (
           <div className="flex max-w-sm flex-col items-center gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-6 py-4 text-center text-rose-300">
             <p>{cashiersError}</p>
+            {offlineHere && offlineUnlock.state === "unavailable" && (
+              <p className="text-sm text-rose-200">Offline: this till can&apos;t be unlocked offline.</p>
+            )}
             <button
               type="button"
               onClick={() => loadCashiers()}
