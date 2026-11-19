@@ -17,7 +17,10 @@ $RG  = "road-freight-api-rg"
 $APP = "beacon-culinary-frontend-12345"
 
 # 1. Build
+#    $ErrorActionPreference does not apply to native commands like npm, so check the exit
+#    code explicitly - otherwise a failed build silently deploys a stale .next/standalone.
 npm run build
+if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit $LASTEXITCODE) - aborting deploy." }
 
 # 2. Copy static assets into the standalone output.
 #    `output: 'standalone'` deliberately excludes .next/static (and public/, if present) -
