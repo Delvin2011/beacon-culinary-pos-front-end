@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { reauthLoginPath, safeReturnTo } from "@/lib/return-to"
 
 describe("safeReturnTo", () => {
-  it.each(["/devices", "/devices/register", "/pos-activity", "/site-settings"])("accepts %s", (path) => {
+  it.each(["/devices", "/devices/register", "/pos-activity", "/site-settings", "/meal-periods"])("accepts %s", (path) => {
     expect(safeReturnTo(path)).toBe(path)
   })
 
@@ -28,6 +28,8 @@ describe("safeReturnTo", () => {
     ["leading space", " /devices"],
     ["sub-path of site settings", "/site-settings/history"],
     ["site settings with a query", "/site-settings?tab=history"],
+    ["sub-path of meal periods", "/meal-periods/history"],
+    ["meal periods with a query", "/meal-periods?tab=history"],
   ])("rejects %s", (_name, value) => {
     expect(safeReturnTo(value)).toBeNull()
   })

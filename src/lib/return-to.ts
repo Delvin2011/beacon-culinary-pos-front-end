@@ -2,7 +2,7 @@
 // anything else (other sites, "//host", full URLs, unknown routes) is ignored so sign-in can't be used to redirect
 // elsewhere.
 
-export const RETURN_TO_ALLOWLIST = ["/devices", "/devices/register", "/pos-activity", "/site-settings"] as const
+export const RETURN_TO_ALLOWLIST = ["/devices", "/devices/register", "/pos-activity", "/site-settings", "/meal-periods"] as const
 
 export type ReturnToPath = (typeof RETURN_TO_ALLOWLIST)[number]
 

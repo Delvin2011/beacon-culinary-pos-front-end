@@ -101,6 +101,11 @@ const data = {
           url: "/site-settings",
           access: "admin" as const,
         },
+        {
+          title: "Meal periods",
+          url: "/meal-periods",
+          access: "admin" as const,
+        },
       ],
     },
     {
