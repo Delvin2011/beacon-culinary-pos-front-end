@@ -59,7 +59,7 @@ beforeEach(() => {
     const path = url.replace(/^https?:\/\/[^/]+/, "")
     if (failing.has(path)) throw new TypeError("Failed to fetch")
     if (path === "/meal-periods") return ok(periods)
-    if (path === "/menu/today?period=LUNCH") return ok({ options: [burger], availableExtras: [] })
+    if (path === "/menu/today?period=Lunch") return ok({ options: [burger], availableExtras: [] })
     if (path.startsWith("/menu/today")) return ok({ options: [], availableExtras: [] })
     if (path.startsWith("/orders/today") || path.startsWith("/accounts")) return ok([])
     return ok({})
@@ -76,7 +76,7 @@ describe("menu refresh failures", () => {
     renderBuilder()
     expect(await screen.findByText("Beef Burger")).toBeInTheDocument()
 
-    failing.add("/menu/today?period=LUNCH")
+    failing.add("/menu/today?period=Lunch")
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Refresh$/ }))
     })
@@ -98,7 +98,7 @@ describe("menu refresh failures", () => {
     renderBuilder()
     expect(await screen.findByText("Beef Burger")).toBeInTheDocument()
 
-    failing.add("/menu/today?period=DINNER")
+    failing.add("/menu/today?period=Dinner")
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Dinner" }))
     })

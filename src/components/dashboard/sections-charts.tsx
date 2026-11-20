@@ -140,20 +140,19 @@ export function SalesTrendSection({ section, range }: { section: LayoutSection; 
 
 // ---- Where sales come from ----
 
-// A fixed colour per group key, so a group keeps its colour whatever the range.
+// Fixed colours for the catalogue groups. Meal-period groups have keys made from the period's name (they change on a
+// rename), so they get palette colours in key order instead: distinct within a chart, never tied to a name.
 const MIX_COLOURS: Record<string, string> = {
-  BREAKFAST: "#A9BEF2",
-  LUNCH: "#2455D6",
   LIGHT_MEALS: "#E8A33D",
   BEVERAGES: "#0F5F57",
 }
-const EXTRA_MIX_COLOURS = ["#6E5BB8", "#1B3FA8", "#8FB8B0", "#B85C38", "#5B6475"]
+const EXTRA_MIX_COLOURS = ["#A9BEF2", "#2455D6", "#6E5BB8", "#1B3FA8", "#8FB8B0", "#B85C38", "#5B6475"]
 
-export function mixColour(key: string): string {
-  if (MIX_COLOURS[key]) return MIX_COLOURS[key]
-  let hash = 0
-  for (const char of key) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
-  return EXTRA_MIX_COLOURS[hash % EXTRA_MIX_COLOURS.length]
+export function mixColours(keys: string[]): Record<string, string> {
+  const colours: Record<string, string> = {}
+  const others = keys.filter((key) => !MIX_COLOURS[key]).sort()
+  for (const key of keys) colours[key] = MIX_COLOURS[key] ?? EXTRA_MIX_COLOURS[others.indexOf(key) % EXTRA_MIX_COLOURS.length]
+  return colours
 }
 
 export function SalesMixSection({ section, range }: { section: LayoutSection; range?: DashboardRange }) {
@@ -194,7 +193,7 @@ export function SalesMixSection({ section, range }: { section: LayoutSection; ra
                     isAnimationActive={false}
                   >
                     {data.groups.map((group) => (
-                      <Cell key={group.key} fill={mixColour(group.key)} />
+                      <Cell key={group.key} fill={mixColours(data.groups.map((g) => g.key))[group.key]} />
                     ))}
                   </Pie>
                 </PieChart>
@@ -208,7 +207,7 @@ export function SalesMixSection({ section, range }: { section: LayoutSection; ra
               {data.groups.map((group) => (
                 <li key={group.key} className="flex flex-wrap justify-between gap-x-3 gap-y-0.5">
                   <span className="whitespace-nowrap">
-                    <span aria-hidden="true" className="mr-2 inline-block h-2.5 w-2.5 rounded-[3px]" style={{ background: mixColour(group.key) }} />
+                    <span aria-hidden="true" className="mr-2 inline-block h-2.5 w-2.5 rounded-[3px]" style={{ background: mixColours(data.groups.map((g) => g.key))[group.key] }} />
                     {group.label}
                   </span>
                   <span className="whitespace-nowrap font-bold">

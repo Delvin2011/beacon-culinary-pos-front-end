@@ -1,5 +1,5 @@
 // Catalogue groups and categories. Every meal sits in a category; the category decides its group.
-//   SET_MEALS   → PLANNED daily with portions (Breakfast, Lunch), station KITCHEN
+//   SET_MEALS   → PLANNED daily with portions under a timed meal period, station KITCHEN
 //   LIGHT_MEALS → ALWAYS available, "Out today" switch, never planned (All Day), station KITCHEN
 //   BEVERAGES   → ALWAYS available, no period, station BAR or NONE
 
@@ -21,8 +21,8 @@ export interface CategoryNode {
   active: boolean
   // Top-level groups are fixed: no rename, reorder or deactivate.
   topLevel: boolean
-  // Only assignable && active nodes can hold meals. "Set meals" is assignable (meals not yet sorted into Breakfast,
-  // Lunch, ...); the other group rows are not. Every subcategory is assignable.
+  // Only assignable && active nodes can hold meals. "Set meals" is assignable (meals not yet sorted into a
+  // subcategory); the other group rows are not. Every subcategory is assignable.
   assignable: boolean
   // Active meals; a group row's count includes its children.
   itemCount: number

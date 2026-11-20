@@ -768,7 +768,8 @@ export function PosOrderBuilder({
       if (!silent) setIsLoadingMenu(true);
       setMenuError(null);
       try {
-        const res = await authFetch(`/menu/today?period=${periodName.toUpperCase()}`);
+        // The period's name as GET /meal-periods gives it (matched ignoring case); never a code made from it.
+        const res = await authFetch(`/menu/today?period=${encodeURIComponent(periodName)}`);
         const payload = (await res.json().catch(() => null)) as MenuTodayResponse | null;
 
         if (!res.ok || !payload) {
@@ -779,12 +780,12 @@ export function PosOrderBuilder({
           options: Array.isArray(payload.options) ? payload.options : [],
           availableExtras: Array.isArray(payload.availableExtras) ? payload.availableExtras : [],
         });
-        menuPeriodRef.current = periodName.toUpperCase();
+        menuPeriodRef.current = periodName;
         setMenuUpdatedAt(new Date());
         setMenuStale(false);
         setLiveMenuFailed(false);
       } catch (err) {
-        if (menuPeriodRef.current === periodName.toUpperCase()) {
+        if (menuPeriodRef.current === periodName) {
           // Keep what's on screen; the server still refuses anything that has sold out.
           setMenuStale(true);
         } else {

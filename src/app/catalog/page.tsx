@@ -1950,7 +1950,7 @@ function CatalogPageContent() {
                     </span>
                   )}
                 </div>
-                {/* Only assignable && active nodes are selectable: "Set meals" itself and every subcategory (Set meals › Breakfast,
+                {/* Only assignable && active nodes are selectable: "Set meals" itself and every subcategory (Set meals › Mornings,
                     Light meals › Burgers, ...). A group row may be selectable and have children at the same time. */}
                 <Select value={mealForm.categoryId} onValueChange={(value) => setMealForm((prev) => ({ ...prev, categoryId: value }))}>
                   <SelectTrigger id="m-category">

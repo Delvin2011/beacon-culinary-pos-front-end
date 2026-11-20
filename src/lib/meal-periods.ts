@@ -337,6 +337,11 @@ function count(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`
 }
 
+// 400 MEAL_PERIOD_INACTIVE on the planning screens: the period was deactivated since the page loaded.
+export function inactivePeriodMessage(periodName: string): string {
+  return `${periodName} has been deactivated, so nothing can be planned under it. Choose another period.`
+}
+
 export const FORBIDDEN_MESSAGE = "You don't have permission to manage meal periods. Only an admin can."
 
 // The message for a refusal, by code. `periodName` is the period acted on, from the list on screen.
@@ -363,7 +368,7 @@ export function refusalMessage(error: MealPeriodError, periodName: string): stri
     case "MEAL_PERIOD_NOT_FOUND":
       return "This meal period no longer exists. The list has been reloaded."
     case "MEAL_PERIOD_INACTIVE":
-      return `${periodName} has been deactivated, so nothing can be planned under it. Choose another period.`
+      return inactivePeriodMessage(periodName)
     default:
       return error.message
   }

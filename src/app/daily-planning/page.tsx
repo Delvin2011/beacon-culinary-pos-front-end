@@ -24,13 +24,14 @@ import { toast } from "@/hooks/use-toast"
 import { type CatalogGroup, type CategoryRef, canToggleOutToday } from "@/lib/catalog"
 import type { StockStatus } from "@/lib/light-meal-stock"
 import { formatZarCurrency } from "@/lib/utils"
+import { inactivePeriodMessage } from "@/lib/meal-periods"
 
 interface MealPeriod {
   id: number
   name: string
   startTime: string | null
   endTime: string | null
-  // Only plannable periods (Breakfast, Lunch) are planned. All Day items are always available.
+  // Only plannable periods (timed periods that accept set meals) are planned. All Day items are always available.
   plannable?: boolean
 }
 
@@ -94,7 +95,8 @@ interface TodayPlan {
 }
 
 // Admin view of the plan: every item regardless of status. /menu/today now only returns READY items (for the POS).
-const adminPlanPath = (date: string, periodName: string) => `/admin/daily-planning/${date}?period=${periodName.toUpperCase()}`
+// Periods are sent by name as GET /meal-periods gives it (matched ignoring case; contract T0-5 section 8).
+const adminPlanPath = (date: string, periodName: string) => `/admin/daily-planning/${date}?period=${encodeURIComponent(periodName)}`
 const mealOptionActualPath = (id: number) => `/admin/daily-options/${id}/actual`
 const componentStockActualPath = (id: number) => `/admin/daily-component-stock/${id}/actual`
 const mealOptionPath = (id: number) => `/admin/daily-options/${id}`
@@ -200,6 +202,10 @@ function parseError(body: unknown, fallback: string): string {
   return fallback
 }
 
+function errorCodeOf(body: unknown): string | null {
+  return body && typeof body === "object" && typeof (body as Record<string, unknown>).code === "string" ? ((body as Record<string, unknown>).code as string) : null
+}
+
 function toTodayPlan(body: Partial<TodayPlan>): TodayPlan {
   return {
     options: Array.isArray(body.options) ? body.options : [],
@@ -275,8 +281,8 @@ export default function DailyPlanningPage() {
 
   const [periods, setPeriods] = useState<MealPeriod[]>([])
   const [selectedPeriod, setSelectedPeriod] = useState<MealPeriod | null>(null)
-  // True when the server has periods that can't be planned (All Day), to explain where they went.
-  const [hasUnplannablePeriods, setHasUnplannablePeriods] = useState(false)
+  // Names of the periods that can't be planned (the All Day period), from GET /meal-periods, to explain where they went.
+  const [unplannableNames, setUnplannableNames] = useState<string[]>([])
 
   // Meals the selected period can plan (GET /admin/meal-catalog?periodId=).
   const [mealCatalog, setMealCatalog] = useState<MealCatalogEntry[]>([])
@@ -346,9 +352,14 @@ export default function DailyPlanningPage() {
       const data = (await res.json()) as MealPeriod[]
       // Older servers don't send plannable: treat those periods as plannable.
       const plannable = data.filter((period) => period.plannable !== false)
-      setHasUnplannablePeriods(plannable.length < data.length)
+      setUnplannableNames(data.filter((period) => period.plannable === false).map((period) => period.name))
       setPeriods(plannable)
-      if (plannable.length > 0) setSelectedPeriod(plannable[0])
+      // Keep the selected period (by id) after a reload; the same object if nothing about it changed, so nothing reloads.
+      setSelectedPeriod((current) => {
+        const match = current ? plannable.find((period) => period.id === current.id) : undefined
+        if (match && match.name === current?.name && match.startTime === current?.startTime && match.endTime === current?.endTime) return current
+        return match ?? plannable[0] ?? null
+      })
     } catch {
       // no-op
     }
@@ -404,6 +415,8 @@ export default function DailyPlanningPage() {
       const res = await authFetch(adminPlanPath(todayISO(), period.name))
       const body = (await res.json().catch(() => null)) as Partial<TodayPlan> | unknown
       if (!res.ok || !body || typeof body !== "object") {
+        // "Unknown meal period: X" (400, no code): the period was renamed or deactivated elsewhere; reload the periods.
+        if (res.status === 400 && errorCodeOf(body) === null) void fetchPeriods()
         throw new Error(parseError(body, "Unable to load today's plan."))
       }
       setTodayPlan(toTodayPlan(body as Partial<TodayPlan>))
@@ -417,7 +430,7 @@ export default function DailyPlanningPage() {
     } finally {
       setPlanLoading(false)
     }
-  }, [authFetch])
+  }, [authFetch, fetchPeriods])
 
   // One summary request per period; a failed one just leaves that tab without a mark.
   const fetchAllPeriodProgress = useCallback(async (list: MealPeriod[]) => {
@@ -488,9 +501,10 @@ export default function DailyPlanningPage() {
     setConfirmRequirementsSuccess(null)
     setRequirementShortfalls([])
     try {
-      const res = await authFetch(`/admin/daily-planning/${todayISO()}/ingredient-requirements?period=${period.name.toUpperCase()}`)
+      const res = await authFetch(`/admin/daily-planning/${todayISO()}/ingredient-requirements?period=${encodeURIComponent(period.name)}`)
       const body = (await res.json().catch(() => null)) as IngredientRequirementsResponseDto | unknown
       if (!res.ok || !body) {
+        if (res.status === 400 && errorCodeOf(body) === null) void fetchPeriods()
         throw new Error(parseError(body, "Unable to load ingredient requirements."))
       }
       const response = body as IngredientRequirementsResponseDto
@@ -507,7 +521,7 @@ export default function DailyPlanningPage() {
     } finally {
       setRequirementsLoading(false)
     }
-  }, [authFetch])
+  }, [authFetch, fetchPeriods])
 
   useEffect(() => {
     if (isAuthenticated && canManageMenu(user?.role)) {
@@ -536,7 +550,7 @@ export default function DailyPlanningPage() {
   }, [todayPlan, planPeriodId])
 
   const selectedMeal = mealCatalog.find((meal) => String(meal.id) === selectedMealId)
-  // The picker grouped by subcategory (Breakfast, Lunch, ...), so items are easy to find. Nothing is hidden: any set meal
+  // The picker grouped by subcategory (as the catalogue sorts them), so items are easy to find. Nothing is hidden: any set meal
   // can be planned under any period. Meals not yet sorted sit under their own category's name (Set meals).
   const mealPickerGroups = useMemo(() => {
     const groups = new Map<string, { category: CategoryRef | null; meals: MealCatalogEntry[] }>()
@@ -613,6 +627,11 @@ export default function DailyPlanningPage() {
       })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as unknown
+        // T0-5b: the period was deactivated since the page loaded: say so in plain words and reload the periods.
+        if (errorCodeOf(body) === "MEAL_PERIOD_INACTIVE") {
+          void fetchPeriods()
+          throw new Error(inactivePeriodMessage(selectedPeriod.name))
+        }
         throw new Error(parseError(body, "Failed to add meal option."))
       }
       setSelectedMealId("")
@@ -644,6 +663,10 @@ export default function DailyPlanningPage() {
       })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as unknown
+        if (errorCodeOf(body) === "MEAL_PERIOD_INACTIVE") {
+          void fetchPeriods()
+          throw new Error(inactivePeriodMessage(selectedPeriod.name))
+        }
         throw new Error(parseError(body, "Failed to add component stock."))
       }
       setSelectedComponentId("")
@@ -693,12 +716,13 @@ export default function DailyPlanningPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          period: selectedPeriod.name.toUpperCase(),
+          period: selectedPeriod.name,
           adjustments,
         }),
       })
       const body = (await res.json().catch(() => null)) as ConfirmIngredientRequirementsResponseDto | unknown
       if (!res.ok || !body) {
+        if (res.status === 400 && errorCodeOf(body) === null) void fetchPeriods()
         throw new Error(parseError(body, "Unable to confirm ingredient requirements."))
       }
 
@@ -783,6 +807,11 @@ export default function DailyPlanningPage() {
       })
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as unknown
+        if (errorCodeOf(body) === "MEAL_PERIOD_INACTIVE") {
+          void fetchPeriods()
+          const periodName = periods.find((period) => period.id === editTarget.mealPeriodId)?.name ?? selectedPeriod?.name ?? "This period"
+          throw new Error(inactivePeriodMessage(periodName))
+        }
         throw new Error(parseError(body, res.status === 404 ? "This item no longer exists. Refresh the plan." : "Unable to save the change."))
       }
       toast({ title: "Plan updated", description: `${editTarget.name} was updated.` })
@@ -898,9 +927,9 @@ export default function DailyPlanningPage() {
               {periods.length === 0 && <span className="px-3 py-1.5 text-sm text-muted-foreground animate-pulse">Loading periods…</span>}
             </div>
           </div>
-          {hasUnplannablePeriods && (
+          {unplannableNames.length > 0 && (
             <p className="-mt-4 text-xs text-muted-foreground">
-              All Day meals and beverages are always available. Manage them in{" "}
+              Light meals ({unplannableNames.join(", ")}) and beverages are always available. Manage them in{" "}
               <Link href="/catalog" className="underline underline-offset-2 hover:text-foreground">Catalogue Management</Link>.
             </p>
           )}
