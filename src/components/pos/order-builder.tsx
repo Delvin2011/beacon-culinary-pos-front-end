@@ -497,6 +497,8 @@ export function PosOrderBuilder({
   // The period whose menu is on screen and when it last loaded. A failed refresh of the SAME period keeps it
   // and marks it stale; a different period that fails to load is cleared, so items never show under the wrong tab.
   const menuPeriodRef = useRef<string | null>(null);
+  // The period name already reloaded for after MEAL_PERIOD_UNKNOWN, so a second refusal for it can't loop.
+  const unknownReloadRef = useRef<string | null>(null);
   const beveragesLoadedRef = useRef(false);
   const [menuUpdatedAt, setMenuUpdatedAt] = useState<Date | null>(null);
   const [menuStale, setMenuStale] = useState(false);
@@ -757,9 +759,12 @@ export function PosOrderBuilder({
       return;
     }
 
+    // Keep the chosen period if it is still there (a rename keeps its id); otherwise the one open now.
     const now = nowTimeHHMMSS();
     const active = payload.find((p) => isWithinPeriod(p.startTime, p.endTime, now));
-    setSelectedPeriodId(active?.id ?? payload[0].id);
+    setSelectedPeriodId((current) =>
+      current !== null && payload.some((p) => p.id === current) ? current : (active?.id ?? payload[0].id),
+    );
   }, [authFetch]);
 
   // silent: refresh in the background (tab refocus, after an order error) without the loading placeholder.
@@ -773,8 +778,17 @@ export function PosOrderBuilder({
         const payload = (await res.json().catch(() => null)) as MenuTodayResponse | null;
 
         if (!res.ok || !payload) {
+          // MEAL_PERIOD_UNKNOWN: the period was renamed or deactivated. Reload the periods once per name, which loads
+          // the menu again under the new name; a second refusal for the same name shows the error instead of looping.
+          const code = payload && typeof payload === "object" ? (payload as { code?: unknown }).code : undefined;
+          if (code === "MEAL_PERIOD_UNKNOWN" && unknownReloadRef.current !== periodName) {
+            unknownReloadRef.current = periodName;
+            void loadPeriods().catch(() => setMenuError(parseMessage(payload, "Unable to load today's menu.")));
+            return;
+          }
           throw new Error(parseMessage(payload, "Unable to load today's menu."));
         }
+        unknownReloadRef.current = null;
 
         setMenu({
           options: Array.isArray(payload.options) ? payload.options : [],
@@ -798,7 +812,7 @@ export function PosOrderBuilder({
         setIsLoadingMenu(false);
       }
     },
-    [authFetch],
+    [authFetch, loadPeriods],
   );
 
   // GET /menu/today with no period: every open period, light meals and beverages. Beverages have no period.

@@ -105,11 +105,17 @@ The server matches names ignoring case, so upper-casing worked. It is gone so th
 **Daily planning also:**
 - **`MEAL_PERIOD_INACTIVE` (400)** on add meal option, add component stock and edit: "{name} has been deactivated, so
   nothing can be planned under it. Choose another period." The periods are then reloaded.
-- **"Unknown meal period: X" (400 with no code)** on loading the plan or the requirements, or on confirming: the
-  server's message shows and the periods are reloaded once. This is the one branch on a status without a code,
-  because the contract gives this error no code.
-- **Reloading the periods** keeps the selected period by id. It keeps the same object when nothing about the period
-  changed, so a reload never starts a loop.
+- **`MEAL_PERIOD_UNKNOWN` (400)** on loading the plan or the requirements, or on confirming: "{name} has been renamed
+  or deactivated. The meal periods have been reloaded; try again." The periods are reloaded. A 400 without the code
+  doesn't reload anything.
+- **Reloading the periods** keeps the selected period by id, so a renamed period loads its plan again under the new
+  name. It keeps the same object when nothing about the period changed, so a reload never starts a loop.
+
+**POS menu also** (`order-builder.tsx`, `GET /menu/today?period=`):
+- **On `MEAL_PERIOD_UNKNOWN`:** the till reloads `GET /meal-periods` once for that name, which loads the menu again
+  under the new name.
+- **If the same name is refused again**, the server's message shows instead of a second reload, so it can't loop.
+- **After a reload** the till keeps the chosen period by id. Before, it always went back to the period open now.
 
 **The search, kept as a test** (`src/lib/no-hard-coded-meal-periods.test.ts`). It scans every `.ts`/`.tsx` file under
 `src/` except tests and fixtures, and fails on:
@@ -127,7 +133,8 @@ Checked against `main`: it catches all the old places above. Not covered by the 
 | `src/lib/meal-periods.test.ts` | Field rules, overlap (touching allowed, inactive ignored), All Day, body, warnings (live, shortening, rename, sort order), refusals by code, history changes, calls |
 | `src/app/meal-periods/page.test.tsx` | List order, inactive greyed, All Day protected, add, edit, client and server field errors, overlap, warnings, deactivate refused and allowed, activate refusals, 404, tabs, non-ADMIN, 403 |
 | `src/components/meal-periods/meal-periods-history.test.tsx` | Rows, before/after, filter, paging, URL |
-| `src/app/daily-planning/page.meal-periods.test.tsx` | Renamed periods sent as given, the always-open note, `MEAL_PERIOD_INACTIVE`, the reload keeping the selection, no reload loop |
+| `src/app/daily-planning/page.meal-periods.test.tsx` | Renamed periods sent as given, the always-open note, `MEAL_PERIOD_INACTIVE`, `MEAL_PERIOD_UNKNOWN` (plain words, plan reloaded under the new name, no loop, no reload without the code), the reload keeping the selection |
+| `src/components/pos/order-builder.meal-period-unknown.test.tsx` | POS menu on `MEAL_PERIOD_UNKNOWN`: one reload, menu under the new name; a repeated refusal shows the error with no loop; no reload without the code |
 | `src/lib/no-hard-coded-meal-periods.test.ts` | No period names or codes in the source |
 | `src/components/app-sidebar.meal-periods.test.tsx`, `src/lib/return-to.test.ts` | Sidebar entry ADMIN only; the return-to allowlist |
 
@@ -135,4 +142,5 @@ Checked against `main`: it catches all the old places above. Not covered by the 
 
 - No run against the real T0-5a backend, and no Playwright test.
 - **Locations** ("Main Store", "Kitchen" by name, for example "Stock was deducted from Kitchen" on Daily planning): T0-5d.
-- **Option 2** (send `periodId`, branch on `UNKNOWN_MEAL_PERIOD`) is not built; the contract takes names.
+- **Sending `periodId`** instead of the name is not built; the contract takes names, and a stale name is answered
+  with `MEAL_PERIOD_UNKNOWN` (contract section 8, from backend commit f784288).

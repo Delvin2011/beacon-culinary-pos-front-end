@@ -107,20 +107,42 @@ describe("Daily planning and meal periods", () => {
     expect(screen.getByRole("button", { name: /Mornings & Tea 07:00/, hidden: true })).not.toHaveClass("bg-foreground")
   })
 
-  it("on 'Unknown meal period' (400, no code) shows the message and reloads the periods once, without a loop", async () => {
+  it("on MEAL_PERIOD_UNKNOWN says so in plain words and reloads the periods once, without a loop", async () => {
     let failed = false
     answer = (path) => {
       if (!failed && path.includes("?period=Mornings")) {
         failed = true
-        return json({ error: "Unknown meal period: Mornings & Tea" }, 400)
+        return json({ error: "Unknown meal period: Mornings & Tea", code: "MEAL_PERIOD_UNKNOWN" }, 400)
       }
       return null
     }
     render(<DailyPlanningPage />)
-    expect(await screen.findByText("Unknown meal period: Mornings & Tea")).toBeInTheDocument()
+    expect(await screen.findByText("Mornings & Tea has been renamed or deactivated. The meal periods have been reloaded; try again.")).toBeInTheDocument()
     await waitFor(() => expect(periodLoads()).toBe(2))
     // Give any loop a chance to show itself.
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(periodLoads()).toBe(2)
+  })
+
+  it("loads the plan again under the new name after a rename", async () => {
+    const renamed = PERIODS.map((p) => (p.id === 1 ? { ...p, name: "Early" } : p))
+    let loads = 0
+    answer = (path) => {
+      if (path === "/meal-periods") return json(loads++ === 0 ? PERIODS : renamed)
+      if (path.includes("?period=Mornings")) return json({ error: "Unknown meal period: Mornings & Tea", code: "MEAL_PERIOD_UNKNOWN" }, 400)
+      if (path.endsWith("?period=Early")) return json(plan(1))
+      return null
+    }
+    render(<DailyPlanningPage />)
+    expect(await screen.findByRole("cell", { name: "Beef stew" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /Early 07:00/ })).toHaveClass("bg-foreground")
+  })
+
+  it("does not reload the periods on a 400 without the code", async () => {
+    answer = (path) => (path.includes("?period=Mornings") ? json({ error: "Something else went wrong." }, 400) : null)
+    render(<DailyPlanningPage />)
+    expect(await screen.findByText("Something else went wrong.")).toBeInTheDocument()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(periodLoads()).toBe(1)
   })
 })

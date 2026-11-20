@@ -24,7 +24,7 @@ import { toast } from "@/hooks/use-toast"
 import { type CatalogGroup, type CategoryRef, canToggleOutToday } from "@/lib/catalog"
 import type { StockStatus } from "@/lib/light-meal-stock"
 import { formatZarCurrency } from "@/lib/utils"
-import { inactivePeriodMessage } from "@/lib/meal-periods"
+import { inactivePeriodMessage, unknownPeriodMessage } from "@/lib/meal-periods"
 
 interface MealPeriod {
   id: number
@@ -415,8 +415,12 @@ export default function DailyPlanningPage() {
       const res = await authFetch(adminPlanPath(todayISO(), period.name))
       const body = (await res.json().catch(() => null)) as Partial<TodayPlan> | unknown
       if (!res.ok || !body || typeof body !== "object") {
-        // "Unknown meal period: X" (400, no code): the period was renamed or deactivated elsewhere; reload the periods.
-        if (res.status === 400 && errorCodeOf(body) === null) void fetchPeriods()
+        // MEAL_PERIOD_UNKNOWN: the period was renamed or deactivated elsewhere. Reload the periods; the reload keeps the
+        // selection by id, so a renamed period loads its plan again under the new name.
+        if (errorCodeOf(body) === "MEAL_PERIOD_UNKNOWN") {
+          void fetchPeriods()
+          throw new Error(unknownPeriodMessage(period.name))
+        }
         throw new Error(parseError(body, "Unable to load today's plan."))
       }
       setTodayPlan(toTodayPlan(body as Partial<TodayPlan>))
@@ -504,7 +508,10 @@ export default function DailyPlanningPage() {
       const res = await authFetch(`/admin/daily-planning/${todayISO()}/ingredient-requirements?period=${encodeURIComponent(period.name)}`)
       const body = (await res.json().catch(() => null)) as IngredientRequirementsResponseDto | unknown
       if (!res.ok || !body) {
-        if (res.status === 400 && errorCodeOf(body) === null) void fetchPeriods()
+        if (errorCodeOf(body) === "MEAL_PERIOD_UNKNOWN") {
+          void fetchPeriods()
+          throw new Error(unknownPeriodMessage(period.name))
+        }
         throw new Error(parseError(body, "Unable to load ingredient requirements."))
       }
       const response = body as IngredientRequirementsResponseDto
@@ -722,7 +729,10 @@ export default function DailyPlanningPage() {
       })
       const body = (await res.json().catch(() => null)) as ConfirmIngredientRequirementsResponseDto | unknown
       if (!res.ok || !body) {
-        if (res.status === 400 && errorCodeOf(body) === null) void fetchPeriods()
+        if (errorCodeOf(body) === "MEAL_PERIOD_UNKNOWN") {
+          void fetchPeriods()
+          throw new Error(unknownPeriodMessage(selectedPeriod.name))
+        }
         throw new Error(parseError(body, "Unable to confirm ingredient requirements."))
       }
 

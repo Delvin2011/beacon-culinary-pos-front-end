@@ -193,6 +193,12 @@ describe("refusalMessage", () => {
     )
   })
 
+  it("MEAL_PERIOD_UNKNOWN in plain words, not the server's message", async () => {
+    expect(refusalMessage(await errorOf(codeResponse(400, "MEAL_PERIOD_UNKNOWN", "Unknown meal period: Supper")), "Supper")).toBe(
+      "Supper has been renamed or deactivated. The meal periods have been reloaded; try again.",
+    )
+  })
+
   it("403 with an empty body is a permission message", async () => {
     const error = await errorOf(new Response(null, { status: 403 }))
     expect(error.forbidden).toBe(true)

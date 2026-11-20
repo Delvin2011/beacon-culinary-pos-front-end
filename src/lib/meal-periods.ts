@@ -342,6 +342,11 @@ export function inactivePeriodMessage(periodName: string): string {
   return `${periodName} has been deactivated, so nothing can be planned under it. Choose another period.`
 }
 
+// 400 MEAL_PERIOD_UNKNOWN: the name sent is no longer an active period, usually because it was renamed.
+export function unknownPeriodMessage(periodName: string): string {
+  return `${periodName} has been renamed or deactivated. The meal periods have been reloaded; try again.`
+}
+
 export const FORBIDDEN_MESSAGE = "You don't have permission to manage meal periods. Only an admin can."
 
 // The message for a refusal, by code. `periodName` is the period acted on, from the list on screen.
@@ -369,6 +374,8 @@ export function refusalMessage(error: MealPeriodError, periodName: string): stri
       return "This meal period no longer exists. The list has been reloaded."
     case "MEAL_PERIOD_INACTIVE":
       return inactivePeriodMessage(periodName)
+    case "MEAL_PERIOD_UNKNOWN":
+      return unknownPeriodMessage(periodName)
     default:
       return error.message
   }
