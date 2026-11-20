@@ -71,8 +71,10 @@ beforeEach(() => {
       const existing = periods.find((p) => p.id === Number(status[1]))!
       return jsonResponse({ ...existing, active: status[2] === "activate" })
     }
+    if (path.startsWith("/admin/meal-periods/history")) return jsonResponse({ content: [], page: 0, size: 50, totalElements: 0, totalPages: 0 })
     return jsonResponse({}, 404)
   })
+  window.history.replaceState(null, "", "/meal-periods")
 })
 
 afterEach(() => {
@@ -338,6 +340,31 @@ describe("deactivate and activate", () => {
     fireEvent.click(screen.getByRole("button", { name: "Deactivate Breakfast" }))
     submit("Deactivate")
     expect(await within(dialog()).findByRole("alert")).toHaveTextContent(/^Breakfast is always open/)
+  })
+})
+
+describe("tabs", () => {
+  it("shows the change history with every period in its filter, and keeps the tab in the URL", async () => {
+    await renderPage()
+    fireEvent.click(screen.getByRole("tab", { name: "Change history" }))
+    expect(await screen.findByText("No meal periods have been changed yet.")).toBeInTheDocument()
+    expect(within(screen.getByLabelText("Period")).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "All periods",
+      "Breakfast",
+      "Lunch",
+      "All Day",
+    ])
+    expect(window.location.search).toBe("?tab=history")
+    fireEvent.click(screen.getByRole("tab", { name: "Periods" }))
+    expect(window.location.search).toBe("")
+    expect(row(2)).toBeVisible()
+  })
+
+  it("opens on the history when the URL says so", async () => {
+    window.history.replaceState(null, "", "/meal-periods?tab=history")
+    render(<MealPeriodsPage />)
+    expect(await screen.findByText("No meal periods have been changed yet.")).toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "Change history" })).toHaveAttribute("aria-selected", "true")
   })
 })
 
