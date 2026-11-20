@@ -96,6 +96,11 @@ const data = {
           url: "/sale-exceptions",
           access: "admin" as const,
         },
+        {
+          title: "Site settings",
+          url: "/site-settings",
+          access: "admin" as const,
+        },
       ],
     },
     {
