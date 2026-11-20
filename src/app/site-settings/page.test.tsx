@@ -308,7 +308,8 @@ describe("unsaved changes", () => {
     fireEvent.change(screen.getByLabelText("Lock an idle till after"), { target: { value: "8" } })
     fireEvent.click(screen.getByRole("button", { name: "Save (1)" }))
     await screen.findByText("No unsaved changes.")
-    expect(beforeUnload()).toBe(false)
+    // The page hears "not dirty" from the form one render later, then removes the listener.
+    await waitFor(() => expect(beforeUnload()).toBe(false))
   })
 
   it("no warning when leaving for the password re-sign-in (the edits are kept)", async () => {
