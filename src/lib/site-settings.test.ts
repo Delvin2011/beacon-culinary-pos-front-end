@@ -199,7 +199,7 @@ describe("the re-sign-in draft", () => {
 
 describe("API", () => {
   it("GET, PUT with only the changes, reset by key, history query", async () => {
-    const authFetch = vi.fn(async (_path: string, _init?: RequestInit) => json(body))
+    const authFetch = vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(async () => json(body))
     await fetchSiteSettings(authFetch)
     await saveSiteSettings(authFetch, { "pos.session.idle-lock-minutes": 10 })
     await resetSiteSetting(authFetch, "vat.standard-rate")
