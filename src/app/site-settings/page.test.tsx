@@ -253,6 +253,20 @@ describe("offline without the entitlement", () => {
   })
 })
 
+describe("tabs", () => {
+  it("shows the change history, and unsaved edits survive switching tabs", async () => {
+    window.history.replaceState(null, "", "/site-settings")
+    await renderPage()
+    fireEvent.change(screen.getByLabelText("Lock an idle till after"), { target: { value: "8" } })
+    fireEvent.click(screen.getByRole("tab", { name: "Change history" }))
+    expect(await screen.findByText("No settings have been changed yet.")).toBeInTheDocument()
+    expect(window.location.search).toBe("?tab=history")
+    fireEvent.click(screen.getByRole("tab", { name: "Settings" }))
+    expect(screen.getByLabelText("Lock an idle till after")).toHaveValue("8")
+    expect(window.location.search).toBe("")
+  })
+})
+
 describe("ADMIN only", () => {
   it.each(["CASHIER", "HEAD_CHEF", "STOCK_ADMIN"])("sends %s to their own page and loads nothing", (other) => {
     role = other

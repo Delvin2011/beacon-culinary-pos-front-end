@@ -60,9 +60,11 @@ interface SettingsEditorProps {
   onDirtyChange?: (dirty: boolean) => void
   // Called just before leaving for the password re-sign-in (the edits are kept), so no leave warning is shown.
   onLeaveForSignIn?: () => void
+  // The settings as loaded or saved (the history uses them for labels and formatting).
+  onLoaded?: (settings: SiteSetting[]) => void
 }
 
-export function SettingsEditor({ onDirtyChange, onLeaveForSignIn }: SettingsEditorProps) {
+export function SettingsEditor({ onDirtyChange, onLeaveForSignIn, onLoaded }: SettingsEditorProps) {
   const router = useRouter()
   const { authFetch } = useAuth()
   const [data, setData] = useState<SiteSettings | null>(null)
@@ -130,6 +132,10 @@ export function SettingsEditor({ onDirtyChange, onLeaveForSignIn }: SettingsEdit
   useEffect(() => {
     onDirtyChange?.(dirty)
   }, [dirty, onDirtyChange])
+
+  useEffect(() => {
+    if (data) onLoaded?.(data.settings)
+  }, [data, onLoaded])
 
   // Keeps the form through the password re-sign-in and goes there; it comes back to this page.
   const goSignIn = (pendingReset: string | null, keys: string[]) => {
