@@ -267,6 +267,61 @@ describe("tabs", () => {
   })
 })
 
+describe("unsaved changes", () => {
+  const beforeUnload = () => {
+    const event = new Event("beforeunload", { cancelable: true })
+    window.dispatchEvent(event)
+    return event.defaultPrevented
+  }
+  const appLink = () => {
+    const link = document.createElement("a")
+    link.href = "/dashboard"
+    link.textContent = "Dashboard link"
+    document.body.appendChild(link)
+    return link
+  }
+
+  it("warns before leaving with unsaved edits, and not once they are saved", async () => {
+    window.history.replaceState(null, "", "/site-settings")
+    await renderPage()
+    expect(beforeUnload()).toBe(false)
+
+    fireEvent.change(screen.getByLabelText("Lock an idle till after"), { target: { value: "8" } })
+    expect(beforeUnload()).toBe(true)
+    const link = appLink()
+    fireEvent.click(link)
+    const dialog = await screen.findByRole("dialog")
+    expect(within(dialog).getByText("Leave without saving?")).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stay on this page" }))
+    expect(push).not.toHaveBeenCalled()
+    expect(screen.getByLabelText("Lock an idle till after")).toHaveValue("8")
+
+    fireEvent.click(link)
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Leave without saving" }))
+    expect(push).toHaveBeenCalledWith("/dashboard")
+    link.remove()
+  })
+
+  it("no warning once saved", async () => {
+    putAnswer = () => json(settingsBody({ "pos.session.idle-lock-minutes": { value: 8 } }))
+    await renderPage()
+    fireEvent.change(screen.getByLabelText("Lock an idle till after"), { target: { value: "8" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save (1)" }))
+    await screen.findByText("No unsaved changes.")
+    expect(beforeUnload()).toBe(false)
+  })
+
+  it("no warning when leaving for the password re-sign-in (the edits are kept)", async () => {
+    putAnswer = () => json({ error: "Sign in again", code: "REAUTH_REQUIRED", details: { keys: ["vat.standard-rate"] } }, 403)
+    await renderPage()
+    fireEvent.change(screen.getByLabelText("VAT rate"), { target: { value: "16" } })
+    fireEvent.click(screen.getByRole("button", { name: "Save (1)" }))
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/login?reauth=1&returnTo=%2Fsite-settings"))
+    expect(beforeUnload()).toBe(false)
+    expect(screen.queryByText("Leave without saving?")).not.toBeInTheDocument()
+  })
+})
+
 describe("ADMIN only", () => {
   it.each(["CASHIER", "HEAD_CHEF", "STOCK_ADMIN"])("sends %s to their own page and loads nothing", (other) => {
     role = other

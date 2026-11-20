@@ -5,7 +5,10 @@
 // while the history is shown, so unsaved edits survive switching tabs.
 
 import { useState } from "react"
+import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { DevicePageShell, useDeviceAdminGuard } from "@/components/devices/device-page-shell"
+import { useUnsavedChangesGuard } from "@/hooks/use-unsaved-changes-guard"
 import { SettingsEditor } from "@/components/site-settings/settings-editor"
 import { SettingsHistory } from "@/components/site-settings/settings-history"
 import { cn } from "@/lib/utils"
@@ -35,6 +38,8 @@ export default function SiteSettingsPage() {
   const allowed = useDeviceAdminGuard("/site-settings")
   const [tab, setTab] = useState<Tab>(initialTab)
   const [settings, setSettings] = useState<SiteSetting[]>([])
+  const [dirty, setDirty] = useState(false)
+  const guard = useUnsavedChangesGuard(dirty)
 
   if (!allowed) return null
 
@@ -71,13 +76,30 @@ export default function SiteSettingsPage() {
         {tabButton("history", "Change history")}
       </div>
       <div role="tabpanel" id="site-settings-panel-settings" aria-labelledby="site-settings-tab-settings" hidden={tab !== "settings"}>
-        <SettingsEditor onLoaded={setSettings} />
+        <SettingsEditor onLoaded={setSettings} onDirtyChange={setDirty} onLeaveForSignIn={guard.allowLeave} />
       </div>
       {tab === "history" && (
         <div role="tabpanel" id="site-settings-panel-history" aria-labelledby="site-settings-tab-history">
           <SettingsHistory settings={settings} />
         </div>
       )}
+
+      <Dialog open={guard.pendingHref !== null} onOpenChange={(open) => !open && guard.stay()}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Leave without saving?</DialogTitle>
+            <DialogDescription>You have unsaved changes to the site settings. If you leave now, they are lost.</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={guard.stay}>
+              Stay on this page
+            </Button>
+            <Button variant="destructive" onClick={guard.leave}>
+              Leave without saving
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </DevicePageShell>
   )
 }
