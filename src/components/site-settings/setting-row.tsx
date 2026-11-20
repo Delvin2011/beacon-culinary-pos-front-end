@@ -37,6 +37,7 @@ export function SettingRow({ setting, text, edited, error, needsSignIn, busy, on
     <div
       data-testid={`setting-${setting.key}`}
       data-inactive={!setting.active || undefined}
+      data-needs-sign-in={needsSignIn || undefined}
       className={cn(
         "grid gap-3 border-t py-4 first:border-t-0 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]",
         !setting.active && "opacity-60",

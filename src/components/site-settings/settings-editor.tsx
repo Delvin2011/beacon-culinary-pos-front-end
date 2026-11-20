@@ -3,23 +3,38 @@
 // The site settings form (T0-4b). Groups as the API groups them. Edits are held as text per key; Save sends only
 // the settings that change, in one PUT (all or nothing). Reset is its own call, at once after a confirm, and keeps
 // the other unsaved edits. 400s go under their fields (both fields for a cross-field rule).
+//
+// Sensitive settings: on REAUTH_REQUIRED (from Save or Reset) the edits, the reset asked for and what was loaded are
+// kept in sessionStorage (never a password or token) and the admin signs in again with their password. Back here,
+// the settings are loaded again and the edits put back; a setting someone else saved meanwhile is pointed out, and
+// Save asks once before replacing it. Nothing is sent until the admin saves (or confirms the reset) again.
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { useAuth } from "@/hooks/use-auth"
 import { toast } from "@/hooks/use-toast"
+import { reauthLoginPath } from "@/lib/return-to"
 import {
   SiteSettingsError,
   SiteSettingsErrorCode,
+  buildBaseline,
   checkEdits,
+  clearSiteSettingsDraft,
   fetchSiteSettings,
   fieldMessage,
+  formatSettingValue,
   groupSettings,
+  loadSiteSettingsDraft,
   pruneEdits,
   resetSiteSetting,
   saveSiteSettings,
+  saveSiteSettingsDraft,
   settingCopy,
+  staleKeys,
   toInputText,
+  type DraftBaseline,
   type SettingEdits,
   type SiteSetting,
   type SiteSettings,
@@ -43,9 +58,12 @@ export function splitFieldErrors(settings: SiteSetting[], fieldErrors: Record<st
 interface SettingsEditorProps {
   // Tells the page whether there are unsaved edits.
   onDirtyChange?: (dirty: boolean) => void
+  // Called just before leaving for the password re-sign-in (the edits are kept), so no leave warning is shown.
+  onLeaveForSignIn?: () => void
 }
 
-export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
+export function SettingsEditor({ onDirtyChange, onLeaveForSignIn }: SettingsEditorProps) {
+  const router = useRouter()
   const { authFetch } = useAuth()
   const [data, setData] = useState<SiteSettings | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -55,6 +73,14 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
   const [saving, setSaving] = useState(false)
   const [resetKey, setResetKey] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
+  // Back from the re-sign-in.
+  const [restored, setRestored] = useState<{ dropped: string[] } | null>(null)
+  const [reauthKeys, setReauthKeys] = useState<string[]>([])
+  const [stale, setStale] = useState<string[]>([])
+  const [resetAfterSignIn, setResetAfterSignIn] = useState(false)
+  const [staleConfirm, setStaleConfirm] = useState(false)
+  // What each edited setting was when first loaded, kept across more than one re-sign-in.
+  const baselineRef = useRef<Record<string, DraftBaseline>>({})
 
   const load = useCallback(async () => {
     setLoadError(null)
@@ -68,8 +94,30 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
     }
   }, [authFetch])
 
+  // First load; put back a draft kept through the re-sign-in.
   useEffect(() => {
-    void load()
+    const draft = loadSiteSettingsDraft()
+    void load().then((loaded) => {
+      if (!loaded || !draft) return
+      clearSiteSettingsDraft()
+      const known = new Set(loaded.settings.map((s) => s.key))
+      const kept: SettingEdits = {}
+      const dropped: string[] = []
+      for (const [key, text] of Object.entries(draft.edits)) {
+        if (known.has(key)) kept[key] = text
+        else dropped.push(key)
+      }
+      setEdits(pruneEdits(loaded.settings, kept))
+      baselineRef.current = draft.baseline
+      setReauthKeys(draft.reauthKeys)
+      setStale(staleKeys(draft, loaded.settings))
+      setRestored({ dropped })
+      const pending = draft.pendingReset ? loaded.settings.find((s) => s.key === draft.pendingReset) : undefined
+      if (pending && !pending.isDefault) {
+        setResetKey(pending.key)
+        setResetAfterSignIn(true)
+      }
+    })
   }, [load])
 
   const settings = useMemo(() => data?.settings ?? [], [data])
@@ -82,6 +130,14 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
   useEffect(() => {
     onDirtyChange?.(dirty)
   }, [dirty, onDirtyChange])
+
+  // Keeps the form through the password re-sign-in and goes there; it comes back to this page.
+  const goSignIn = (pendingReset: string | null, keys: string[]) => {
+    const touched = [...Object.keys(edits), ...(pendingReset ? [pendingReset] : [])]
+    saveSiteSettingsDraft({ edits, pendingReset, baseline: buildBaseline(settings, touched, baselineRef.current), reauthKeys: keys })
+    onLeaveForSignIn?.()
+    router.push(reauthLoginPath("/site-settings"))
+  }
 
   const edit = (setting: SiteSetting, text: string) => {
     setEdits((current) => {
@@ -127,8 +183,15 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
     }
   }
 
-  const save = async () => {
+  const staleInSave = stale.filter((key) => key in check.changes)
+
+  const save = async (replaceNewer = false) => {
     if (changeCount === 0 || invalidCount > 0) return
+    if (staleInSave.length > 0 && !replaceNewer) {
+      setStaleConfirm(true)
+      return
+    }
+    setStaleConfirm(false)
     setSaving(true)
     setTopErrors([])
     setServerErrors({})
@@ -136,8 +199,16 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
       const saved = await saveSiteSettings(authFetch, check.changes)
       setData(saved)
       setEdits({})
+      setStale([])
+      setReauthKeys([])
+      setRestored(null)
+      baselineRef.current = {}
       toast({ title: "Settings saved", description: `${changeCount} setting${changeCount === 1 ? "" : "s"} changed.` })
     } catch (err) {
+      if (err instanceof SiteSettingsError && err.needsReauth) {
+        goSignIn(null, err.reauthKeys)
+        return
+      }
       showError(err, "Unable to save the site settings.")
     } finally {
       setSaving(false)
@@ -160,9 +231,17 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
       })
       setServerErrors({})
       setResetKey(null)
+      setResetAfterSignIn(false)
+      setStale((keys) => keys.filter((k) => k !== key))
+      setReauthKeys((keys) => keys.filter((k) => k !== key))
       toast({ title: `${settingCopy(key).label} reset to the default` })
     } catch (err) {
+      if (err instanceof SiteSettingsError && err.needsReauth) {
+        goSignIn(key, err.reauthKeys)
+        return
+      }
       setResetKey(null)
+      setResetAfterSignIn(false)
       if (err instanceof SiteSettingsError && err.code === SiteSettingsErrorCode.UNKNOWN_SETTING) {
         setTopErrors([err.message])
         void load()
@@ -192,9 +271,25 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
 
   const busy = saving || resetting
   const resetSetting = resetKey ? (settings.find((s) => s.key === resetKey) ?? null) : null
+  const labelOf = (key: string) => settingCopy(key).label
+  const staleSettings = stale.map((key) => settings.find((s) => s.key === key)).filter((s): s is SiteSetting => !!s)
 
   return (
     <div className="space-y-4">
+      {restored && (
+        <div role="status" className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-700 dark:bg-amber-950/30">
+          <p>You&apos;re signed in again. Your unsaved changes are back; press Save to apply them.</p>
+          {restored.dropped.map((key) => (
+            <p key={key}>{key} is no longer a site setting, so its change was dropped.</p>
+          ))}
+          {staleSettings.map((setting) => (
+            <p key={setting.key} data-testid="stale-notice">
+              Someone else changed {labelOf(setting.key)} since you started (now {formatSettingValue(setting, setting.value)}). Saving will replace it.
+            </p>
+          ))}
+        </div>
+      )}
+
       {topErrors.length > 0 && (
         <div role="alert" className="space-y-1 rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           {topErrors.map((message) => (
@@ -214,7 +309,7 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
                 text={text}
                 edited={setting.key in edits}
                 error={serverErrors[setting.key] ?? check.invalid[setting.key] ?? null}
-                needsSignIn={false}
+                needsSignIn={reauthKeys.includes(setting.key)}
                 busy={busy}
                 onChange={(value) => edit(setting, value)}
                 onUndo={() => undo(setting.key)}
@@ -239,7 +334,33 @@ export function SettingsEditor({ onDirtyChange }: SettingsEditorProps) {
         </Button>
       </div>
 
-      <ResetConfirmDialog setting={resetSetting} busy={resetting} onCancel={() => setResetKey(null)} onConfirm={() => void reset()} />
+      <ResetConfirmDialog
+        setting={resetSetting}
+        afterSignIn={resetAfterSignIn}
+        busy={resetting}
+        onCancel={() => {
+          setResetKey(null)
+          setResetAfterSignIn(false)
+        }}
+        onConfirm={() => void reset()}
+      />
+
+      <Dialog open={staleConfirm} onOpenChange={(open) => !open && setStaleConfirm(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Replace a newer change?</DialogTitle>
+            <DialogDescription>
+              Someone else changed {staleInSave.map(labelOf).join(", ")} since you started. Saving replaces their value with yours.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStaleConfirm(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void save(true)}>Save anyway</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
