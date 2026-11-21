@@ -77,6 +77,7 @@ import {
 } from "@/lib/grv-vat";
 import { LineItemSheet } from "@/components/inventory/line-item-sheet";
 import { useLocations } from "@/hooks/use-locations";
+import { formatStockByLocation, primaryStock, type StockAtLocation } from "@/lib/locations";
 import { useCountSheetCategories, type CountSheetCategoryDto } from "@/hooks/use-count-sheet-categories";
 import type { IngredientOption, LineItemSheetSubmitPayload } from "@/components/inventory/line-item-sheet-types";
 
@@ -95,11 +96,8 @@ type IngredientDto = {
   defaultVatCode?: VatCode;
 };
 
-type StockByLocationDto = {
-  locationId: number;
-  locationName: string;
-  stock: number;
-};
+// Every active location in display order, plus an inactive one while it still holds stock (marked).
+type StockByLocationDto = StockAtLocation;
 
 type IngredientStockDto = {
   totalStock: number;
@@ -1162,7 +1160,7 @@ export default function InventoryPage() {
           countSheetCategory:
             countSheetCategoryNames.get(ingredient.countSheetCategoryId) ?? ingredient.countSheetCategoryName ?? "—",
           totalStock: stock ? stock.totalStock : 0,
-          stockByLocation: stock?.byLocation.map((entry) => `${entry.locationName}: ${entry.stock}`).join(" · ") ?? "",
+          stockByLocation: stock ? formatStockByLocation(stock.byLocation) : "",
           lastMovementAt: stock?.lastMovementAt,
           defaultVatCode: ingredient.defaultVatCode ?? "STANDARD",
           active: ingredient.active,
@@ -2253,10 +2251,8 @@ export default function InventoryPage() {
 
                 {stockTakeIngredientId && (
                   <div className="rounded-md bg-muted px-3 py-2 text-sm">
-                    Expected stock (Main Store):{" "}
-                    {ingredientStocks[Number(stockTakeIngredientId)]?.byLocation.find(
-                      (entry) => entry.locationName === "Main Store",
-                    )?.stock ?? 0}
+                    Expected stock ({primary?.name ?? "primary location"}):{" "}
+                    {primaryStock(ingredientStocks[Number(stockTakeIngredientId)]?.byLocation ?? []) ?? 0}
                   </div>
                 )}
 

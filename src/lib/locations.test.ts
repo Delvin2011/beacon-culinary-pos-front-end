@@ -9,7 +9,10 @@ import {
   deactivateRefusal,
   defaultIssueLocationId,
   describeHistoryEntry,
+  formatStockByLocation,
   historyPath,
+  primaryStock,
+  stockLocationLabel,
   invalidFields,
   isChooseAgain,
   listAdminLocations,
@@ -42,6 +45,24 @@ describe("pickers", () => {
     expect(defaultIssueLocationId(pickerLocations())).toBeNull()
     expect(defaultIssueLocationId(pickerLocations().slice(0, 2))).toBe(PRODUCTION.id)
     expect(defaultIssueLocationId(pickerLocations().slice(0, 1))).toBeNull()
+  })
+})
+
+describe("stock by location", () => {
+  const entries = [
+    { locationId: PRIMARY.id, locationName: PRIMARY.name, kind: "PRIMARY" as const, active: true, stock: 120 },
+    { locationId: PRODUCTION.id, locationName: PRODUCTION.name, kind: "SECONDARY" as const, active: true, stock: 4 },
+    { locationId: 9, locationName: "Old Pantry", kind: "SECONDARY" as const, active: false, stock: 1 },
+  ]
+
+  it("shows every location in the API's order, the primary and an inactive one marked", () => {
+    expect(formatStockByLocation(entries)).toBe(`${PRIMARY.name} (primary): 120 · ${PRODUCTION.name}: 4 · Old Pantry (inactive): 1`)
+  })
+
+  it("finds the primary's figure by kind, not by name", () => {
+    expect(primaryStock(entries)).toBe(120)
+    expect(primaryStock([{ ...entries[0], locationName: "Main Store", kind: "SECONDARY" }])).toBeNull()
+    expect(stockLocationLabel({ locationId: 1, locationName: "X", stock: 0 })).toBe("X")
   })
 })
 

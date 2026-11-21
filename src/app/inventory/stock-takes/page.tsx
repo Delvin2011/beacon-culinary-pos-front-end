@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/hooks/use-auth";
+import { useLocations } from "@/hooks/use-locations";
 import { canManageStockTakes } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -36,9 +37,19 @@ function formatDateTime(value?: string): string {
   }
 }
 
+function initialLocationId(): number | null {
+  if (typeof window === "undefined") return null;
+  const value = Number(new URLSearchParams(window.location.search).get("locationId"));
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
 export default function StockTakesQueuePage() {
   const router = useRouter();
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
+  // The filter offers deactivated locations too, so past counts there can still be found (contract section 3).
+  const { locations: allLocations } = useLocations({ includeInactive: true });
+  const { locations: activeLocations, loading: activeLoading } = useLocations();
+  const [locationId, setLocationId] = useState<number | null>(initialLocationId);
 
   const [stockTakes, setStockTakes] = useState<StockTakeSummaryDto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,19 +70,30 @@ export default function StockTakesQueuePage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch("/stock-takes");
+      const params = new URLSearchParams({ status: "SUBMITTED" });
+      if (locationId !== null) params.set("locationId", String(locationId));
+      const res = await authFetch(`/stock-takes?${params.toString()}`);
       const body = (await res.json().catch(() => null)) as StockTakeSummaryDto[] | unknown;
       if (!res.ok || !Array.isArray(body)) {
         throw new Error("Unable to load pending stock takes.");
       }
-      setStockTakes(body.filter((stockTake) => stockTake.status === "SUBMITTED"));
+      setStockTakes(body);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load pending stock takes.");
       setStockTakes([]);
     } finally {
       setLoading(false);
     }
-  }, [authFetch]);
+  }, [authFetch, locationId]);
+
+  // Keep the filter in the URL (?locationId=…).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (locationId !== null) params.set("locationId", String(locationId));
+    else params.delete("locationId");
+    const search = params.toString();
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${search ? `?${search}` : ""}`);
+  }, [locationId]);
 
   useEffect(() => {
     if (isAuthenticated && canManageStockTakes(user?.role)) {
@@ -114,6 +136,27 @@ export default function StockTakesQueuePage() {
             </Button>
           </div>
 
+          <label className="flex items-center gap-2 text-sm">
+            <span className="text-muted-foreground">Location</span>
+            <select
+              aria-label="Location"
+              className="h-9 rounded-md border bg-background px-2 text-sm"
+              value={locationId ?? ""}
+              onChange={(event) => setLocationId(event.target.value ? Number(event.target.value) : null)}
+            >
+              <option value="">All locations</option>
+              {allLocations.map((location) => (
+                <option key={location.id} value={location.id}>
+                  {location.name}
+                  {!activeLoading && !activeLocations.some((active) => active.id === location.id) ? " (inactive)" : ""}
+                </option>
+              ))}
+              {locationId !== null && !allLocations.some((location) => location.id === locationId) && (
+                <option value={locationId}>Location #{locationId}</option>
+              )}
+            </select>
+          </label>
+
           {error && <p className="text-sm text-destructive">{error}</p>}
 
           {loading ? (
@@ -134,7 +177,7 @@ export default function StockTakesQueuePage() {
                 {stockTakes.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
-                      No pending stock takes.
+                      {locationId !== null ? "No pending stock takes at this location." : "No pending stock takes."}
                     </TableCell>
                   </TableRow>
                 ) : (

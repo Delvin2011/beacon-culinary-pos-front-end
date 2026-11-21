@@ -118,6 +118,33 @@ export function defaultIssueLocationId(locations: readonly Location[]): number |
   return secondaries.length === 1 ? secondaries[0].id : null
 }
 
+// ---- Stock by location (GET /admin/ingredients/{id}/stock, contract section 5) ----
+
+// byLocation[]: every active location in display order, plus an inactive one while it still holds stock.
+export interface StockAtLocation {
+  locationId: number
+  locationName: string
+  kind?: LocationKind
+  active?: boolean
+  stock: number
+}
+
+// "Central Store (primary)", "Old Pantry (inactive)".
+export function stockLocationLabel(entry: StockAtLocation): string {
+  const marks = [entry.kind === "PRIMARY" ? "primary" : null, entry.active === false ? "inactive" : null].filter(Boolean)
+  return marks.length > 0 ? `${entry.locationName} (${marks.join(", ")})` : entry.locationName
+}
+
+// "Central Store (primary): 120 · Hot Line: 4 · Old Pantry (inactive): 1": every entry, in the API's order.
+export function formatStockByLocation(entries: readonly StockAtLocation[]): string {
+  return entries.map((entry) => `${stockLocationLabel(entry)}: ${entry.stock}`).join(" · ")
+}
+
+// The primary's figure (found by kind), or null when it isn't listed.
+export function primaryStock(entries: readonly StockAtLocation[]): number | null {
+  return entries.find((entry) => entry.kind === "PRIMARY")?.stock ?? null
+}
+
 // ---- Errors ----
 
 export class LocationError extends Error {
