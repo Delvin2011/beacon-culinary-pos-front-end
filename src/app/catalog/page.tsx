@@ -81,7 +81,7 @@ interface MealEntry {
   station?: Station
   // Always-available items only; clears itself at midnight.
   outToday?: boolean
-  // Light meals: warn when the Kitchen can make fewer than this many.
+  // Light meals: warn when the meal's source location can make fewer than this many.
   lowStockUnits?: number
   // null on set meals; NOT_TRACKED for beverages and light meals with no recipe.
   stockStatus?: StockStatus | null
@@ -1999,7 +1999,7 @@ function CatalogPageContent() {
                     onChange={(e) => setMealForm((prev) => ({ ...prev, lowStockUnits: e.target.value }))}
                     className="w-32"
                   />
-                  <p className="text-xs text-muted-foreground">Warn when the Kitchen can make fewer than this many.</p>
+                  <p className="text-xs text-muted-foreground">Warn when its source location can make fewer than this many.</p>
                 </div>
               )}
               <div className="space-y-2">

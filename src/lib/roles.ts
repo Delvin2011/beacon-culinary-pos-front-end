@@ -73,7 +73,7 @@ export function canReviewMealStock(role?: string): boolean {
   return normalised === "ADMIN" || normalised === "HEAD_CHEF";
 }
 
-// Raising an Issue request, Main Store → Kitchen (REQUEST_ISSUE once U2 lands).
+// Raising an Issue request, from the primary location to a secondary one (REQUEST_ISSUE once U2 lands).
 export function canRequestIssue(role?: string): boolean {
   const normalised = normaliseRole(role);
   return normalised === "ADMIN" || normalised === "HEAD_CHEF" || normalised === "STOCK_ADMIN" || normalised === "STOCK_CLERK";

@@ -170,7 +170,7 @@ export function SellThroughSection({ section }: { section: LayoutSection }) {
   )
 }
 
-// ---- Light meals: kitchen stock ----
+// ---- Light meals: stock at each meal's source location ----
 
 const STOCK_CHIP: Record<string, { tone: ChipTone; label: string }> = {
   OUT: { tone: "red", label: "Out" },
@@ -224,7 +224,7 @@ export function LightMealStockSection({ section }: { section: LayoutSection }) {
   }
 
   return (
-    <SectionCard section={section} state={state} subtitle="How many units the Kitchen can make with the ingredients it holds now.">
+    <SectionCard section={section} state={state} subtitle="How many units can be made with the ingredients each meal's source location holds now.">
       {({ data }) =>
         data.meals.length === 0 ? (
           <EmptyText>No light meals with a recipe to track</EmptyText>
@@ -310,6 +310,13 @@ export function LightMealStockSection({ section }: { section: LayoutSection }) {
                 }}
                 review={requestReview}
                 onSubmitted={refreshAfterRequest}
+                onReviewStale={() => {
+                  // The source location was deactivated meanwhile: reload the review and the card.
+                  void fetchStockReview(authFetch, requestReview.mealId)
+                    .then(setRequestReview)
+                    .catch(() => undefined)
+                  requestRefresh(["light-meal-stock"])
+                }}
               />
             )}
           </>

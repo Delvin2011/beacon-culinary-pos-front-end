@@ -205,7 +205,7 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted, pr
                 {parsedRows.map((row) => {
                   const line = linesById.get(row.ingredientId)
                   if (!line) return null
-                  const mainStoreShort = row.value !== null && row.value > 0 && line.mainStoreAvailable < row.value
+                  const primaryShort = row.value !== null && row.value > 0 && line.mainStoreAvailable < row.value
                   return (
                     <TableRow key={row.ingredientId}>
                       <TableCell className="align-top font-medium">{line.name}</TableCell>
@@ -225,7 +225,7 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted, pr
                           />
                           <span className="text-sm text-muted-foreground">{formatUom(line.uom)}</span>
                         </div>
-                        {mainStoreShort && (
+                        {primaryShort && (
                           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
                             {primaryName} has only {formatQuantityWithUom(line.mainStoreAvailable, line.uom)}. The approver can only issue
                             what is there.
