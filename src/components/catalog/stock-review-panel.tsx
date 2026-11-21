@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { RefreshCw } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
+import { useLocations } from "@/hooks/use-locations"
 import { toast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
@@ -44,10 +45,11 @@ function signedClass(value: number): string | undefined {
   return value < 0 ? "font-medium text-rose-600 dark:text-rose-400" : undefined
 }
 
-// A light meal's stock: per-unit ingredients, Kitchen and Main Store amounts, how many units can be made. Opened by
-// the Review button in Catalogue Management and Daily Planning.
+// A light meal's stock: per-unit ingredients, the amounts at the meal's source location and at the primary, how many
+// units can be made. Opened by the Review button in Catalogue Management and Daily Planning.
 export function StockReviewPanel({ meal, onOpenChange, onStockChange, onRequestSent }: StockReviewPanelProps) {
   const { authFetch, user } = useAuth()
+  const { primary } = useLocations()
   const [review, setReview] = useState<StockReview | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -57,6 +59,9 @@ export function StockReviewPanel({ meal, onOpenChange, onStockChange, onRequestS
   const canMarkOut = canToggleOutToday(user?.role, "LIGHT_MEALS")
   const canRequest = canRequestIssue(user?.role)
   const mealId = meal?.id ?? null
+  // Names from the API: the meal's source location (its station's assignment) and the primary (by kind).
+  const sourceName = review?.sourceLocationName ?? "the source location"
+  const primaryName = primary?.name ?? "Primary location"
 
   const load = useCallback(
     async (id: number) => {
@@ -189,7 +194,7 @@ export function StockReviewPanel({ meal, onOpenChange, onStockChange, onRequestS
                 >
                   <p className="font-medium">
                     {warning === "OUT"
-                      ? "The Kitchen doesn't have enough to make one unit."
+                      ? `${sourceName} doesn't have enough to make one unit.`
                       : `Only ${review.unitsAvailable ?? 0} unit${review.unitsAvailable === 1 ? " can" : "s can"} be made. The low-stock level for this meal is ${review.lowStockUnits}.`}
                   </p>
                   <p className="text-xs opacity-80">
@@ -217,8 +222,8 @@ export function StockReviewPanel({ meal, onOpenChange, onStockChange, onRequestS
                     <TableRow>
                       <TableHead>Ingredient</TableHead>
                       <TableHead className="text-right">Needed per unit</TableHead>
-                      <TableHead className="text-right">In Kitchen</TableHead>
-                      <TableHead className="text-right">Main Store</TableHead>
+                      <TableHead className="text-right">At {sourceName}</TableHead>
+                      <TableHead className="text-right">{primaryName}</TableHead>
                       <TableHead className="text-right">Units possible</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
@@ -259,7 +264,16 @@ export function StockReviewPanel({ meal, onOpenChange, onStockChange, onRequestS
         )}
 
         {review?.tracked && canRequest && (
-          <RequestStockDialog open={requestOpen} onOpenChange={setRequestOpen} review={review} onSubmitted={onRequestSent} />
+          <RequestStockDialog
+            open={requestOpen}
+            onOpenChange={setRequestOpen}
+            review={review}
+            primaryName={primaryName}
+            onSubmitted={onRequestSent}
+            onReviewStale={() => {
+              if (mealId !== null) void load(mealId)
+            }}
+          />
         )}
       </SheetContent>
     </Sheet>

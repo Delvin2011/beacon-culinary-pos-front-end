@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { useAuth } from "@/hooks/use-auth"
+import { useLocations } from "@/hooks/use-locations"
 import { toast } from "@/hooks/use-toast"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -12,6 +13,7 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import {
   BATCH_QUICK_PICKS,
+  IssueRequestError,
   MAX_BATCH_UNITS,
   type StockReview,
   batchQuantities,
@@ -38,11 +40,19 @@ interface RequestStockDialogProps {
   review: StockReview
   // Called once the request is created (the dashboard refreshes its stock and attention cards).
   onSubmitted?: () => void
+  // The primary's name, for the column and the shortfall note. Read from GET /locations when not given.
+  primaryName?: string
+  // The source location was deactivated after the review loaded: reload the review.
+  onReviewStale?: () => void
 }
 
-// Batch prompt: "How many more units?" → units × per unit for each ingredient, editable, sent as an Issue request.
-export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: RequestStockDialogProps) {
+// Batch prompt: "How many more units?" → units × per unit for each ingredient, editable, sent as an Issue request
+// from the primary to the meal's source location.
+export function RequestStockDialog({ open, onOpenChange, review, onSubmitted, primaryName: givenPrimaryName, onReviewStale }: RequestStockDialogProps) {
   const { authFetch } = useAuth()
+  const { primary } = useLocations()
+  const primaryName = givenPrimaryName ?? primary?.name ?? "Primary location"
+  const sourceName = review.sourceLocationName ?? "the source location"
   const [unitsChoice, setUnitsChoice] = useState<UnitsChoice>(20)
   const [customUnits, setCustomUnits] = useState("")
   const [onlyMissing, setOnlyMissing] = useState(false)
@@ -91,7 +101,7 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: 
     setSubmitting(true)
     setError(null)
     try {
-      const created = await submitIssueRequest(authFetch, requestLines)
+      const created = await submitIssueRequest(authFetch, requestLines, review.sourceLocationId ?? null)
       toast({
         title: "Request submitted. An approver will review it.",
         description: created.id ? (
@@ -103,6 +113,11 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: 
       onOpenChange(false)
       onSubmitted?.()
     } catch (err) {
+      if (err instanceof IssueRequestError && err.code === "LOCATION_INACTIVE") {
+        setError(`${sourceName} has been deactivated. The stock review has been reloaded; check where this meal now takes its stock from.`)
+        onReviewStale?.()
+        return
+      }
       // Keep the dialog open so the chef can fix the quantities.
       setError(err instanceof Error ? err.message : "Unable to submit the stock request.")
     } finally {
@@ -116,7 +131,7 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: 
         <DialogHeader>
           <DialogTitle>Request stock</DialogTitle>
           <DialogDescription>
-            {units !== null ? `Batch of ${units} × ${review.name}` : review.name} · Issued from the Main Store to the Kitchen.
+            {units !== null ? `Batch of ${units} × ${review.name}` : review.name} · Issued from {primaryName} to {sourceName}.
           </DialogDescription>
         </DialogHeader>
 
@@ -164,7 +179,7 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: 
             <div>
               <Label htmlFor="request-only-missing">Only what&apos;s missing</Label>
               <p className="text-xs text-muted-foreground">
-                Off: the full batch, on top of what&apos;s in the Kitchen. On: only what the Kitchen can&apos;t cover. Changing the
+                Off: the full batch, on top of what&apos;s at {sourceName}. On: only what {sourceName} can&apos;t cover. Changing the
                 units or this option recalculates the quantities and overwrites your edits.
               </p>
             </div>
@@ -174,7 +189,7 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: 
             <p className="rounded-md border bg-muted/40 px-4 py-6 text-sm text-muted-foreground">Choose how many units to make.</p>
           ) : rows.length === 0 ? (
             <p className="rounded-md border bg-muted/40 px-4 py-6 text-sm text-muted-foreground">
-              The Kitchen already has enough for {units} units. Turn off &quot;Only what&apos;s missing&quot; to top up anyway.
+              {sourceName} already has enough for {units} units. Turn off &quot;Only what&apos;s missing&quot; to top up anyway.
             </p>
           ) : (
             <Table>
@@ -182,8 +197,8 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: 
                 <TableRow>
                   <TableHead>Ingredient</TableHead>
                   <TableHead className="w-[170px]">Quantity</TableHead>
-                  <TableHead className="text-right">In Kitchen</TableHead>
-                  <TableHead className="text-right">Main Store</TableHead>
+                  <TableHead className="text-right">At {sourceName}</TableHead>
+                  <TableHead className="text-right">{primaryName}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -212,7 +227,7 @@ export function RequestStockDialog({ open, onOpenChange, review, onSubmitted }: 
                         </div>
                         {mainStoreShort && (
                           <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-                            Main Store has only {formatQuantityWithUom(line.mainStoreAvailable, line.uom)}. The approver can only issue
+                            {primaryName} has only {formatQuantityWithUom(line.mainStoreAvailable, line.uom)}. The approver can only issue
                             what is there.
                           </p>
                         )}

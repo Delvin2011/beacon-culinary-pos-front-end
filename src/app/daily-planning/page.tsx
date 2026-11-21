@@ -25,6 +25,7 @@ import { type CatalogGroup, type CategoryRef, canToggleOutToday } from "@/lib/ca
 import type { StockStatus } from "@/lib/light-meal-stock"
 import { formatZarCurrency } from "@/lib/utils"
 import { inactivePeriodMessage, unknownPeriodMessage } from "@/lib/meal-periods"
+import type { LocationKind } from "@/lib/locations"
 
 interface MealPeriod {
   id: number
@@ -127,9 +128,19 @@ interface UncoveredPlanItemDto {
   components: Array<string | { name?: string }>
 }
 
+interface RequirementLocationDto {
+  id: number
+  name: string
+  kind: LocationKind
+  sortOrder: number
+}
+
 interface IngredientRequirementsResponseDto {
   requirements: IngredientRequirementDto[]
   uncovered?: UncoveredPlanItemDto[]
+  // T0-5d: currentStock is at the primary, kitchenStock at the production location.
+  primaryLocation?: RequirementLocationDto
+  productionLocation?: RequirementLocationDto
 }
 
 type PlanItemKind = "option" | "stock"
@@ -175,6 +186,8 @@ interface IngredientShortfallDto {
 
 interface ConfirmIngredientRequirementsResponseDto {
   shortfalls: IngredientShortfallDto[]
+  // Not in the contract yet (open question); shown when the server sends it.
+  stockRequestId?: number
 }
 
 type RequirementRow = IngredientRequirementDto & {
@@ -326,6 +339,11 @@ export default function DailyPlanningPage() {
   const [confirmRequirementsError, setConfirmRequirementsError] = useState<string | null>(null)
   const [confirmRequirementsSuccess, setConfirmRequirementsSuccess] = useState<string | null>(null)
   const [requirementShortfalls, setRequirementShortfalls] = useState<IngredientShortfallDto[]>([])
+  // Names from the last requirements load: the issue sheet goes from the primary to the production location.
+  const [requirementLocations, setRequirementLocations] = useState<{ primary: string; production: string }>({
+    primary: "the primary location",
+    production: "the production location",
+  })
   // Planned items that request no ingredients. A warning, not an error: bought-in items (bread rolls) have no recipe
   // on purpose. Confirm needs an explicit acknowledgement while any are listed.
   const [uncoveredItems, setUncoveredItems] = useState<UncoveredPlanItemDto[]>([])
@@ -516,6 +534,10 @@ export default function DailyPlanningPage() {
       }
       const response = body as IngredientRequirementsResponseDto
       const requirements = Array.isArray(response.requirements) ? response.requirements : []
+      setRequirementLocations({
+        primary: response.primaryLocation?.name ?? "the primary location",
+        production: response.productionLocation?.name ?? "the production location",
+      })
       setRequirementsRows(requirements.map((row) => ({ ...row, editedQuantity: String(row.calculatedQuantity), isEdited: false })))
       setUncoveredItems(Array.isArray(response.uncovered) ? response.uncovered : [])
       setUncoveredAcknowledged(false)
@@ -743,8 +765,16 @@ export default function DailyPlanningPage() {
       await loadIngredientRequirements(selectedPeriod)
       await fetchTodayPlan(selectedPeriod)
       setRequirementShortfalls(Array.isArray(response.shortfalls) ? response.shortfalls : [])
-      setConfirmRequirementsSuccess(`Ingredient requirements confirmed for ${selectedPeriod.name}. Stock was deducted from Kitchen.`)
-      toast({ title: "Ingredient requirements confirmed", description: response.shortfalls?.length ? `${response.shortfalls.length} shortfall warning(s) against Kitchen stock.` : `Requirements for ${selectedPeriod.name} were confirmed and deducted from Kitchen stock.` })
+      // Confirming only creates the ISSUE request (the issue sheet): stock moves when a stock admin approves it.
+      const { primary, production } = requirementLocations
+      const request = response.stockRequestId ? ` (request #${response.stockRequestId})` : ""
+      setConfirmRequirementsSuccess(`Issue sheet sent for approval: from ${primary} to ${production}${request}.`)
+      toast({
+        title: "Issue sheet sent for approval",
+        description: response.shortfalls?.length
+          ? `${response.shortfalls.length} ingredient(s) short at ${primary}.`
+          : `From ${primary} to ${production} for ${selectedPeriod.name}.`,
+      })
     } catch (err) {
       setConfirmRequirementsError(err instanceof Error ? err.message : "Unable to confirm ingredient requirements.")
     } finally {
@@ -1286,7 +1316,11 @@ export default function DailyPlanningPage() {
             </DialogHeader>
 
             <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pt-2 pr-1">
-              <p className="text-sm text-muted-foreground">Calculated requirements are editable before confirmation. Edited rows are highlighted. Confirming deducts stock from Kitchen; shortfalls against Kitchen&apos;s stock warn, but do not block confirmation.</p>
+              <p className="text-sm text-muted-foreground">
+                Calculated requirements are editable before confirmation. Edited rows are highlighted. Confirming sends an issue sheet
+                from {requirementLocations.primary} to {requirementLocations.production} for approval; stock moves when a stock admin
+                approves it. Shortfalls at {requirementLocations.primary} warn, but do not block confirmation.
+              </p>
 
               {confirmRequirementsSuccess && (
                 <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{confirmRequirementsSuccess}</div>
@@ -1297,7 +1331,11 @@ export default function DailyPlanningPage() {
                   <p className="font-medium">Shortfalls detected after confirmation</p>
                   <div className="mt-2 space-y-1">
                     {requirementShortfalls.map((shortfall) => (
-                      <p key={shortfall.ingredientId}>{shortfall.name} is now {Math.abs(shortfall.resultingStock)} {shortfall.unit} short in Kitchen after allocating {shortfall.finalQuantity} {shortfall.unit}. Consider a GRV or stock transfer into Kitchen before service.</p>
+                      <p key={shortfall.ingredientId}>
+                        Short at {requirementLocations.primary}: {shortfall.name}, {Math.abs(shortfall.resultingStock)} {shortfall.unit} short after
+                        allocating {shortfall.finalQuantity} {shortfall.unit}. Receive a GRV into {requirementLocations.primary} before the issue
+                        sheet is approved.
+                      </p>
                     ))}
                   </div>
                 </div>
@@ -1370,7 +1408,8 @@ export default function DailyPlanningPage() {
                       <TableHead>Unit</TableHead>
                       <TableHead>Calculated</TableHead>
                       <TableHead>Final Quantity</TableHead>
-                      <TableHead>Kitchen Stock</TableHead>
+                      <TableHead>{requirementLocations.primary} stock</TableHead>
+                      <TableHead>{requirementLocations.production} stock</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1382,11 +1421,12 @@ export default function DailyPlanningPage() {
                         <TableCell>
                           <Input type="number" min="0" step="0.0001" value={row.editedQuantity} onChange={(event) => updateRequirementQuantity(row.ingredientId, event.target.value)} className={row.isEdited ? "border-blue-400 bg-blue-50" : ""} />
                         </TableCell>
+                        <TableCell className={row.isShort ? "font-medium text-amber-800" : ""}>{row.currentStock}</TableCell>
                         <TableCell>
                           <span className={row.isKitchenLow ? "font-medium text-amber-800" : ""}>{row.kitchenStock}</span>
                           {row.isKitchenLow && (
                             <p className="mt-1 text-xs text-amber-700">
-                              Kitchen stock low — an issue request from Main Store to Kitchen will be raised automatically.
+                              {requirementLocations.production} stock is low: the issue sheet requests it from {requirementLocations.primary}.
                             </p>
                           )}
                         </TableCell>

@@ -1,7 +1,7 @@
-// Light meal stock: how many units the Kitchen can make from its ingredients, the Review panel and the batch
-// Request stock prompt. Contract: LIGHT_MEAL_STOCK.md (backend repo).
+// Light meal stock: how many units the meal's source location can make from its ingredients, the Review panel and
+// the batch Request stock prompt. Contract: LIGHT_MEAL_STOCK.md (backend repo) and T0-5c section 5.
 //   GET  /admin/meal-catalog/{id}/stock-review → StockReview
-//   POST /stock-requests { requestType: "ISSUE", lines } → the request (Main Store → Kitchen)
+//   POST /stock-requests { requestType: "ISSUE", locationId, lines } → the request (primary → the meal's source)
 // Advice only: a meal that is LOW or OUT can still be sold unless someone marks it out today.
 
 import { parseApiError } from "@/lib/catalog"
@@ -16,7 +16,8 @@ export interface StockReviewLine {
   name: string
   uom: Uom
   perUnit: number
-  // Either can be negative: the ledger runs ahead of reality.
+  // Either can be negative: the ledger runs ahead of reality. kitchenAvailable is at the meal's source location
+  // (StockReview.sourceLocationName), mainStoreAvailable at the primary; the API keeps the old field names.
   kitchenAvailable: number
   mainStoreAvailable: number
   unitsPossible: number
@@ -34,6 +35,9 @@ export interface StockReview {
   lowStockUnits: number
   outToday: boolean
   lines: StockReviewLine[]
+  // Where the meal's station takes stock from; null when not tracked.
+  sourceLocationId?: number | null
+  sourceLocationName?: string | null
 }
 
 export const DEFAULT_LOW_STOCK_UNITS = 10
@@ -63,8 +67,8 @@ export function roundQuantity(value: number): number {
   return Math.round(value * 10000) / 10000
 }
 
-// Units × per unit for every line: the full batch on top of what's in the Kitchen, or with onlyMissing just the
-// part the Kitchen can't cover (max 0). Zero rows are dropped when onlyMissing is on.
+// Units × per unit for every line: the full batch on top of what's at the source, or with onlyMissing just the
+// part the source can't cover (max 0). Zero rows are dropped when onlyMissing is on.
 export function batchQuantities(lines: StockReviewLine[], units: number, onlyMissing: boolean): Array<{ line: StockReviewLine; quantity: number }> {
   return lines
     .map((line) => {
@@ -106,20 +110,33 @@ export async function fetchStockReview(authFetch: AuthFetch, mealId: number): Pr
   return { ...review, lines: Array.isArray(review.lines) ? review.lines : [] }
 }
 
-// An Issue is always Main Store → Kitchen: no locationId. Stock requests have no note field yet.
+// A refused stock request, with the server's code (e.g. LOCATION_INACTIVE) to branch on.
+export class IssueRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+  ) {
+    super(message)
+  }
+}
+
+// An Issue goes from the primary to the meal's source location. A null source (not tracked) sends no locationId:
+// such a meal has no recipe lines, so there is nothing to issue. Stock requests have no note field yet.
 export async function submitIssueRequest(
   authFetch: AuthFetch,
   lines: Array<{ ingredientId: number; quantity: number }>,
+  locationId: number | null = null,
 ): Promise<{ id?: number; status?: string }> {
   const res = await authFetch("/stock-requests", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ requestType: "ISSUE", lines }),
+    body: JSON.stringify({ requestType: "ISSUE", ...(locationId !== null ? { locationId } : {}), lines }),
   })
   const body = (await res.json().catch(() => null)) as unknown
   if (!res.ok) {
     if (res.status === 403) throw new Error("You don't have permission to request stock.")
-    throw new Error(parseApiError(body, "Unable to submit the stock request.").message)
+    const error = parseApiError(body, "Unable to submit the stock request.")
+    throw new IssueRequestError(error.message, error.code ?? null)
   }
   return body && typeof body === "object" ? (body as { id?: number; status?: string }) : {}
 }
