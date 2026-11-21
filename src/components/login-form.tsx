@@ -13,6 +13,7 @@ import { useLoginBlocks } from "@/hooks/use-login-blocks"
 import { LoginBlockedError } from "@/contexts/auth-context"
 import { isAdminRole, landingPathFor } from "@/lib/roles"
 import { safeReturnTo } from "@/lib/return-to"
+import { clearSignInEmail, peekSignInEmail } from "@/lib/sign-in-handoff"
 import loginImage from "../app/assets/images/beacon_login_image.png"
 
 export function LoginForm({
@@ -29,8 +30,10 @@ export function LoginForm({
   const [signedInHere, setSignedInHere] = useState(false)
   const [notManager, setNotManager] = useState(false)
   const { login, isLoading, error, clearError, isAuthenticated, user } = useAuth()
-  const [email, setEmail] = useState("")
+  // Filled in after accepting an invite (handed over in memory, never in the URL or storage).
+  const [email, setEmail] = useState(() => peekSignInEmail() ?? "")
   const [password, setPassword] = useState("")
+  useEffect(() => clearSignInEmail(), [])
   const blocks = useLoginBlocks<"self">()
   const blockState = blocks.get("self")
   const message = blockState?.message ?? error
