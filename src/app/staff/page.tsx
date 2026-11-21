@@ -30,7 +30,7 @@ import { InviteLinkDialog } from "@/components/staff/invite-link-dialog"
 import { SendInviteDialog, type SendInviteTarget } from "@/components/staff/send-invite-dialog"
 import { toast } from "@/hooks/use-toast"
 import { canRevokeInvite, inviteStatusText, revokeInvite, type IssuedInvite } from "@/lib/invites"
-import { clearInviteDraft, readInviteDraft } from "@/lib/staff-invite-draft"
+import { type CreateByInviteForm, clearInviteDraft, readInviteDraft } from "@/lib/staff-invite-draft"
 import { isAdminRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 import {
@@ -148,6 +148,7 @@ export default function StaffPage() {
   const [sendTarget, setSendTarget] = useState<SendInviteTarget | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<StaffMember | null>(null)
   const [revoking, setRevoking] = useState(false)
+  const [restoredCreate, setRestoredCreate] = useState<CreateByInviteForm | null>(null)
 
   useEffect(() => {
     if (authLoading) return
@@ -192,8 +193,14 @@ export default function StaffPage() {
   useEffect(() => {
     if (loading || staff.length === 0) return
     const draft = readInviteDraft()
-    if (draft?.kind !== "send") return
+    if (!draft) return
     clearInviteDraft()
+    if (draft.kind === "create") {
+      setEditing(null)
+      setRestoredCreate(draft.form)
+      setFormOpen(true)
+      return
+    }
     const member = staff.find((candidate) => candidate.id === draft.staffId)
     if (member) setSendTarget({ member, request: draft.request, afterReauth: true })
   }, [loading, staff])
@@ -228,6 +235,7 @@ export default function StaffPage() {
 
   const openCreate = () => {
     setEditing(null)
+    setRestoredCreate(null)
     setPageMessage(null)
     setFormOpen(true)
   }
@@ -574,9 +582,12 @@ export default function StaffPage() {
           staff={editing}
           roles={roles}
           onOpenChange={setFormOpen}
+          restored={restoredCreate}
+          onIssued={(member, invite) => setIssued({ invite, name: member.name })}
           onSaved={(member, created) => {
             upsert(member)
             setFormOpen(false)
+            setRestoredCreate(null)
             toast({
               title: created ? "Staff member created" : "Changes saved",
               description: created ? `${member.name} has been added as ${roleLabel(roles, member.role)}.` : `${member.name} has been updated.`,

@@ -1,8 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
 import { AlertTriangle } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
+import { readApiError } from "@/lib/api-error"
+import type { IssuedInvite } from "@/lib/invites"
+import { reauthLoginPath } from "@/lib/return-to"
+import { type CreateByInviteForm, saveInviteDraft } from "@/lib/staff-invite-draft"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -28,6 +33,10 @@ interface StaffFormDialogProps {
   roles: StaffRoleRule[]
   onOpenChange: (open: boolean) => void
   onSaved: (member: StaffMember, created: boolean) => void
+  // A create with setup INVITE: the response's issuedInvite, shown once in the link dialog.
+  onIssued?: (member: StaffMember, invite: IssuedInvite) => void
+  // Back from the password re-sign-in (REAUTH_REQUIRED creating an ADMIN by invite): the form as it was, to confirm.
+  restored?: CreateByInviteForm | null
 }
 
 interface FormState {
@@ -51,20 +60,31 @@ function FieldError({ id, message }: { id: string; message?: string }) {
   )
 }
 
-export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: StaffFormDialogProps) {
+export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved, onIssued, restored = null }: StaffFormDialogProps) {
+  const router = useRouter()
   const { authFetch } = useAuth()
   const editing = staff !== null
   const [form, setForm] = useState<FormState>(EMPTY_FORM)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [pageError, setPageError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // On create: "Send them a link" (the person sets their own password and PIN) or "Set password/PIN now".
+  const [setup, setSetup] = useState<"INVITE" | "SET_NOW">("INVITE")
+  const byInvite = !editing && setup === "INVITE"
 
   useEffect(() => {
     if (!open) return
-    setForm(staff ? { ...EMPTY_FORM, name: staff.name, role: staff.role, email: staff.email ?? "" } : EMPTY_FORM)
+    setForm(
+      staff
+        ? { ...EMPTY_FORM, name: staff.name, role: staff.role, email: staff.email ?? "" }
+        : restored
+          ? { ...EMPTY_FORM, name: restored.name, role: restored.role, email: restored.email }
+          : EMPTY_FORM,
+    )
+    setSetup("INVITE")
     setFieldErrors({})
     setPageError(null)
-  }, [open, staff])
+  }, [open, staff, restored])
 
   const rule = roles.find((candidate) => candidate.role === form.role)
   const roleUsesPassword = usesPassword(rule)
@@ -73,9 +93,10 @@ export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: S
   // On edit, a credential is only asked for when the new role needs one the person doesn't have.
   // Promoting to Admin always needs a new PIN so its uniqueness can be checked.
   const promotingToAdmin = editing && form.role === "ADMIN" && staff.role !== "ADMIN"
-  const showPasswordFields = roleUsesPassword && (!editing || !staff.hasPassword)
+  // With a link, the person sets their own password and PIN: no credential fields.
+  const showPasswordFields = !byInvite && roleUsesPassword && (!editing || !staff.hasPassword)
   const passwordRequired = rule?.password === "REQUIRED" && (!editing || !staff.hasPassword)
-  const showPinFields = roleUsesPin && (!editing || !staff.hasPin || promotingToAdmin)
+  const showPinFields = !byInvite && roleUsesPin && (!editing || !staff.hasPin || promotingToAdmin)
   const pinRequired = promotingToAdmin || (rule?.pin === "REQUIRED" && (!editing || !staff.hasPin))
   const roleChanged = editing && form.role !== staff.role
   const losesEmailLogin = roleChanged && !roleUsesPassword && staff.hasPassword
@@ -109,7 +130,8 @@ export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: S
     const errors: Record<string, string> = {}
     if (!form.name.trim()) errors.name = "Name is required."
     if (!rule) errors.role = "Choose a role."
-    if (roleUsesPassword) Object.assign(errors, validateEmail(form.email, rule?.password === "REQUIRED"))
+    // A password link needs somewhere to sign in: with a link, email is required whenever the role uses a password.
+    if (roleUsesPassword) Object.assign(errors, validateEmail(form.email, byInvite || rule?.password === "REQUIRED"))
     if (showPasswordFields) Object.assign(errors, validatePassword(form.password, form.passwordConfirm, passwordRequired))
     if (showPinFields) Object.assign(errors, validatePin(form.pin, form.pinConfirm, pinRequired))
     setFieldErrors(errors)
@@ -123,6 +145,7 @@ export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: S
       ...(showPasswordFields && form.password ? { password: form.password } : {}),
       ...(showPinFields && form.pin ? { pin: form.pin } : {}),
       ...(editing ? { active: staff.active } : {}),
+      ...(editing ? {} : { setup }),
     }
 
     setSaving(true)
@@ -134,12 +157,22 @@ export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: S
         body: JSON.stringify(payload),
       })
       if (!res.ok) {
+        // Creating an ADMIN by invite needs a recent password sign-in: keep the form (no credentials exist yet),
+        // sign in again, and confirm back on /staff.
+        if (byInvite && (await readApiError(res)).code === "REAUTH_REQUIRED") {
+          saveInviteDraft({ kind: "create", form: { name: form.name.trim(), role: form.role, email: form.email.trim() } })
+          router.push(reauthLoginPath("/staff"))
+          return
+        }
         const apiError = await readStaffError(res, editing ? "Unable to save changes." : "Unable to create this staff member.")
         setFieldErrors(apiError.fieldErrors)
         setPageError(apiError.pageError)
         return
       }
-      onSaved((await res.json()) as StaffMember, !editing)
+      // The token goes to the link dialog only; it is never kept in the list's state.
+      const { issuedInvite, ...member } = (await res.json()) as StaffMember & { issuedInvite?: IssuedInvite }
+      onSaved(member, !editing)
+      if (issuedInvite) onIssued?.(member, issuedInvite)
     } catch {
       setPageError("Unable to reach the server. Try again.")
     } finally {
@@ -213,6 +246,48 @@ export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: S
             )}
           </div>
 
+          {!editing && (
+            <fieldset className="space-y-2" aria-label="Sign-in set-up">
+              {(
+                [
+                  ["INVITE", "Send them a link", "They choose their own password or PIN from a one-time link."],
+                  ["SET_NOW", "Set password/PIN now", "You choose their password or PIN here and tell them."],
+                ] as const
+              ).map(([value, label, hint]) => (
+                <label key={value} className="flex cursor-pointer items-start gap-3 rounded-md border p-3 has-[:checked]:border-foreground">
+                  <input
+                    type="radio"
+                    name="staff-setup"
+                    value={value}
+                    checked={setup === value}
+                    onChange={() => {
+                      setSetup(value)
+                      setForm((current) => ({ ...current, password: "", passwordConfirm: "", pin: "", pinConfirm: "" }))
+                      setFieldErrors({})
+                    }}
+                    aria-labelledby={`staff-setup-${value}`}
+                    aria-describedby={`staff-setup-${value}-hint`}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span id={`staff-setup-${value}`} className="block text-sm font-medium">
+                      {label}
+                    </span>
+                    <span id={`staff-setup-${value}-hint`} className="block text-xs text-muted-foreground">
+                      {hint}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          )}
+
+          {restored && !editing && (
+            <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+              Signed in again. Check the details, then create {restored.name} and send the link.
+            </p>
+          )}
+
           {(losesEmailLogin || losesPin) && (
             <div className="flex gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -226,7 +301,7 @@ export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: S
           {roleUsesPassword && (
             <div className="space-y-1">
               <Label htmlFor="staff-email">
-                Email{rule?.password === "REQUIRED" ? "" : " (optional)"}
+                Email{byInvite || rule?.password === "REQUIRED" ? "" : " (optional)"}
               </Label>
               <Input
                 id="staff-email"
@@ -328,7 +403,7 @@ export function StaffFormDialog({ open, staff, roles, onOpenChange, onSaved }: S
               Cancel
             </Button>
             <Button type="submit" disabled={saving}>
-              {saving ? "Saving…" : editing ? (losesEmailLogin ? "Save and remove email login" : "Save Changes") : "Create"}
+              {saving ? "Saving…" : editing ? (losesEmailLogin ? "Save and remove email login" : "Save Changes") : byInvite ? "Create and send link" : "Create"}
             </Button>
           </div>
         </form>
