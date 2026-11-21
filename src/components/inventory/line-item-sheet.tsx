@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useLocations } from "@/hooks/use-locations";
+import { useLocations, type LocationDto } from "@/hooks/use-locations";
 import { formatZarCurrency } from "@/lib/utils";
 import { IngredientSearchSelect } from "@/components/inventory/ingredient-search-select";
 import {
@@ -56,7 +56,14 @@ interface LineItemSheetProps {
   requestType: string;
   locationCount: 0 | 1 | 2;
   locationLabels?: string[];
-  defaultLocationNameByIndex?: (string | undefined)[];
+  // The locations a picker offers. Defaults to every active location (GET /locations, display order).
+  locationOptions?: LocationDto[];
+  // Preselected location per picker, by id (never by name). null: the user must choose.
+  defaultLocationIdByIndex?: (number | null)[];
+  // Read-only header entries next to "Requested By", e.g. "Received into" for a GRV or "Supplied from" for an issue.
+  headerInfo?: { label: string; value: string }[];
+  // A line under the pickers, from the chosen ids (e.g. "From {primary} to {chosen}").
+  locationSummary?: (locationIds: (number | null)[]) => string | null;
   extraFieldsConfig?: LineItemHeaderField[];
   columnConfig: LineItemColumnConfig;
   ingredientOptions: IngredientOption[];
@@ -80,7 +87,10 @@ export function LineItemSheet({
   requestType,
   locationCount,
   locationLabels,
-  defaultLocationNameByIndex,
+  locationOptions,
+  defaultLocationIdByIndex,
+  headerInfo = [],
+  locationSummary,
   extraFieldsConfig = [],
   columnConfig,
   ingredientOptions,
@@ -95,7 +105,9 @@ export function LineItemSheet({
   const standardRate = vat?.standardRate ?? null;
   const [pricesIncludeVat, setPricesIncludeVat] = useState<boolean | null>(null);
   const [invoiceTotalInput, setInvoiceTotalInput] = useState("");
-  const { locations, loading: locationsLoading } = useLocations();
+  const { locations: activeLocations, loading: activeLoading } = useLocations();
+  const locations = locationOptions ?? activeLocations;
+  const locationsLoading = locationOptions ? false : activeLoading;
   const [rows, setRows] = useState<LineItemRow[]>([emptyRow(0)]);
   const [locationIds, setLocationIds] = useState<(number | null)[]>(
     Array.from({ length: locationCount }, () => null),
@@ -106,16 +118,25 @@ export function LineItemSheet({
   const [error, setError] = useState<string | null>(null);
   const [createdAt] = useState(() => new Date());
 
-  if (!locationsInitialised && locations.length > 0 && defaultLocationNameByIndex) {
+  if (!locationsInitialised && locations.length > 0 && defaultLocationIdByIndex) {
     const defaults = locationIds.map((current, index) => {
       if (current !== null) return current;
-      const wantedName = defaultLocationNameByIndex[index];
-      const match = wantedName ? locations.find((location) => location.name === wantedName) : undefined;
-      return match?.id ?? null;
+      const wanted = defaultLocationIdByIndex[index] ?? null;
+      return wanted !== null && locations.some((location) => location.id === wanted) ? wanted : null;
     });
     setLocationIds(defaults);
     setLocationsInitialised(true);
   }
+
+  // A chosen location that is no longer offered (deactivated meanwhile, list reloaded) is cleared: choose again.
+  useEffect(() => {
+    if (locationsLoading) return;
+    setLocationIds((prev) =>
+      prev.some((id) => id !== null && !locations.some((location) => location.id === id))
+        ? prev.map((id) => (id !== null && !locations.some((location) => location.id === id) ? null : id))
+        : prev,
+    );
+  }, [locations, locationsLoading]);
 
   const quantityMode = columnConfig.quantityMode;
   const isOrderedReceived = quantityMode.kind === "orderedReceived";
@@ -344,6 +365,13 @@ export function LineItemSheet({
           <p className="text-sm text-muted-foreground">{requestedByName}</p>
         </div>
 
+        {headerInfo.map((info) => (
+          <div className="space-y-1" key={info.label}>
+            <Label>{info.label}</Label>
+            <p className="text-sm text-muted-foreground">{info.value}</p>
+          </div>
+        ))}
+
         {Array.from({ length: locationCount }).map((_, index) => (
           <div className="space-y-1" key={index}>
             <Label>{locationLabels?.[index] ?? "Location"}</Label>
@@ -367,6 +395,12 @@ export function LineItemSheet({
             </Select>
           </div>
         ))}
+
+        {locationSummary?.(locationIds) && (
+          <p className="text-sm text-muted-foreground md:col-span-3" data-testid="location-summary">
+            {locationSummary(locationIds)}
+          </p>
+        )}
 
         {extraFieldsConfig.map((field) => (
           <div className="space-y-1" key={field.key}>

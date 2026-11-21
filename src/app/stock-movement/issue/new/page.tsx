@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { useLocations } from "@/hooks/use-locations";
+import { readApiError } from "@/lib/api-error";
+import { LocationError, chooseAgainMessage, defaultIssueLocationId, isChooseAgain } from "@/lib/locations";
 import { isStockAccessRole } from "@/lib/roles";
 import { mostRecentCostByIngredient } from "@/lib/inventory-cost";
 import { LineItemSheet } from "@/components/inventory/line-item-sheet";
@@ -39,6 +42,7 @@ export default function StockMovementNewIssuePage() {
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
 
   const hasStockAccess = isStockAccessRole(user?.role);
+  const { primary, secondaries, loading: locationsLoading, error: locationsError, refetch: refetchLocations } = useLocations();
 
   const [ingredientOptions, setIngredientOptions] = useState<IngredientOption[]>([]);
   const [loadingIngredients, setLoadingIngredients] = useState(true);
@@ -106,11 +110,13 @@ export default function StockMovementNewIssuePage() {
   );
 
   const handleSubmit = async (payload: LineItemSheetSubmitPayload) => {
+    const locationId = payload.locationIds[0];
     const res = await authFetch("/stock-requests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         requestType: "ISSUE",
+        locationId,
         lines: payload.lines.map((line) => ({
           ingredientId: line.ingredientId,
           quantity: line.quantity,
@@ -118,10 +124,17 @@ export default function StockMovementNewIssuePage() {
         })),
       }),
     });
-    const body = (await res.json().catch(() => null)) as { id?: number } | unknown;
     if (!res.ok) {
-      throw new Error(parseError(body, "Unable to submit issue request."));
+      // ISSUE_LOCATION_NOT_SECONDARY, LOCATION_INACTIVE, LOCATION_NOT_FOUND: reload the pickers, choose again.
+      const error = new LocationError(await readApiError(res), "Unable to submit issue request.");
+      if (isChooseAgain(error)) {
+        await refetchLocations();
+        throw new Error(chooseAgainMessage(error) ?? error.message);
+      }
+      const failure = await res.json().catch(() => null);
+      throw new Error(parseError(failure, "Unable to submit issue request."));
     }
+    const body = (await res.json().catch(() => null)) as { id?: number } | unknown;
 
     const id = body && typeof body === "object" ? (body as { id?: number }).id : undefined;
     toast({
@@ -152,13 +165,30 @@ export default function StockMovementNewIssuePage() {
         </button>
 
         <div className="rounded-2xl border bg-card p-6 shadow-sm">
-          {loadingIngredients ? (
+          {/* Only the first load: a reload after a refusal keeps the sheet (and its lines) on screen. */}
+          {loadingIngredients || (locationsLoading && !primary) ? (
             <p className="text-sm text-muted-foreground animate-pulse">Loading ingredients…</p>
+          ) : locationsError ? (
+            <p role="alert" className="text-sm text-destructive">
+              {locationsError}
+            </p>
+          ) : secondaries.length === 0 ? (
+            <p role="alert" className="text-sm text-muted-foreground">
+              There is no active location to issue to. An admin can add one under Admin → Stock locations.
+            </p>
           ) : (
             <LineItemSheet
               title="New Issue Request"
               requestType="ISSUE"
-              locationCount={0}
+              locationCount={1}
+              locationLabels={["Requesting location"]}
+              locationOptions={secondaries}
+              defaultLocationIdByIndex={[defaultIssueLocationId(secondaries)]}
+              headerInfo={primary ? [{ label: "Supplied from", value: primary.name }] : []}
+              locationSummary={([id]) => {
+                const to = secondaries.find((location) => location.id === id);
+                return primary && to ? `From ${primary.name} to ${to.name}` : null;
+              }}
               columnConfig={columnConfig}
               ingredientOptions={ingredientOptions}
               requestedByName={user?.name ?? "Stock Clerk"}

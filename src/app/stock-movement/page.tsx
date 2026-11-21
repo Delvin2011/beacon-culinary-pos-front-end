@@ -4,11 +4,13 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ClipboardCheck, ClipboardList, LogOut, PackagePlus, ShoppingCart, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { useLocations } from "@/hooks/use-locations";
 import { canCountStock, isStockAccessRole } from "@/lib/roles";
 
 export default function StockMovementLandingPage() {
   const router = useRouter();
   const { isAuthenticated, isLoading, user, logout } = useAuth();
+  const { primary } = useLocations();
 
   const hasStockAccess = isStockAccessRole(user?.role);
 
@@ -66,7 +68,9 @@ export default function StockMovementLandingPage() {
           </div>
           <div>
             <p className="text-base font-semibold text-white">New Issue Request</p>
-            <p className="text-sm text-slate-400">Request stock to be issued from Main Store to Kitchen.</p>
+            <p className="text-sm text-slate-400">
+              Request stock to be issued from {primary?.name ?? "the primary location"} to your location.
+            </p>
           </div>
         </button>
 

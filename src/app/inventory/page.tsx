@@ -434,7 +434,7 @@ export default function InventoryPage() {
   const { isAuthenticated, isLoading: authLoading, user, authFetch } = useAuth();
   // Head Chefs can view inventory, but GRVs, direct waste and ingredient edits are Admin/Stock Admin only.
   const canEditRecords = canEditInventoryRecords(user?.role);
-  const { locations } = useLocations();
+  const { locations, primary } = useLocations();
   // This page is admin-only, so load inactive categories too: existing ingredients may still use them.
   const {
     categories: countSheetCategories,
@@ -2025,6 +2025,7 @@ export default function InventoryPage() {
                   title="GRV"
                   requestType="GRV"
                   locationCount={0}
+                  headerInfo={primary ? [{ label: "Received into", value: primary.name }] : []}
                   extraFieldsConfig={[
                     { key: "invoiceNumber", label: "Invoice Number", kind: "text-input", required: true },
                     { key: "supplierName", label: "Supplier Name", kind: "text-input", required: true },
@@ -3024,6 +3025,7 @@ export default function InventoryPage() {
               <p className="text-muted-foreground">
                 Enter each invoice exactly as written. Rows sharing an Invoice Number become one GRV with several lines, and must
                 agree on supplier, Prices Include VAT and Invoice Total. The whole file is checked first: any error saves nothing.
+                {primary && ` Everything is received into ${primary.name}.`}
               </p>
 
               <div className="space-y-1">

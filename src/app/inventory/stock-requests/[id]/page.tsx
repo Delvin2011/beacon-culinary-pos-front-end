@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { useLocations } from "@/hooks/use-locations";
 import { canManageInventory } from "@/lib/roles";
 import { AppSidebar } from "@/components/app-sidebar";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -65,7 +66,7 @@ type GrvDto = {
 
 type IngredientStockDto = {
   totalStock: number;
-  byLocation: { locationId: number; locationName: string; stock: number }[];
+  byLocation: { locationId: number; locationName: string; kind?: "PRIMARY" | "SECONDARY"; active?: boolean; stock: number }[];
 };
 
 function formatDateTime(value?: string): string {
@@ -93,7 +94,9 @@ export default function StockRequestReviewPage() {
   const [request, setRequest] = useState<StockRequestDetailDto | null>(null);
   const [ingredients, setIngredients] = useState<IngredientDto[]>([]);
   const [costByIngredient, setCostByIngredient] = useState<Record<number, number>>({});
-  const [mainStoreStockByIngredient, setMainStoreStockByIngredient] = useState<Record<number, number>>({});
+  // ISSUE: what the primary holds per ingredient (the most an approver can issue).
+  const [primaryStockByIngredient, setPrimaryStockByIngredient] = useState<Record<number, number>>({});
+  const { primary } = useLocations();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [approvedPurchaseOrderId, setApprovedPurchaseOrderId] = useState<number | null>(null);
@@ -139,18 +142,16 @@ export default function StockRequestReviewPage() {
               const stockRes = await authFetch(`/admin/ingredients/${line.ingredientId}/stock`);
               const stockBody = (await stockRes.json().catch(() => null)) as IngredientStockDto | unknown;
               if (!stockRes.ok || !stockBody) return [line.ingredientId, 0] as const;
-              const mainStore = (stockBody as IngredientStockDto).byLocation.find(
-                (entry) => entry.locationName === "Main Store",
-              );
-              return [line.ingredientId, mainStore?.stock ?? 0] as const;
+              const atPrimary = (stockBody as IngredientStockDto).byLocation.find((entry) => entry.kind === "PRIMARY");
+              return [line.ingredientId, atPrimary?.stock ?? 0] as const;
             } catch {
               return [line.ingredientId, 0] as const;
             }
           }),
         );
-        setMainStoreStockByIngredient(Object.fromEntries(stockEntries));
+        setPrimaryStockByIngredient(Object.fromEntries(stockEntries));
       } else {
-        setMainStoreStockByIngredient({});
+        setPrimaryStockByIngredient({});
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load this request.");
@@ -203,17 +204,21 @@ export default function StockRequestReviewPage() {
   const capRule = useMemo(() => {
     if (!request) return undefined;
     if (request.requestType === "ISSUE") {
-      return (line: ReviewLine) => mainStoreStockByIngredient[line.ingredientId];
+      return (line: ReviewLine) => primaryStockByIngredient[line.ingredientId];
     }
     if (request.requestType === "WASTE") {
       return (line: ReviewLine) => line.requestedQuantity;
     }
     // ORDER: no cap — the admin can freely adjust quantities up or down before approving.
     return undefined;
-  }, [request, mainStoreStockByIngredient]);
+  }, [request, primaryStockByIngredient]);
 
   const capLabel =
-    request?.requestType === "ISSUE" ? "Main Store Stock" : request?.requestType === "WASTE" ? "Requested Cap" : undefined;
+    request?.requestType === "ISSUE"
+      ? `${primary?.name ?? "Primary"} Stock`
+      : request?.requestType === "WASTE"
+      ? "Requested Cap"
+      : undefined;
 
   const handleApprove = async (payload: { lines: ActionedLine[]; extraFields: Record<string, string> }) => {
     if (!request) return;
@@ -293,6 +298,9 @@ export default function StockRequestReviewPage() {
                 { label: "Status", value: request.status },
                 ...(request.requestType === "WASTE" && request.locationName
                   ? [{ label: "Location", value: request.locationName }]
+                  : []),
+                ...(request.requestType === "ISSUE" && request.locationName
+                  ? [{ label: "Issue", value: `From ${primary?.name ?? "the primary location"} to ${request.locationName}` }]
                   : []),
               ]}
               extraFieldsConfig={extraFieldsConfig}
