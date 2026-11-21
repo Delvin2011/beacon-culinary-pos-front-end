@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import { reauthLoginPath, safeReturnTo } from "@/lib/return-to"
 
 describe("safeReturnTo", () => {
-  it.each(["/devices", "/devices/register", "/pos-activity", "/site-settings", "/meal-periods"])("accepts %s", (path) => {
+  it.each(["/devices", "/devices/register", "/pos-activity", "/site-settings", "/meal-periods", "/stock-locations"])("accepts %s", (path) => {
     expect(safeReturnTo(path)).toBe(path)
   })
 

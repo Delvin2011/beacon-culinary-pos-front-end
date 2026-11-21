@@ -106,6 +106,11 @@ const data = {
           url: "/meal-periods",
           access: "admin" as const,
         },
+        {
+          title: "Stock locations",
+          url: "/stock-locations",
+          access: "admin" as const,
+        },
       ],
     },
     {

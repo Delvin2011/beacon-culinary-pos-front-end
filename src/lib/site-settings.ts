@@ -85,7 +85,7 @@ export interface GroupCopy {
 }
 
 // In the contract's order. A group the server adds later is shown after these, headed by its code.
-export const GROUP_ORDER = ["VAT", "END_OF_DAY", "DASHBOARD", "BOARD", "TILLS", "SESSIONS", "OFFLINE"] as const
+export const GROUP_ORDER = ["VAT", "END_OF_DAY", "DASHBOARD", "BOARD", "TILLS", "SESSIONS", "OFFLINE", "STOCK"] as const
 
 export const GROUP_COPY: Record<string, GroupCopy> = {
   VAT: { heading: "Sales and VAT", description: "The VAT rate charged on new sales and stock receipts." },
@@ -95,6 +95,7 @@ export const GROUP_COPY: Record<string, GroupCopy> = {
   TILLS: { heading: "Tills", description: "Which browsers may be used as tills." },
   SESSIONS: { heading: "Sessions", description: "When an idle till locks, and when its session ends." },
   OFFLINE: { heading: "Offline", description: "How long tills may sell without a connection, and account sales while offline." },
+  STOCK: { heading: "Stock", description: "How many stock locations may be active at once." },
 }
 
 // How a value is shown and typed. "fraction-percent": the API holds a fraction (0.15), the screen a percentage (15.00 %).
@@ -158,6 +159,11 @@ export const SETTING_COPY: Record<string, SettingCopy> = {
   "pos.offline.warn-offline-hours": { label: "Warn the cashier after", unit: "hours", effect: OFFLINE_GRANT_EFFECT },
   "pos.offline.accounts-enabled": { label: "Account sales while offline", unit: "none", effect: OFFLINE_GRANT_EFFECT },
   "pos.offline.account-cap": { label: "Offline account limit", unit: "rand", effect: OFFLINE_GRANT_EFFECT },
+  "stock.locations.max-active": {
+    label: "Most active stock locations",
+    unit: "none",
+    effect: "The primary counts. Applies to the next location added or activated; lowering it below the current number deactivates none.",
+  },
 }
 
 export function settingCopy(key: string): SettingCopy {
