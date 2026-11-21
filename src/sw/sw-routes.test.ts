@@ -5,7 +5,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { describe, expect, it, vi } from "vitest"
 // Plain JavaScript (allowJs): routes.mjs is also inlined into public/sw.js.
-import { cacheKeyFor, classifyRequest, posPrecacheFiles, staleCaches } from "@/sw/routes.mjs"
+import { cacheKeyFor, classifyRequest, isNeverHandled, posPrecacheFiles, staleCaches } from "@/sw/routes.mjs"
 import { buildServiceWorker } from "../../scripts/build-sw.mjs"
 
 const ORIGIN = "https://pos.example.co.za"
@@ -66,6 +66,22 @@ describe("routing", () => {
     expect(cacheKeyFor("page", "/pos/")).toBe("/pos")
     expect(cacheKeyFor("rsc", "/pos")).toBe("/pos?__pos_rsc=1")
     expect(staleCaches(["pos-shell-a", "pos-shell-b", "other"], "b")).toEqual(["pos-shell-a"])
+  })
+
+  it.each([
+    ["the invite page", `${ORIGIN}/invite`, {}],
+    ["the invite page with a trailing slash", `${ORIGIN}/invite/`, {}],
+    ["the invite page's route data", `${ORIGIN}/invite?_rsc=abc`, { isNavigate: false, isRsc: true }],
+    ["invite lookup on the API", `${API}/auth/invites/lookup`, { method: "POST" }],
+    ["invite lookup on this origin, even as a GET", `${ORIGIN}/auth/invites/lookup`, {}],
+    ["invite accept on this origin", `${ORIGIN}/auth/invites/accept`, { method: "POST" }],
+  ])("never handles %s", (_, url, extra) => {
+    expect(classify(url, extra)).toBe("pass")
+  })
+
+  it("doesn't mistake a similar path for the invite page", () => {
+    expect(isNeverHandled("/invites-report")).toBe(false)
+    expect(isNeverHandled("/pos")).toBe(false)
   })
 })
 
@@ -179,6 +195,15 @@ describe("the generated worker", () => {
     expect(await dispatch(scope, new Request(`${API}/health`))).toBeUndefined()
     expect(await dispatch(scope, navigate(`${ORIGIN}/inventory`))).toBeUndefined()
     expect(await dispatch(scope, new Request(`${ORIGIN}/pos`, { method: "POST", body: "x" }))).toBeUndefined()
+  })
+
+  it("never answers or caches the invite page or the invite calls", async () => {
+    const scope = await install(await generatedWorker(), online)
+    const before = Array.from(scope.stores.get("pos-shell-test-build")!.keys())
+    expect(await dispatch(scope, navigate(`${ORIGIN}/invite`))).toBeUndefined()
+    expect(await dispatch(scope, new Request(`${API}/auth/invites/lookup`, { method: "POST", body: "{}" }))).toBeUndefined()
+    expect(await dispatch(scope, new Request(`${ORIGIN}/auth/invites/accept`, { method: "POST", body: "{}" }))).toBeUndefined()
+    expect(Array.from(scope.stores.get("pos-shell-test-build")!.keys())).toEqual(before)
   })
 
   it("waits for SKIP_WAITING to activate, and then deletes older builds' caches", async () => {

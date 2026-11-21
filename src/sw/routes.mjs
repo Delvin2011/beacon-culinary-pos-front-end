@@ -12,12 +12,21 @@ export const POS_MANIFEST_KEYS = ["/layout", "/pos/layout", "/pos/page", "/pos/l
 // How long a POS page or its route data may take from the network before the cached copy is used.
 export const NETWORK_TIMEOUT_MS = 4000
 
+// Never handled, whatever else changes (T0-6b): the invite page and the invite API. An invite token must never reach
+// a cache, and the worker never sees those requests: the browser handles them as if there were no worker.
+export const NEVER_HANDLED = ["/invite", "/auth/invites"]
+
 export function normalizePath(pathname) {
   return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname
 }
 
 export function isPosRoute(pathname) {
   return POS_ROUTES.includes(normalizePath(pathname))
+}
+
+export function isNeverHandled(pathname) {
+  const path = normalizePath(pathname)
+  return NEVER_HANDLED.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))
 }
 
 // The static files to precache: those the POS routes' manifest entries list, plus fonts and images (static/media,
@@ -34,6 +43,7 @@ export function posPrecacheFiles(manifestPages, mediaFiles) {
 // "page": a POS page load; "rsc": its route data (client navigation); "static": a precached file; "pass": anything
 // else, left to the browser.
 export function classifyRequest({ method, url, origin, isNavigate, isRsc, precached }) {
+  if (isNeverHandled(url.pathname)) return "pass"
   if (method !== "GET") return "pass"
   if (url.origin !== origin) return "pass"
   const path = normalizePath(url.pathname)
