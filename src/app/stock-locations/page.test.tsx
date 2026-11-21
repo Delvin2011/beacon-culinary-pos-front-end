@@ -292,6 +292,20 @@ describe("deactivate and activate", () => {
   })
 })
 
+describe("tabs", () => {
+  it("shows the Changes tab, keeps it in the URL, and keeps the list's locations for its filter", async () => {
+    render(<StockLocationsPage />)
+    await screen.findByTestId(`location-${PRIMARY.id}`)
+    expect(screen.getByRole("heading", { name: "Assignments" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("tab", { name: "Changes" }))
+    expect(window.location.search).toBe("?tab=history")
+    await waitFor(() => expect(calls("GET", "/admin/locations/history")).toHaveLength(1))
+    expect(within(screen.getByLabelText("Location")).getByText("Old Pantry (inactive)")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("tab", { name: "Locations" }))
+    expect(window.location.search).toBe("")
+  })
+})
+
 describe("access", () => {
   it("sends a STOCK_ADMIN to their own landing page and asks nothing", async () => {
     role = "STOCK_ADMIN"
