@@ -26,7 +26,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { StaffFormDialog } from "@/components/staff/staff-form-dialog"
 import { CredentialResetDialog, type CredentialKind } from "@/components/staff/credential-reset-dialog"
+import { InviteLinkDialog } from "@/components/staff/invite-link-dialog"
+import { SendInviteDialog, type SendInviteTarget } from "@/components/staff/send-invite-dialog"
 import { toast } from "@/hooks/use-toast"
+import { canRevokeInvite, inviteStatusText, revokeInvite, type IssuedInvite } from "@/lib/invites"
+import { clearInviteDraft, readInviteDraft } from "@/lib/staff-invite-draft"
 import { isAdminRole } from "@/lib/roles"
 import { cn } from "@/lib/utils"
 import {
@@ -139,6 +143,11 @@ export default function StaffPage() {
   const [togglingActive, setTogglingActive] = useState(false)
   const [unlockTarget, setUnlockTarget] = useState<StaffMember | null>(null)
   const [unlocking, setUnlocking] = useState(false)
+  // The one-time link: held only while its dialog is open; closing it discards the token.
+  const [issued, setIssued] = useState<{ invite: IssuedInvite; name: string } | null>(null)
+  const [sendTarget, setSendTarget] = useState<SendInviteTarget | null>(null)
+  const [revokeTarget, setRevokeTarget] = useState<StaffMember | null>(null)
+  const [revoking, setRevoking] = useState(false)
 
   useEffect(() => {
     if (authLoading) return
@@ -177,6 +186,45 @@ export default function StaffPage() {
       [...current.filter((existing) => existing.id !== member.id), member].sort((a, b) => a.name.localeCompare(b.name)),
     )
   }, [])
+
+  // Back from the password re-sign-in: ask once more ("Send the link to {name} now?"); never send by itself, since
+  // sending also replaces any link the person already has.
+  useEffect(() => {
+    if (loading || staff.length === 0) return
+    const draft = readInviteDraft()
+    if (draft?.kind !== "send") return
+    clearInviteDraft()
+    const member = staff.find((candidate) => candidate.id === draft.staffId)
+    if (member) setSendTarget({ member, request: draft.request, afterReauth: true })
+  }, [loading, staff])
+
+  // The issue response doesn't carry the person: reload them for the new status line. Best effort.
+  const refreshMember = useCallback(
+    async (id: number) => {
+      try {
+        const res = await authFetch(`/admin/staff/${id}`)
+        if (res.ok) upsert((await res.json()) as StaffMember)
+      } catch {
+        // The list shows the new status on the next load.
+      }
+    },
+    [authFetch, upsert],
+  )
+
+  const revoke = async () => {
+    if (!revokeTarget) return
+    const member = revokeTarget
+    setRevoking(true)
+    try {
+      upsert(await revokeInvite(authFetch, member.id))
+      toast({ title: "Link revoked", description: `${member.name}'s link no longer works.` })
+    } catch (err) {
+      setPageMessage(err instanceof Error ? err.message : "The link couldn't be revoked. Try again.")
+    } finally {
+      setRevoking(false)
+      setRevokeTarget(null)
+    }
+  }
 
   const openCreate = () => {
     setEditing(null)
@@ -269,6 +317,9 @@ export default function StaffPage() {
               {usesPassword(rule) && <CredentialBadge label="Password" set={row.original.hasPassword} />}
               {usesPin(rule) && <CredentialBadge label="PIN" set={row.original.hasPin} />}
               <SignInBadges member={row.original} />
+              {inviteStatusText(row.original.invite) && (
+                <span className="w-full text-xs text-muted-foreground">{inviteStatusText(row.original.invite)}</span>
+              )}
             </div>
           )
         },
@@ -310,6 +361,30 @@ export default function StaffPage() {
               {usesPin(rule) && (
                 <Button size="sm" variant="outline" onClick={() => setCredentialTarget({ staff: member, kind: "pin" })}>
                   {member.hasPin ? "Reset PIN" : "Set PIN"}
+                </Button>
+              )}
+              {member.active && !isOwnRecord(member, user) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setPageMessage(null)
+                    setSendTarget({ member })
+                  }}
+                >
+                  Sign-in link
+                </Button>
+              )}
+              {canRevokeInvite(member.invite) && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setPageMessage(null)
+                    setRevokeTarget(member)
+                  }}
+                >
+                  Revoke link
                 </Button>
               )}
               <Button
@@ -561,6 +636,36 @@ export default function StaffPage() {
                 onClick={() => void toggleActive()}
               >
                 {togglingActive ? "Saving…" : activeTarget?.active ? "Deactivate" : "Activate"}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <SendInviteDialog
+          target={sendTarget}
+          rule={roles.find((candidate) => candidate.role === sendTarget?.member.role)}
+          onOpenChange={(open) => !open && setSendTarget(null)}
+          onIssued={(member, invite) => {
+            setSendTarget(null)
+            setIssued({ invite, name: member.name })
+            void refreshMember(member.id)
+          }}
+        />
+
+        <InviteLinkDialog issued={issued} onClose={() => setIssued(null)} />
+
+        <Dialog open={revokeTarget !== null} onOpenChange={(open) => !open && !revoking && setRevokeTarget(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Revoke {revokeTarget?.name}&apos;s link?</DialogTitle>
+              <DialogDescription>The link stops working at once. You can send a new one later.</DialogDescription>
+            </DialogHeader>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" disabled={revoking} onClick={() => setRevokeTarget(null)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" disabled={revoking} onClick={() => void revoke()}>
+                {revoking ? "Revoking…" : "Revoke link"}
               </Button>
             </div>
           </DialogContent>

@@ -87,7 +87,7 @@ describe("re-sign-in (/login?reauth=1&returnTo=…)", () => {
     expect(push).not.toHaveBeenCalled()
   })
 
-  it.each(["%2F%2Fevil.com", "https%3A%2F%2Fevil.com", "%2Fstaff"])("ignores returnTo=%s and goes to the default page", async (raw) => {
+  it.each(["%2F%2Fevil.com", "https%3A%2F%2Fevil.com", "%2Finventory"])("ignores returnTo=%s and goes to the default page", async (raw) => {
     search = `reauth=1&returnTo=${raw}`
     renderForm()
     fetchMock.mockResolvedValueOnce(signInResponse("ADMIN"))

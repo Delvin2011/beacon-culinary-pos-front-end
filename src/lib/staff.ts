@@ -3,6 +3,7 @@
 
 import { format, isSameDay } from "date-fns"
 import { PIN_PATTERN } from "@/lib/pin"
+import type { StaffInvite } from "@/lib/invites"
 
 export type CredentialRule = "REQUIRED" | "OPTIONAL" | "NONE"
 
@@ -36,6 +37,9 @@ export interface StaffMember {
   locks?: Partial<Record<LockScope, StaffLock>>
   // Absent from backends before the blocks change; the staff page can't see short blocks then.
   blocks?: Partial<Record<BlockScope, StaffBlock>>
+  // T0-6: the latest sign-in link. Always an object from V116 on (status NONE: every other field null); absent from
+  // older backends.
+  invite?: StaffInvite
 }
 
 // Short-term blocks (contract 2.8): blockedUntil is a UTC instant, null when not blocked.
