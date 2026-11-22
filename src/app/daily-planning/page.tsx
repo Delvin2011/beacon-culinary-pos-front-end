@@ -5,7 +5,7 @@ import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { CheckCircle2, Circle } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
-import { canManageMenu, canReviewMealStock } from "@/lib/roles"
+import { canManageMenu, canReviewMealStock, isAdminRole } from "@/lib/roles"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
@@ -283,6 +283,11 @@ function StatusBadge({ status }: { status: PlanItemStatus }) {
   return <span className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium ${className}`}>{label}</span>
 }
 
+// "A", "A and B", "A, B and C".
+function listNames(names: string[]): string {
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`
+}
+
 function formatPeriodTime(value: string | null): string {
   if (!value) return "--:--"
   return value.slice(0, 5)
@@ -296,6 +301,9 @@ export default function DailyPlanningPage() {
   const [selectedPeriod, setSelectedPeriod] = useState<MealPeriod | null>(null)
   // Names of the periods that can't be planned (the All Day period), from GET /meal-periods, to explain where they went.
   const [unplannableNames, setUnplannableNames] = useState<string[]>([])
+  // T0-8: whether GET /meal-periods has answered, so an empty list isn't mistaken for "still loading". A failed
+  // reload keeps the periods already shown; only a failed first load shows the error.
+  const [periodsStatus, setPeriodsStatus] = useState<"loading" | "loaded" | "error">("loading")
 
   // Meals the selected period can plan (GET /admin/meal-catalog?periodId=).
   const [mealCatalog, setMealCatalog] = useState<MealCatalogEntry[]>([])
@@ -366,12 +374,16 @@ export default function DailyPlanningPage() {
   const fetchPeriods = useCallback(async () => {
     try {
       const res = await authFetch("/meal-periods")
-      if (!res.ok) return
+      if (!res.ok) {
+        setPeriodsStatus((current) => (current === "loaded" ? current : "error"))
+        return
+      }
       const data = (await res.json()) as MealPeriod[]
       // Older servers don't send plannable: treat those periods as plannable.
       const plannable = data.filter((period) => period.plannable !== false)
       setUnplannableNames(data.filter((period) => period.plannable === false).map((period) => period.name))
       setPeriods(plannable)
+      setPeriodsStatus("loaded")
       // Keep the selected period (by id) after a reload; the same object if nothing about it changed, so nothing reloads.
       setSelectedPeriod((current) => {
         const match = current ? plannable.find((period) => period.id === current.id) : undefined
@@ -379,9 +391,14 @@ export default function DailyPlanningPage() {
         return match ?? plannable[0] ?? null
       })
     } catch {
-      // no-op
+      setPeriodsStatus((current) => (current === "loaded" ? current : "error"))
     }
   }, [authFetch])
+
+  const retryPeriods = () => {
+    setPeriodsStatus("loading")
+    void fetchPeriods()
+  }
 
   const fetchCatalogs = useCallback(async () => {
     try {
@@ -964,9 +981,41 @@ export default function DailyPlanningPage() {
                   </button>
                 )
               })}
-              {periods.length === 0 && <span className="px-3 py-1.5 text-sm text-muted-foreground animate-pulse">Loading periods…</span>}
+              {periods.length === 0 && periodsStatus === "loading" && (
+                <span className="px-3 py-1.5 text-sm text-muted-foreground animate-pulse">Loading periods…</span>
+              )}
             </div>
           </div>
+          {periodsStatus === "error" && periods.length === 0 && (
+            <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive">
+              <p>Couldn&apos;t load meal periods.</p>
+              <Button size="sm" variant="outline" onClick={retryPeriods}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {periodsStatus === "loaded" && periods.length === 0 && (
+            <div role="status" className="rounded-md border bg-muted/40 p-4 text-sm">
+              <p className="font-medium">
+                {unplannableNames.length === 0
+                  ? "No meal periods are set up yet."
+                  : `Only ${listNames(unplannableNames)} ${unplannableNames.length === 1 ? "is" : "are"} set up. Add a meal period for set meals to plan them.`}
+              </p>
+              <p className="mt-1 text-muted-foreground">
+                {isAdminRole(user?.role) ? (
+                  <>
+                    Set them up in{" "}
+                    <Link href="/meal-periods" className="underline underline-offset-2 hover:text-foreground">
+                      Admin → Meal periods
+                    </Link>
+                    .
+                  </>
+                ) : (
+                  "Ask a manager to set up meal periods."
+                )}
+              </p>
+            </div>
+          )}
           {unplannableNames.length > 0 && (
             <p className="-mt-4 text-xs text-muted-foreground">
               Light meals ({unplannableNames.join(", ")}) and beverages are always available. Manage them in{" "}
