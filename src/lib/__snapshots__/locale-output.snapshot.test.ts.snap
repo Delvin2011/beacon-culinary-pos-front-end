@@ -1,0 +1,205 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`locale output (recorded before the T0-8 locale refactor) > dates and times 1`] = `
+"dashboard formatJhbClock
+"2026-11-21T21:59:59Z" -> "23:59"
+"2026-11-21T22:00:00Z" -> "00:00"
+"2026-03-29T01:30:00Z" -> "03:30"
+"2026-11-22T12:05:09Z" -> "14:05"
+
+dashboard jhbHourOf
+"2026-11-21T21:59:59Z" -> 23
+"2026-11-21T22:00:00Z" -> 0
+"2026-03-29T01:30:00Z" -> 3
+"2026-11-22T12:05:09Z" -> 14
+
+dashboard formatJhbLongDate
+"2026-11-21T21:59:59Z" -> "Saturday 21 November 2026"
+"2026-11-21T22:00:00Z" -> "Sunday 22 November 2026"
+"2026-03-29T01:30:00Z" -> "Sunday 29 March 2026"
+"2026-11-22T12:05:09Z" -> "Sunday 22 November 2026"
+
+dashboard formatShortDay
+"2026-11-21" -> "21 Nov"
+"2026-01-01" -> "1 Jan"
+"2026-12-31" -> "31 Dec"
+
+pos-activity formatJhbDateTime
+"2026-11-21T21:59:59Z" -> "21 Nov 2026, 23:59"
+"2026-11-21T22:00:00Z" -> "22 Nov 2026, 00:00"
+"2026-03-29T01:30:00Z" -> "29 Mar 2026, 03:30"
+"2026-11-22T12:05:09Z" -> "22 Nov 2026, 14:05"
+null -> "—"
+undefined -> "—"
+
+pos-activity formatJhbTime
+"2026-11-21T21:59:59Z" -> "23:59"
+"2026-11-21T22:00:00Z" -> "00:00"
+"2026-03-29T01:30:00Z" -> "03:30"
+"2026-11-22T12:05:09Z" -> "14:05"
+null -> "—"
+undefined -> "—"
+
+reports formatCalendarDate
+"2026-11-21" -> "21 Nov 2026"
+"2026-01-01" -> "01 Jan 2026"
+"2026-12-31" -> "31 Dec 2026"
+
+meal-periods formatCalendarDate
+"2026-11-21" -> "21 Nov 2026"
+"2026-01-01" -> "1 Jan 2026"
+null -> ""
+
+meal-periods siteTimeAt
+1795298399000 -> "23:59:59"
+1795298400000 -> "00:00:00"
+1774747800000 -> "03:30:00"
+1795349109000 -> "14:05:09"
+
+offline tradingDayAt
+1795298399000 -> "2026-11-21"
+1795298400000 -> "2026-11-22"
+1774747800000 -> "2026-03-29"
+1795349109000 -> "2026-11-22"
+
+receipt formatReceiptDateTime
+"2026-11-21T21:59:59Z" -> "21/11/2026 23:59"
+"2026-11-21T22:00:00Z" -> "22/11/2026 00:00"
+"2026-03-29T01:30:00Z" -> "29/03/2026 03:30"
+"2026-11-22T12:05:09Z" -> "22/11/2026 14:05"
+"2026-11-22T12:05:09" -> "22/11/2026 14:05"
+null -> null"
+`;
+
+exports[`locale output (recorded before the T0-8 locale refactor) > money 1`] = `
+"formatZarCurrency
+0 -> "R 0,00"
+0.5 -> "R 0,50"
+7.83 -> "R 7,83"
+12 -> "R 12,00"
+1234.5 -> "R 1 234,50"
+-56.789 -> "-R 56,79"
+1000000 -> "R 1 000 000,00"
+123456789.994 -> "R 123 456 789,99"
+
+moneyOrDash (lib/money)
+0 -> "R 0,00"
+0.5 -> "R 0,50"
+7.83 -> "R 7,83"
+12 -> "R 12,00"
+1234.5 -> "R 1 234,50"
+-56.789 -> "-R 56,79"
+1000000 -> "R 1 000 000,00"
+123456789.994 -> "R 123 456 789,99"
+null -> "—"
+undefined -> "—"
+
+moneyOrDash (grv-vat-controls)
+0 -> "R 0,00"
+0.5 -> "R 0,50"
+7.83 -> "R 7,83"
+12 -> "R 12,00"
+1234.5 -> "R 1 234,50"
+-56.789 -> "-R 56,79"
+1000000 -> "R 1 000 000,00"
+123456789.994 -> "R 123 456 789,99"
+null -> "—"
+undefined -> "—"
+
+formatAmountInput
+"" -> "R 0,00"
+"0" -> "R 0"
+"12" -> "R 12"
+"12." -> "R 12,"
+"12.5" -> "R 12,5"
+"1234.56" -> "R 1 234,56"
+"1000000" -> "R 1 000 000"
+
+formatReceiptAmount
+0 -> "0.00"
+0.5 -> "0.50"
+7.83 -> "7.83"
+12 -> "12.00"
+1234.5 -> "1 234.50"
+-56.789 -> "-56.79"
+1000000 -> "1 000 000.00"
+123456789.994 -> "123 456 789.99"
+null -> "0.00"
+undefined -> "0.00"
+
+dashboard formatRand
+0 -> "R 0,00"
+0.5 -> "R 0,50"
+7.83 -> "R 7,83"
+12 -> "R 12,00"
+1234.5 -> "R 1 234,50"
+-56.789 -> "-R 56,79"
+1000000 -> "R 1 000 000,00"
+123456789.994 -> "R 123 456 789,99"
+null -> "R 0,00"
+undefined -> "R 0,00"
+
+dashboard formatRandShort
+0 -> "R 0"
+0.5 -> "R 1"
+7.83 -> "R 8"
+12 -> "R 12"
+1234.5 -> "R 1,2k"
+-56.789 -> "R -57"
+1000000 -> "R 1 000k"
+123456789.994 -> "R 123 456,8k"
+999 -> "R 999"
+1000 -> "R 1k"
+15400 -> "R 15,4k"
+
+pos-activity formatMoney
+0 -> "R 0,00"
+0.5 -> "R 0,50"
+7.83 -> "R 7,83"
+12 -> "R 12,00"
+1234.5 -> "R 1 234,50"
+-56.789 -> "-R 56,79"
+1000000 -> "R 1 000 000,00"
+123456789.994 -> "R 123 456 789,99"
+null -> "—"
+undefined -> "—"
+
+offline accountCapMessage
+[50000,49000,2000] -> "Account limit for offline sales reached (R500.00)."
+[123456,100000,30000] -> "Account limit for offline sales reached (R1234.56)."
+[null,0,100] -> null"
+`;
+
+exports[`locale output (recorded before the T0-8 locale refactor) > numbers in reports 1`] = `
+"formatInt
+0 -> "0"
+7 -> "7"
+1234 -> "1 234"
+1234567 -> "1 234 567"
+-9876 -> "-9 876"
+
+formatDecimal
+0 -> "0,00"
+7.5 -> "7,50"
+1234.567 -> "1 234,57"
+-0.004 -> "-0,00"
+
+formatPercent
+0 -> "0%"
+12.5 -> "12,5%"
+99.999 -> "100%"
+100 -> "100%""
+`;
+
+exports[`locale output (recorded before the T0-8 locale refactor) > receipt lines 1`] = `
+"VAT_LINE_TEMPLATE "Incl. VAT {rate}%: R {amount}"
+
+vatLine
+{"vatRate":0.15,"vatIncludedAmount":7.83,"createdAt":"2026-11-22T12:05:09Z"} -> "Incl. VAT 15%: R 7.83"
+{"vatRate":0.155,"vatIncludedAmount":1234.5,"createdAt":"2026-11-22T12:05:09Z"} -> "Incl. VAT 15.5%: R 1 234.50"
+{"vatRate":0,"vatIncludedAmount":0,"createdAt":"2026-11-22T12:05:09Z"} -> "Incl. VAT 0%: R 0.00"
+{"vatRate":null,"vatIncludedAmount":null,"createdAt":"2026-11-22T12:05:09Z"} -> null
+
+receiptTime
+{"vatRate":0.15,"vatIncludedAmount":7.83,"createdAt":"2026-11-22T12:05:09Z"} -> "2026-11-22T12:05:09Z""
+`;
