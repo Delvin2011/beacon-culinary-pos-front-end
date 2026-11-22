@@ -17,6 +17,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
+import { BRAND } from "@/lib/brand"
 
 export function NavMain({
   items,
@@ -36,7 +37,7 @@ export function NavMain({
 }) {
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Beacon Culinary</SidebarGroupLabel>
+      <SidebarGroupLabel>{BRAND.name}</SidebarGroupLabel>
       <SidebarMenu>
         {items.map((item) => (
           <Collapsible

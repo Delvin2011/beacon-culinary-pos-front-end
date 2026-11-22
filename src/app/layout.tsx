@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
 import { Providers } from "@/components/providers";
+import { BRAND } from "@/lib/brand";
 import "./globals.css";
 
 const geistSans = localFont({
@@ -15,8 +16,8 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Beacon Culinary",
-  description: "Canteen POS system",
+  title: BRAND.name,
+  description: BRAND.description,
 };
 
 export default function RootLayout({

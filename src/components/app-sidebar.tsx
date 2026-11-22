@@ -13,6 +13,7 @@ import { NavMain } from "@/components/nav-main"
 import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
 import { useAuth } from "@/hooks/use-auth"
+import { BRAND } from "@/lib/brand"
 import { fetchOpenExceptionCount } from "@/lib/sale-exceptions"
 import { canManageInventory, canManageMenu, canManageStockTakes, canViewDashboard, canViewReports, isAdminRole, isBaristaRole } from "@/lib/roles"
 import {
@@ -26,9 +27,9 @@ import {
 const data = {
   teams: [
     {
-      name: "Beacon Culinary",
+      name: BRAND.name,
       logo: Fuel,
-      plan: "Canteen",
+      plan: BRAND.planLabel,
     },
   ],
   navMain: [

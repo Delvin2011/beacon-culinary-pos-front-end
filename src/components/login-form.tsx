@@ -14,7 +14,7 @@ import { LoginBlockedError } from "@/contexts/auth-context"
 import { isAdminRole, landingPathFor } from "@/lib/roles"
 import { safeReturnTo } from "@/lib/return-to"
 import { clearSignInEmail, peekSignInEmail } from "@/lib/sign-in-handoff"
-import loginImage from "../app/assets/images/beacon_login_image.png"
+import { BRAND } from "@/lib/brand"
 
 export function LoginForm({
   className,
@@ -81,7 +81,7 @@ export function LoginForm({
               <div className="flex flex-col items-center text-center">
                 <h1 className="text-2xl font-bold">Welcome back</h1>
                 <p className="text-balance text-muted-foreground">
-                  Login to your Beacon Culinary Account
+                  {BRAND.loginHeading}
                 </p>
               </div>
 
@@ -153,8 +153,8 @@ export function LoginForm({
           </form>
           <div className="relative hidden bg-muted md:block">
             <Image
-              src={loginImage}
-              alt="Image"
+              src={BRAND.loginImage}
+              alt={BRAND.loginImageAlt}
               fill
               className="object-cover dark:brightness-[0.2] dark:grayscale"
             />
