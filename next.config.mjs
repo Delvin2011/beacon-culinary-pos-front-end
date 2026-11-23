@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { PHASE_DEVELOPMENT_SERVER } from "next/constants.js";
 
 const { version } = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 function gitSha() {
@@ -23,4 +24,22 @@ const nextConfig = {
   env: { NEXT_PUBLIC_APP_VERSION: buildId },
 };
 
-export default nextConfig;
+// T1-0d: the app calls /api on its own address (src/lib/api-url.ts). Front Door (production) and Caddy (the local
+// stack) send /api/* to the backend with the prefix removed. Under `npm run dev` alone, this rewrite does the same,
+// to DEV_API_PROXY_TARGET (default http://localhost:8080; the backend needs cookie.path-prefix=/api so the refresh
+// cookie's path is /api/auth/refresh).
+// Development only, and it can't reach production: Next calls this function with the phase, and `next build` runs it
+// in PHASE_PRODUCTION_BUILD, where no rewrite is defined. The standalone server never reads this file again: it uses
+// the rewrites saved in .next/routes-manifest.json at build time, which are empty. npm run check:build verifies it.
+export default function config(phase) {
+  if (phase !== PHASE_DEVELOPMENT_SERVER) return nextConfig;
+  const target = (process.env.DEV_API_PROXY_TARGET || "http://localhost:8080").replace(/\/+$/, "");
+  return {
+    ...nextConfig,
+    // The dev server's gzip holds back the kitchen, bar and board event streams until they end; off in development only.
+    compress: false,
+    async rewrites() {
+      return [{ source: "/api/:path*", destination: `${target}/:path*` }];
+    },
+  };
+}
