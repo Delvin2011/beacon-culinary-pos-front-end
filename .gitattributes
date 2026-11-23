@@ -1,0 +1,3 @@
+# T1-L0-FE: the container files keep Unix line endings on every checkout (the image's shell runs the RUN lines).
+Dockerfile text eol=lf
+.dockerignore text eol=lf
