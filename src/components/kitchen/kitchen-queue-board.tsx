@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, ChefHat, Clock3, Loader2, RefreshCw } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
+import { LOCALE_ZA } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import { columnShellClass, DONE_RETENTION_MS, statusPillClass } from "@/components/orders/status-visuals";
 import type { Station } from "@/lib/catalog";
@@ -104,7 +105,7 @@ async function consumeSseResponse(
 
 function formatCreatedTime(value: string): string {
   try {
-    return new Date(value).toLocaleTimeString("en-ZA", {
+    return new Date(value).toLocaleTimeString(LOCALE_ZA, {
       hour: "2-digit",
       minute: "2-digit",
     });
@@ -512,7 +513,7 @@ export function KitchenQueueBoard() {
       </div>
 
       <div className="text-xs text-slate-500">
-        Done orders are kept here for 10 minutes. {lastSyncAt ? `Last resync: ${lastSyncAt.toLocaleTimeString("en-ZA")}` : ""}
+        Done orders are kept here for 10 minutes. {lastSyncAt ? `Last resync: ${lastSyncAt.toLocaleTimeString(LOCALE_ZA)}` : ""}
       </div>
     </div>
   );

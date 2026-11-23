@@ -16,6 +16,8 @@ import {
 import { ArrowUpDown } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { canEditInventoryRecords, canManageInventory, canManageStockTakes } from "@/lib/roles";
+import { CURRENCY_SYMBOL } from "@/lib/locale";
+import { moneyOrDash } from "@/lib/money";
 import { AppSidebar } from "@/components/app-sidebar";
 import {
   SidebarInset,
@@ -63,7 +65,6 @@ import {
   InvoiceCheckChip,
   PricesIncludeVatToggle,
   VatCodeSelect,
-  moneyOrDash,
 } from "@/components/inventory/grv-vat-controls";
 import {
   VAT_CODES,
@@ -323,7 +324,7 @@ function downloadTextFile(filename: string, content: string) {
 
 function formatStockCost(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
-  return `R ${value.toFixed(4).replace(".", ",")}`;
+  return `${CURRENCY_SYMBOL} ${value.toFixed(4).replace(".", ",")}`;
 }
 
 function parseError(body: unknown, fallback: string): string {

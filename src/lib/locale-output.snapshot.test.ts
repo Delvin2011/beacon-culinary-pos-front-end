@@ -3,7 +3,7 @@
 // __snapshots__/locale-output.snapshot.test.ts.snap; a change there is a visible change.
 import { describe, expect, it } from "vitest"
 import { formatAmountInput } from "@/lib/amount-input"
-import { moneyOrDash as grvMoneyOrDash } from "@/components/inventory/grv-vat-controls"
+import { moneyOrDash as grvMoneyOrDash } from "@/lib/money"
 import { formatJhbClock, formatJhbLongDate, formatRand, formatRandShort, formatShortDay, jhbHourOf } from "@/lib/dashboard"
 import { formatCalendarDate as mealPeriodCalendarDate, siteTimeAt } from "@/lib/meal-periods"
 import { moneyOrDash } from "@/lib/money"

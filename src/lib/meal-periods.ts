@@ -4,6 +4,7 @@
 // a period. Branch on `code` only; `error` is for display.
 
 import { readApiError, detailNumber, detailString, type ApiError } from "@/lib/api-error"
+import { LOCALE_GB } from "@/lib/locale"
 import { TRADING_TIME_ZONE, serverNow } from "@/lib/offline/server-time"
 
 type AuthFetch = (path: string, init?: RequestInit) => Promise<Response>
@@ -160,7 +161,7 @@ const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)(?::(\d\d))?$/
 
 // The site's time of day ("HH:mm:ss") at `ms`, by the site time zone.
 export function siteTimeAt(ms: number): string {
-  const parts = new Intl.DateTimeFormat("en-GB", {
+  const parts = new Intl.DateTimeFormat(LOCALE_GB, {
     timeZone: TRADING_TIME_ZONE,
     hour: "2-digit",
     minute: "2-digit",
@@ -328,7 +329,7 @@ export function saveWarnings(editing: AdminMealPeriod | null, form: MealPeriodFo
 export function formatCalendarDate(value: string | null): string {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return value ?? ""
   const [y, m, d] = value.split("-").map(Number)
-  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(
+  return new Intl.DateTimeFormat(LOCALE_GB, { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }).format(
     new Date(Date.UTC(y, m - 1, d)),
   )
 }

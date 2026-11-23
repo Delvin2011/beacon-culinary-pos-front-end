@@ -1,11 +1,12 @@
+import { CURRENCY, LOCALE_ZA } from "@/lib/locale"
 import { formatZarCurrency } from "@/lib/utils"
 
 // Keypad amounts are held as typed, in rands with "." as the separator: "", "12", "12.", "12.5".
 // The keypad shows "," to the cashier; "." is only the stored form.
 
-const zarWholeFormatter = new Intl.NumberFormat("en-ZA", {
+const zarWholeFormatter = new Intl.NumberFormat(LOCALE_ZA, {
   style: "currency",
-  currency: "ZAR",
+  currency: CURRENCY,
   currencyDisplay: "symbol",
   minimumFractionDigits: 0,
   maximumFractionDigits: 0,

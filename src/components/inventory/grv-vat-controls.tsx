@@ -94,7 +94,3 @@ export function VatCodeSelect({
   );
 }
 
-// Legacy GRVs have null VAT figures: show "—", never R0.00.
-export function moneyOrDash(value: number | null | undefined): string {
-  return value === null || value === undefined ? "—" : formatZarCurrency(value);
-}

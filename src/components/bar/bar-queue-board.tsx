@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Clock3, Coffee, Loader2, RefreshCw, Volume2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
+import { LOCALE_ZA } from "@/lib/locale";
 import { cn } from "@/lib/utils";
 import { columnShellClass, statusPillClass } from "@/components/orders/status-visuals";
 import { type CatalogGroup, type CategoryRef, type Station, setOutToday } from "@/lib/catalog";
@@ -72,7 +73,7 @@ function parseError(body: unknown, fallback: string): string {
 
 function formatTime(value: string): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString(LOCALE_ZA, { hour: "2-digit", minute: "2-digit" });
 }
 
 function minutesSince(value: string, nowMs: number): number | null {

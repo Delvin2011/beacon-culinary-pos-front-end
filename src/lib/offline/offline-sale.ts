@@ -7,6 +7,7 @@
 // - VAT is O2b's rule on the total at the snapshot's rate.
 // - Numbers: offlineSeq per till per trading day; receipt T1-YYYYMMDD-NNNN (≤ 30), collection T1-N (≤ 20).
 
+import { CURRENCY_SYMBOL } from "@/lib/locale"
 import { centsToAmount, formatCents, rateToTenThousandths, tenThousandthsToRate, vatIncludedCents } from "@/lib/offline/cents"
 
 export const RECEIPT_NUMBER_MAX_LENGTH = 30
@@ -130,7 +131,7 @@ export function changeDueCents(payment: { amountCents: number; tenderedCents: nu
 export function accountCapMessage(capCents: number | null, alreadyChargedCents: number, chargeCents: number): string | null {
   if (capCents === null) return null
   if (alreadyChargedCents + chargeCents <= capCents) return null
-  return `Account limit for offline sales reached (R${formatCents(capCents)}).`
+  return `Account limit for offline sales reached (${CURRENCY_SYMBOL}${formatCents(capCents)}).`
 }
 
 // ---- Numbers ----

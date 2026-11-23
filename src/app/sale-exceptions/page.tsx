@@ -17,6 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ExceptionDetailDialog } from "@/components/sale-exceptions/exception-detail-dialog"
 import { formatTradingDay } from "@/components/orders/offline-order-marks"
 import { useAuth } from "@/hooks/use-auth"
+import { CURRENCY_SYMBOL } from "@/lib/locale"
 import { formatReceiptAmount, formatReceiptDateTime } from "@/lib/receipt"
 import { isAdminRole } from "@/lib/roles"
 import {
@@ -211,7 +212,7 @@ export default function SaleExceptionsPage() {
                         {item.order?.soldAt && <span className="block text-xs text-muted-foreground">Sold {formatReceiptDateTime(item.order.soldAt)}</span>}
                       </TableCell>
                       <TableCell>{item.order?.cashierName ?? "—"}</TableCell>
-                      <TableCell className="text-right">{typeof item.order?.total === "number" ? `R ${formatReceiptAmount(item.order.total)}` : "—"}</TableCell>
+                      <TableCell className="text-right">{typeof item.order?.total === "number" ? `${CURRENCY_SYMBOL} ${formatReceiptAmount(item.order.total)}` : "—"}</TableCell>
                       <TableCell>
                         <Button size="sm" variant="outline" onClick={() => setOpenId(item.id)}>
                           {item.status === "OPEN" ? "Review" : "View"}

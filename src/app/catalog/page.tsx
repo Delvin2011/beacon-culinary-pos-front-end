@@ -15,6 +15,7 @@ import {
 import { ArrowUpDown } from "lucide-react"
 import { useAuth } from "@/hooks/use-auth"
 import { canEditCatalog, canManageMenu, canReviewMealStock } from "@/lib/roles"
+import { CURRENCY_SYMBOL } from "@/lib/locale"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "@/components/ui/breadcrumb"
@@ -1639,7 +1640,7 @@ function CatalogPageContent() {
                 </Select>
               </div>
               <div className="space-y-1">
-                <Label htmlFor="b-price">Price (R, incl. VAT)</Label>
+                <Label htmlFor="b-price">Price ({CURRENCY_SYMBOL}, incl. VAT)</Label>
                 <Input id="b-price" type="number" min="0" step="0.01" value={beverageForm.price} onChange={(e) => setBeverageForm((prev) => ({ ...prev, price: e.target.value }))} placeholder="0.00" required />
               </div>
               <div className="space-y-1">

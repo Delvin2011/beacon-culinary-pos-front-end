@@ -4,7 +4,9 @@
 // The server decides what appears and computes every figure; the browser lays out and formats only.
 // A field that is absent is one the user may not see (show nothing); a field that is null has no value yet.
 
-export const DASHBOARD_TIME_ZONE = "Africa/Johannesburg"
+import { CURRENCY_SYMBOL, LOCALE_GB, TIME_ZONE } from "@/lib/locale"
+
+export const DASHBOARD_TIME_ZONE = TIME_ZONE
 
 export type DashboardRange = "today" | "7d" | "month"
 
@@ -214,8 +216,8 @@ export function formatRand(value: number | null | undefined): string {
 
 // Axis labels: R 0 · R 2k · R 1,5k
 export function formatRandShort(value: number): string {
-  if (Math.abs(value) >= 1000) return `R ${formatDecimal(value / 1000, 1)}k`
-  return `R ${groupThousands(String(Math.round(value)))}`
+  if (Math.abs(value) >= 1000) return `${CURRENCY_SYMBOL} ${formatDecimal(value / 1000, 1)}k`
+  return `${CURRENCY_SYMBOL} ${groupThousands(String(Math.round(value)))}`
 }
 
 // Whole numbers with space thousands: 1240 → "1 240".
@@ -256,16 +258,16 @@ export function formatHour(hour: number): string {
   return `${String(hour).padStart(2, "0")}:00`
 }
 
-const jhbTime = new Intl.DateTimeFormat("en-GB", {
+const jhbTime = new Intl.DateTimeFormat(LOCALE_GB, {
   timeZone: DASHBOARD_TIME_ZONE,
   hour: "2-digit",
   minute: "2-digit",
   hourCycle: "h23",
 })
 
-const jhbHour = new Intl.DateTimeFormat("en-GB", { timeZone: DASHBOARD_TIME_ZONE, hour: "2-digit", hourCycle: "h23" })
+const jhbHour = new Intl.DateTimeFormat(LOCALE_GB, { timeZone: DASHBOARD_TIME_ZONE, hour: "2-digit", hourCycle: "h23" })
 
-const jhbLongDate = new Intl.DateTimeFormat("en-GB", {
+const jhbLongDate = new Intl.DateTimeFormat(LOCALE_GB, {
   timeZone: DASHBOARD_TIME_ZONE,
   weekday: "long",
   day: "numeric",

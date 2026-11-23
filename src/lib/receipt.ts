@@ -4,6 +4,7 @@
 // Never build any of them here.
 
 import type { OrderComplimentary } from "@/lib/complimentary"
+import { CURRENCY_SYMBOL, LOCALE_GB, TIME_ZONE } from "@/lib/locale"
 
 export interface ReceiptExtra {
   id?: number | string
@@ -98,7 +99,7 @@ export function isReceiptOrder(body: unknown): body is ReceiptOrder {
 }
 
 // The wording of the VAT line, in one place: the accountant may change it.
-export const VAT_LINE_TEMPLATE = "Incl. VAT {rate}%: R {amount}"
+export const VAT_LINE_TEMPLATE = `Incl. VAT {rate}%: ${CURRENCY_SYMBOL} {amount}`
 
 // 0.15 → "15", 0.155 → "15.5": no trailing zeros.
 export function formatVatRate(rate: number): string {
@@ -141,8 +142,8 @@ export function parseUtcTimestamp(value: string | null | undefined): Date | null
   return Number.isNaN(date.getTime()) ? null : date
 }
 
-const receiptDateTimeFormatter = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Africa/Johannesburg",
+const receiptDateTimeFormatter = new Intl.DateTimeFormat(LOCALE_GB, {
+  timeZone: TIME_ZONE,
   day: "2-digit",
   month: "2-digit",
   year: "numeric",

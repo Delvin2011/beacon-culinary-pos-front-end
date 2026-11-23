@@ -2,9 +2,10 @@
 // (GET /health, the grant, the snapshot or the status reply) and is used for "today", grant expiry and, in O4,
 // sale timestamps. The till's own clock may be wrong; nothing offline trusts it on its own.
 
+import { TIME_ZONE } from "@/lib/locale"
 import { parseUtcTimestamp } from "@/lib/receipt"
 
-export const TRADING_TIME_ZONE = "Africa/Johannesburg"
+export const TRADING_TIME_ZONE = TIME_ZONE
 
 // server clock − till clock, in ms; null until the first server time arrives.
 let offsetMs: number | null = null
@@ -52,7 +53,7 @@ const dayFormatter = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
 })
 
-// The trading day ("2026-11-18") of an instant, in Africa/Johannesburg.
+// The trading day ("2026-11-18") of an instant, in the site's time zone (lib/locale).
 export function tradingDayAt(ms: number): string {
   return dayFormatter.format(new Date(ms))
 }

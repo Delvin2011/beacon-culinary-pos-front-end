@@ -1,3 +1,4 @@
+import { LOCALE_ZA } from "@/lib/locale"
 import { formatZarCurrency } from "@/lib/utils"
 import { jhbIsoDate } from "@/lib/pos-activity"
 
@@ -369,11 +370,11 @@ export function detectPreset(from: string, to: string): DatePreset {
 
 // ---- Cell formatting ----
 
-const intFormatter = new Intl.NumberFormat("en-ZA", { maximumFractionDigits: 0 })
-const percentFormatter = new Intl.NumberFormat("en-ZA", { maximumFractionDigits: 2 })
-const decimalFormatter = new Intl.NumberFormat("en-ZA", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+const intFormatter = new Intl.NumberFormat(LOCALE_ZA, { maximumFractionDigits: 0 })
+const percentFormatter = new Intl.NumberFormat(LOCALE_ZA, { maximumFractionDigits: 2 })
+const decimalFormatter = new Intl.NumberFormat(LOCALE_ZA, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 // DATE values are already Johannesburg calendar days, so format them without shifting zones.
-const calendarDateFormatter = new Intl.DateTimeFormat("en-ZA", {
+const calendarDateFormatter = new Intl.DateTimeFormat(LOCALE_ZA, {
   timeZone: "UTC",
   day: "2-digit",
   month: "short",

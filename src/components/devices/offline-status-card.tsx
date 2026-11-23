@@ -20,6 +20,7 @@ import {
 } from "@/lib/offline/db"
 import { serverToday } from "@/lib/offline/server-time"
 import { UNLOCK_TARGET_MS } from "@/lib/offline/unlock"
+import { LOCALE_ZA } from "@/lib/locale"
 import { formatJhbDateTime, formatJhbTime } from "@/lib/pos-activity"
 import { CLOCK_SKEW_WARN_MS } from "@/lib/tills-admin"
 
@@ -156,7 +157,7 @@ export function OfflineStatusCard() {
           </Row>
           <Row label="Offline unlock">
             {verifier
-              ? `Set up for ${grant && grant.cashierId === verifier.userId ? grant.cashierName : `cashier ${verifier.userId}`} (PIN check ≈ ${(UNLOCK_TARGET_MS / 1000).toFixed(1)} s, ${verifier.iterations.toLocaleString("en-ZA")} rounds)`
+              ? `Set up for ${grant && grant.cashierId === verifier.userId ? grant.cashierName : `cashier ${verifier.userId}`} (PIN check ≈ ${(UNLOCK_TARGET_MS / 1000).toFixed(1)} s, ${verifier.iterations.toLocaleString(LOCALE_ZA)} rounds)`
               : "Not set up"}
           </Row>
         </dl>

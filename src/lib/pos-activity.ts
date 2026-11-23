@@ -1,3 +1,4 @@
+import { LOCALE_ZA, TIME_ZONE } from "@/lib/locale"
 import { formatZarCurrency } from "@/lib/utils"
 import type { OrderKind } from "@/lib/complimentary"
 import type { CashCount } from "@/lib/tills-admin"
@@ -135,9 +136,8 @@ export interface OpenShift {
   openingFloat: number
 }
 
-const TIME_ZONE = "Africa/Johannesburg"
 
-const dateTimeFormatter = new Intl.DateTimeFormat("en-ZA", {
+const dateTimeFormatter = new Intl.DateTimeFormat(LOCALE_ZA, {
   timeZone: TIME_ZONE,
   day: "2-digit",
   month: "short",
@@ -147,7 +147,7 @@ const dateTimeFormatter = new Intl.DateTimeFormat("en-ZA", {
   hour12: false,
 })
 
-const timeFormatter = new Intl.DateTimeFormat("en-ZA", {
+const timeFormatter = new Intl.DateTimeFormat(LOCALE_ZA, {
   timeZone: TIME_ZONE,
   hour: "2-digit",
   minute: "2-digit",
