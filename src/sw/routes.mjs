@@ -1,7 +1,7 @@
 // O3: what the POS service worker handles, as pure functions. Plain JavaScript: scripts/build-sw.mjs inlines this
 // file into public/sw.js (dropping the `export` keywords), and the unit tests import it as it is.
-// Only the POS shell is ever served from the cache. API calls (another origin: /health, /pos/till-status,
-// /pos/offline/*, everything) and back-office routes are never touched.
+// Only the POS shell is ever served from the cache. API calls (/api/* on this origin since T1-0d: /api/health,
+// /api/pos/till-status, /api/pos/offline/*, the streams, everything) and back-office routes are never touched.
 
 // The POS routes whose page and route data are precached.
 export const POS_ROUTES = ["/pos", "/pos/login", "/pos/shift-open"]
@@ -12,9 +12,10 @@ export const POS_MANIFEST_KEYS = ["/layout", "/pos/layout", "/pos/page", "/pos/l
 // How long a POS page or its route data may take from the network before the cached copy is used.
 export const NETWORK_TIMEOUT_MS = 4000
 
-// Never handled, whatever else changes (T0-6b): the invite page and the invite API. An invite token must never reach
-// a cache, and the worker never sees those requests: the browser handles them as if there were no worker.
-export const NEVER_HANDLED = ["/invite", "/auth/invites"]
+// Never handled, whatever else changes: the invite page and the invite API (T0-6b: an invite token must never reach
+// a cache), and the whole API (T1-0d: /api/* is on this origin now, streams included). The worker never answers
+// those requests: the browser handles them as if there were no worker.
+export const NEVER_HANDLED = ["/invite", "/auth/invites", "/api"]
 
 export function normalizePath(pathname) {
   return pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname

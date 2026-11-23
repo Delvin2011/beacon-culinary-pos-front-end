@@ -83,6 +83,31 @@ describe("routing", () => {
     expect(isNeverHandled("/invites-report")).toBe(false)
     expect(isNeverHandled("/pos")).toBe(false)
   })
+
+  // T1-0d: the API is /api on this origin, so the worker must leave it alone by rule, not by luck.
+  it.each([
+    ["the API root", `${ORIGIN}/api`, {}],
+    ["the API root with a trailing slash", `${ORIGIN}/api/`, {}],
+    ["health", `${ORIGIN}/api/health`, { isNavigate: false }],
+    ["an API path named like a POS page", `${ORIGIN}/api/pos`, {}],
+    ["an API path named like a POS page, as route data", `${ORIGIN}/api/pos?_rsc=x`, { isNavigate: false, isRsc: true }],
+    ["till status", `${ORIGIN}/api/pos/till-status`, { isNavigate: false }],
+    ["the offline snapshot", `${ORIGIN}/api/pos/offline/snapshot`, { isNavigate: false }],
+    ["offline sales", `${ORIGIN}/api/pos/offline/sales`, { method: "POST", isNavigate: false }],
+    ["the kitchen stream", `${ORIGIN}/api/kitchen/orders/stream`, { isNavigate: false }],
+    ["the bar stream", `${ORIGIN}/api/bar/orders/stream`, { isNavigate: false }],
+    ["the public board stream", `${ORIGIN}/api/public/board/stream`, { isNavigate: false }],
+    ["invite lookup", `${ORIGIN}/api/auth/invites/lookup`, { method: "POST", isNavigate: false }],
+  ])("never handles %s on this origin", (_, url, extra) => {
+    expect(classify(url, extra)).toBe("pass")
+  })
+
+  it("names the whole API as never handled, and nothing that merely starts with the letters", () => {
+    expect(isNeverHandled("/api/pos/till-status")).toBe(true)
+    expect(isNeverHandled("/api")).toBe(true)
+    expect(isNeverHandled("/apiary")).toBe(false)
+    expect(isNeverHandled("/api-docs")).toBe(false)
+  })
 })
 
 // ---- The generated worker in a fake scope ----
@@ -203,6 +228,18 @@ describe("the generated worker", () => {
     expect(await dispatch(scope, navigate(`${ORIGIN}/invite`))).toBeUndefined()
     expect(await dispatch(scope, new Request(`${API}/auth/invites/lookup`, { method: "POST", body: "{}" }))).toBeUndefined()
     expect(await dispatch(scope, new Request(`${ORIGIN}/auth/invites/accept`, { method: "POST", body: "{}" }))).toBeUndefined()
+    expect(Array.from(scope.stores.get("pos-shell-test-build")!.keys())).toEqual(before)
+  })
+
+  it("never answers or caches API calls on this origin (T1-0d), and lists /api in its source", async () => {
+    const source = await generatedWorker()
+    expect(source).toMatch(/const NEVER_HANDLED = \[[^\]]*"\/api"[^\]]*\]/)
+    const scope = await install(source, online)
+    const before = Array.from(scope.stores.get("pos-shell-test-build")!.keys())
+    expect(await dispatch(scope, new Request(`${ORIGIN}/api/pos/till-status`))).toBeUndefined()
+    expect(await dispatch(scope, new Request(`${ORIGIN}/api/kitchen/orders/stream`))).toBeUndefined()
+    expect(await dispatch(scope, navigate(`${ORIGIN}/api/pos`))).toBeUndefined()
+    expect(await dispatch(scope, new Request(`${ORIGIN}/api/pos/offline/sales`, { method: "POST", body: "{}" }))).toBeUndefined()
     expect(Array.from(scope.stores.get("pos-shell-test-build")!.keys())).toEqual(before)
   })
 
