@@ -49,8 +49,9 @@ describe("no backend address in the app", () => {
     expect(offenders(/localhost:8080|127\.0\.0\.1:8080/)).toEqual([])
   })
 
-  it("writes /api only in api-url.ts", () => {
-    expect(offenders(/["'`]\/api(?=[/"'`?])/, ["lib/api-url.ts"])).toEqual([])
+  // sw/routes.mjs names /api only to leave it alone (the worker never handles API calls).
+  it("writes /api only in api-url.ts and the service worker's never-handled list", () => {
+    expect(offenders(/["'`]\/api(?=[/"'`?])/, ["lib/api-url.ts", "sw/routes.mjs"])).toEqual([])
   })
 
   it("never passes a hand-built address to fetch: apiUrl(...) or a variable made from it", () => {
