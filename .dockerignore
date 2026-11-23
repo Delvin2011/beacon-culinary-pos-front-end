@@ -1,0 +1,35 @@
+# T1-L0-FE: what never goes into the frontend image's build context.
+
+# Secrets and local settings: never in an image.
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Version control and editor/agent folders.
+.git
+.gitignore
+.vscode
+.idea
+.claude
+
+# Installed or built here: the image installs and builds its own.
+node_modules
+.next
+out
+public/sw.js
+*.tsbuildinfo
+next-env.d.ts
+
+# Test output and deploy packages.
+test-results
+playwright-report
+coverage
+frontend.zip
+*.zip
+
+# The container files themselves, and docs (not part of the app).
+Dockerfile
+.dockerignore
+docs
+README.md
