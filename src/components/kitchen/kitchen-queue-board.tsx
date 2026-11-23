@@ -6,7 +6,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { LOCALE_ZA } from "@/lib/locale";
 import { cn } from "@/lib/utils";
-import { columnShellClass, DONE_RETENTION_MS, statusPillClass } from "@/components/orders/status-visuals";
+import { columnShellClass, DONE_RETENTION_MS, doneRetentionNotice, statusPillClass } from "@/components/orders/status-visuals";
 import type { Station } from "@/lib/catalog";
 import { type OtherStation, stationChipClass, stationStatusLabel } from "@/lib/stations";
 
@@ -513,7 +513,7 @@ export function KitchenQueueBoard() {
       </div>
 
       <div className="text-xs text-slate-500">
-        Done orders are kept here for 10 minutes. {lastSyncAt ? `Last resync: ${lastSyncAt.toLocaleTimeString(LOCALE_ZA)}` : ""}
+        {doneRetentionNotice()} {lastSyncAt ? `Last resync: ${lastSyncAt.toLocaleTimeString(LOCALE_ZA)}` : ""}
       </div>
     </div>
   );
