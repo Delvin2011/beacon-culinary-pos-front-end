@@ -11,6 +11,7 @@ import {
   type StatusReport,
 } from "@/lib/offline/contract"
 import type { PendingSummary } from "@/lib/offline/outbox"
+import { apiUrl } from "@/lib/api-url"
 
 export const HEARTBEAT_INTERVAL_MS = 60_000
 
@@ -57,8 +58,8 @@ export function onStatusReportRequested(listener: () => void): () => void {
 
 export type StatusResult = { kind: "ok"; reply: StatusReply | null } | { kind: "not-registered" } | { kind: "failed" }
 
-export async function sendStatusReport(apiBase: string, report: StatusReport): Promise<StatusResult> {
-  const url = `${apiBase}/pos/offline/status`
+export async function sendStatusReport(report: StatusReport): Promise<StatusResult> {
+  const url = apiUrl("/pos/offline/status")
   try {
     const res = await fetchWithTimeout(
       url,

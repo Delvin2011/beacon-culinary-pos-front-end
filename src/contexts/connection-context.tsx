@@ -14,6 +14,7 @@ import {
 } from "@/lib/connection-signals";
 import { HEALTH_TIMEOUT_MS, fetchWithTimeout } from "@/lib/net";
 import { recordServerTime } from "@/lib/offline/server-time";
+import { apiUrl } from "@/lib/api-url";
 
 export const OFFLINE_AFTER = 3; // consecutive failures before going offline
 export const ONLINE_AFTER = 2; // consecutive successes before coming back online
@@ -54,8 +55,6 @@ type ConnectionContextValue = {
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
 
-const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
-
 export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ConnectionState>(INITIAL_CONNECTION);
   const lastSignalAtRef = useRef<{ ok: boolean; at: number } | null>(null);
@@ -69,7 +68,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const ping = useCallback(async () => {
-    const url = `${API_BASE}/health`;
+    const url = apiUrl("/health");
     try {
       const res = await fetchWithTimeout(url, { cache: "no-store", credentials: "omit" }, HEALTH_TIMEOUT_MS);
       const signal = signalForHealth(res.status);

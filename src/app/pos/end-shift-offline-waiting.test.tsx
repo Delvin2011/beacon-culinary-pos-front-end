@@ -32,7 +32,7 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
-      const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+      const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
       if (path === "/shifts/open") {
         return json(200, {
           shiftId: 412,

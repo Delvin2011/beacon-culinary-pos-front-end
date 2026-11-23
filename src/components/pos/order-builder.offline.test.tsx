@@ -44,7 +44,7 @@ beforeEach(() => {
   vi.spyOn(Date, "now").mockImplementation(() => clock)
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input) => {
-    const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+    const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
     if (path === "/health") return new Response(null, { status: 404 }) // no /health yet: requests decide
     if (path === "/meal-periods") return ok([{ id: 1, name: "Lunch", startTime: "00:00:00", endTime: "23:59:59", plannable: false }])
     if (path.startsWith("/menu/today")) return ok({ options: [toastie], availableExtras: [] })

@@ -18,6 +18,7 @@ import { clearSnapshotAccounts } from "@/lib/offline/db";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { CONNECTION_MESSAGES, RequestTimeoutError, fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
 import { reportConnectionSignal, signalForError, signalForResponse } from "@/lib/connection-signals";
+import { apiUrl } from "@/lib/api-url";
 
 // timeoutMs overrides the default limit (15 s; 20 s for POST /orders; 5 s for /health).
 export type AuthFetchInit = RequestInit & { timeoutMs?: number };
@@ -91,7 +92,6 @@ type RefreshResult =
 
 const AUTH_STORAGE_KEY = "bar-talk.auth";
 const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
-const AUTH_API_BASE_URL = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
 // Server sign-out (POST /auth/logout): deletes this browser's refreshToken cookie so the session can't come back
 // through /auth/refresh, and (O2 contract 8.4) ends the session the access token names; an expired token is
@@ -105,7 +105,7 @@ const LOCK_TIMEOUT_MS = 5_000;
 async function requestServerLogout(token: string | null): Promise<void> {
   try {
     await fetchWithTimeout(
-      `${AUTH_API_BASE_URL}/auth/logout`,
+      apiUrl("/auth/logout"),
       { method: "POST", credentials: "include", headers: token ? { Authorization: `Bearer ${token}` } : undefined },
       LOGOUT_TIMEOUT_MS,
     );
@@ -118,7 +118,7 @@ async function requestServerLogout(token: string | null): Promise<void> {
 async function requestServerLock(token: string): Promise<boolean> {
   try {
     const res = await fetchWithTimeout(
-      `${AUTH_API_BASE_URL}/pos/lock`,
+      apiUrl("/pos/lock"),
       { method: "POST", credentials: "include", headers: { Authorization: `Bearer ${token}` } },
       LOCK_TIMEOUT_MS,
     );
@@ -156,7 +156,6 @@ interface PinLoginPayload {
 }
 
 interface AuthContextValue {
-  apiBaseUrl: string;
   token: string | null;
   user: AuthUser | null;
   isAuthenticated: boolean;
@@ -348,7 +347,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      const response = await fetch(`${AUTH_API_BASE_URL}/auth/login`, {
+      const response = await fetch(apiUrl("/auth/login"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -408,7 +407,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new PinLoginError(PIN_FORMAT_MESSAGE);
       }
 
-      const pinUrl = `${AUTH_API_BASE_URL}/auth/pin-login`;
+      const pinUrl = apiUrl("/auth/pin-login");
       const response = await fetchWithTimeout(
         pinUrl,
         {
@@ -567,7 +566,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return { kind: "ended" };
         }
 
-        const refreshUrl = `${AUTH_API_BASE_URL}/auth/refresh`;
+        const refreshUrl = apiUrl("/auth/refresh");
         const response = await fetchWithTimeout(
           refreshUrl,
           { method: "POST", credentials: "include" },
@@ -632,8 +631,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const authFetch = useCallback(
     async (path: string, init?: AuthFetchInit) => {
-      const isAbsoluteUrl = path.startsWith("http://") || path.startsWith("https://");
-      const url = isAbsoluteUrl ? path : `${AUTH_API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+      // Backend paths only ("/orders"): the address is always /api on this origin (T1-0d).
+      const url = apiUrl(path.startsWith("/") ? path : `/${path}`);
       const { timeoutMs: requestedTimeout, ...requestInit } = init ?? {};
       const timeoutMs = requestedTimeout ?? timeoutFor(url, requestInit.method);
 
@@ -737,7 +736,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      apiBaseUrl: AUTH_API_BASE_URL,
       token: state.token,
       user: state.user,
       isAuthenticated: Boolean(state.token) || state.user?.offline === true,

@@ -41,8 +41,6 @@ import { signedInUserId } from "@/lib/offline/signed-in-user"
 import { SNAPSHOT_REFRESH_MS, refreshSnapshot } from "@/lib/offline/snapshot-sync"
 import { fetchTillStatus, type TillStatus } from "@/lib/till"
 
-const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080"
-
 export interface OfflineContextValue {
   // The last till-status answer; null until one arrives (e.g. a reload while offline).
   tillStatus: TillStatus | null
@@ -94,7 +92,7 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
 
     let status: TillStatus
     try {
-      status = await fetchTillStatus(API_BASE)
+      status = await fetchTillStatus()
     } catch {
       return // No answer: keep everything.
     }

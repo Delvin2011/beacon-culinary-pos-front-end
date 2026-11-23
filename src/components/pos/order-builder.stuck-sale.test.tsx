@@ -101,7 +101,7 @@ beforeEach(async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+      const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
       // The sale's outcome never comes back: the connection drops while it's out.
       if (!online || (path === "/orders" && init?.method === "POST")) throw new TypeError("Failed to fetch")
       if (path === "/meal-periods") return json([{ id: 2, name: "Lunch", startTime: "00:00:00", endTime: "23:59:59", plannable: true }])

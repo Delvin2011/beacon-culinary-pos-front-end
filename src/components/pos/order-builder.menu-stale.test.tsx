@@ -56,7 +56,7 @@ beforeEach(() => {
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input) => {
     const url = String(input)
-    const path = url.replace(/^https?:\/\/[^/]+/, "")
+    const path = url.replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
     if (failing.has(path)) throw new TypeError("Failed to fetch")
     if (path === "/meal-periods") return ok(periods)
     if (path === "/menu/today?period=Lunch") return ok({ options: [burger], availableExtras: [] })

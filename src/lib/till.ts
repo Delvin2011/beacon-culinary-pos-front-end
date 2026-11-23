@@ -2,6 +2,7 @@
 // Branch on error `code` only; the server's `error` text is never used to decide anything.
 
 import { fetchWithTimeout, timeoutFor } from "@/lib/net"
+import { apiUrl } from "@/lib/api-url"
 
 export const TillErrorCode = {
   SESSION_ENDED: "SESSION_ENDED",
@@ -97,8 +98,8 @@ export const DEFAULT_WARN_OFFLINE_HOURS = 5
 const positiveOr = (value: unknown, fallback: number) => (typeof value === "number" && value > 0 ? value : fallback)
 
 // Public: credentials send the deviceToken cookie. Throws on no answer or a non-2xx.
-export async function fetchTillStatus(apiBase: string): Promise<TillStatus> {
-  const url = `${apiBase}/pos/till-status`
+export async function fetchTillStatus(): Promise<TillStatus> {
+  const url = apiUrl("/pos/till-status")
   const res = await fetchWithTimeout(url, { credentials: "include", cache: "no-store" }, timeoutFor(url))
   if (!res.ok) throw new Error(`till-status ${res.status}`)
   const body = (await res.json()) as Partial<TillStatus>

@@ -25,7 +25,7 @@ const period = (name: string) => ({ id: 1, name, startTime: "00:00:00", endTime:
 let periodLists: unknown[][]
 let menuFor: (name: string) => Response
 
-const paths = () => fetchMock.mock.calls.map(([input]) => String(input).replace(/^https?:\/\/[^/]+/, ""))
+const paths = () => fetchMock.mock.calls.map(([input]) => String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, ""))
 const periodLoads = () => paths().filter((p) => p === "/meal-periods").length
 const menuLoads = (name: string) => paths().filter((p) => p === `/menu/today?period=${encodeURIComponent(name)}`).length
 
@@ -48,7 +48,7 @@ beforeEach(() => {
   localStorage.clear()
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input) => {
-    const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+    const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
     if (path === "/meal-periods") return json(periodLists.length > 1 ? periodLists.shift() : periodLists[0])
     const menu = path.match(/^\/menu\/today\?period=(.+)$/)
     if (menu) return menuFor(decodeURIComponent(menu[1]))

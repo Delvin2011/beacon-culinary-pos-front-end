@@ -77,7 +77,7 @@ beforeEach(async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+      const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
       const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : null
       calls.push({ path, body })
       if (path === "/pos/offline/sales") return salesAnswer(body as never)

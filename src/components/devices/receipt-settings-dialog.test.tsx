@@ -33,7 +33,7 @@ beforeEach(() => {
   putAnswer = (body) => json(200, { ...body, updatedAt: "2026-11-18T09:00:00Z", updatedBy: "Boss" })
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input, init) => {
-    const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+    const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
     if (path === "/admin/receipt-settings" && init?.method === "PUT") return putAnswer(JSON.parse(String(init.body)))
     if (path === "/admin/receipt-settings") return getAnswer()
     return json(404, {})

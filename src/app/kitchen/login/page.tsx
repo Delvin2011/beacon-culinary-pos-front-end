@@ -10,14 +10,13 @@ import { DeviceNotRegisteredError, LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE }
 import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
+import { apiUrl } from "@/lib/api-url";
 
 // Shape returned by GET /users/login-tiles?screen=KITCHEN: kitchen staff and the Head Chef with a PIN set.
 interface LoginTile {
   id: number;
   name: string;
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
 function getInitials(name: string): string {
   return name
@@ -62,7 +61,7 @@ export default function KitchenLoginPage() {
   const loadTiles = useCallback(() => {
     setTilesLoading(true);
     setTilesError(null);
-    fetch(`${API_BASE}/users/login-tiles?screen=KITCHEN`, { credentials: "include" })
+    fetch(apiUrl("/users/login-tiles?screen=KITCHEN"), { credentials: "include" })
       .then(async (res) => {
         if (!res.ok) throw new Error(`Server returned ${res.status}`);
         const data = (await res.json()) as unknown;

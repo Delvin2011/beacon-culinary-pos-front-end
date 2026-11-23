@@ -135,7 +135,7 @@ describe("Lock till", () => {
 
     expect(ending).toHaveBeenCalledWith("LOCK")
     const [url, init] = callsTo("/pos/lock")[0]
-    expect(String(url)).toBe("http://localhost:8080/pos/lock")
+    expect(String(url)).toBe("/api/pos/lock")
     expect(init).toMatchObject({ method: "POST", credentials: "include" })
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer a.b.c")
     expect(auth().isAuthenticated).toBe(false)

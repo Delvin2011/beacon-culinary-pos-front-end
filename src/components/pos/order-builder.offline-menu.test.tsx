@@ -59,7 +59,7 @@ beforeEach(() => {
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input) => {
     if (!serverUp) throw new TypeError("Failed to fetch")
-    const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+    const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
     if (path === "/meal-periods") return ok([{ id: 2, name: "Lunch", startTime: "00:00:00", endTime: "23:59:59" }])
     if (path.startsWith("/menu/today"))
       return ok({ options: [{ id: 701, mealPeriodId: 2, optionDate: "2026-11-18", name: "Live curry", price: 45, plannedPortions: 10, portionsRemaining: 5, group: "SET_MEALS" }], availableExtras: [] })

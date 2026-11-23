@@ -58,7 +58,7 @@ beforeEach(() => {
   adjustmentAnswers = []
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input, init) => {
-    const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+    const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
     if (path === "/orders" && init?.method === "POST") return ok(order, 201)
     if (path === "/orders/55/adjustments") {
       const answer = adjustmentAnswers.length > 1 ? adjustmentAnswers.shift()! : adjustmentAnswers[0]

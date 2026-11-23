@@ -20,8 +20,6 @@ import { applyResults, buildBatch, retryDelayMs, sendBatch, type SyncStopReason 
 import { recordServerTime, serverNow } from "@/lib/offline/server-time"
 import { fetchTillStatus } from "@/lib/till"
 
-const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080"
-
 type SyncUiState =
   | { kind: "idle" }
   | { kind: "sending"; count: number }
@@ -44,7 +42,7 @@ async function stillStopped(): Promise<SyncStopReason | null> {
   if (!stopped) return null
   if (stopped.reason === "DEVICE_NOT_REGISTERED") {
     try {
-      if ((await fetchTillStatus(API_BASE)).registered) {
+      if ((await fetchTillStatus()).registered) {
         await deleteMeta("syncStopped")
         return null
       }
@@ -102,7 +100,7 @@ export function OfflineSync() {
         }
         setState({ kind: "sending", count: all.filter(isSendable).length })
 
-        const outcome = await sendBatch(API_BASE, batch)
+        const outcome = await sendBatch(batch)
         if (outcome.kind === "stop") {
           await setMeta("syncStopped", { reason: outcome.reason, at: new Date().toISOString(), appVersion: APP_VERSION })
           if (mountedRef.current) setState({ kind: "stopped", reason: outcome.reason })

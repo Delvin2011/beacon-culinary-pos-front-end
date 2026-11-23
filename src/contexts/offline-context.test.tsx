@@ -17,7 +17,7 @@ import {
 import { setServerTimeOffset } from "@/lib/offline/server-time"
 import { grantBody, snapshotBody } from "@/lib/offline/test-fixtures"
 
-const API = "http://localhost:8080"
+const API = "/api" // T1-0d: the API is /api on the page's own address
 
 // ---- Mocked session, shift and connection ----
 

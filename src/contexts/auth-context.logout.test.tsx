@@ -49,7 +49,7 @@ describe("sign-out (POST /auth/logout)", () => {
 
     expect(logoutCalls()).toHaveLength(1)
     const [url, init] = logoutCalls()[0]
-    expect(String(url)).toBe("http://localhost:8080/auth/logout")
+    expect(String(url)).toBe("/api/auth/logout")
     expect(init).toMatchObject({ method: "POST", credentials: "include" })
     // Not keepalive: a keepalive request needing a CORS preflight may be refused.
     expect(init?.keepalive).toBeUndefined()

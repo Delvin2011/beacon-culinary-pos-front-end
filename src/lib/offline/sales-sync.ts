@@ -13,6 +13,7 @@ import { readApiError } from "@/lib/api-error"
 import { fetchWithTimeout } from "@/lib/net"
 import type { OfflineSalePayload } from "@/lib/offline/offline-sale"
 import { isSendable, markRejected, markSynced, type OutboxEntry, type SaleException, type SyncedResult } from "@/lib/offline/outbox"
+import { apiUrl } from "@/lib/api-url"
 
 export const SALES_PER_BATCH = 50
 export const GRANTS_PER_BATCH = 10
@@ -113,8 +114,8 @@ export type BatchOutcome =
   // 5xx, network failure, timeout, or an answer the contract doesn't list: wait and resend the same sales.
   | { kind: "retry" }
 
-export async function sendBatch(apiBase: string, batch: SalesBatch): Promise<BatchOutcome> {
-  const url = `${apiBase}/pos/offline/sales`
+export async function sendBatch(batch: SalesBatch): Promise<BatchOutcome> {
+  const url = apiUrl("/pos/offline/sales")
   let res: Response
   try {
     res = await fetchWithTimeout(

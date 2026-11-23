@@ -71,7 +71,7 @@ beforeEach(() => {
     ok({ receiptTitle: "Tax Invoice", businessName: "Canteen at Riverside Park", addressLines: [], phone: null, vatNumber: null, footerText: null, showVatLine: true })
   fetchMock.mockReset()
   fetchMock.mockImplementation(async (input, init) => {
-    const path = String(input).replace(/^https?:\/\/[^/]+/, "")
+    const path = String(input).replace(/^(?:https?:\/\/[^/]+)?\/api(?=\/)/, "")
     if (path === "/orders" && init?.method === "POST") return ok(order, 201)
     if (path === "/health") return new Response(null, { status: 404 })
     if (path === "/pos/receipt-settings") return settingsResponse()

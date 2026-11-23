@@ -6,7 +6,7 @@ import { RequestTimeoutError } from "@/lib/net"
 
 type Auth = NonNullable<ContextType<typeof AuthContext>>
 
-const API = "http://localhost:8080"
+const API = "/api" // T1-0d: the API is /api on the page's own address
 const fetchMock = vi.fn<typeof fetch>()
 
 function renderSignedIn(): () => Auth {

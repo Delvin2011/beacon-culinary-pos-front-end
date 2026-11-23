@@ -20,7 +20,7 @@ export interface AutoLockState {
 }
 
 export function useAutoLock(onLocked: () => void): AutoLockState {
-  const { isAuthenticated, apiBaseUrl, lockTill } = useAuth()
+  const { isAuthenticated, lockTill } = useAuth()
   const busy = useLockBusy()
   const [idleLockMinutes, setIdleLockMinutes] = useState(DEFAULT_IDLE_LOCK_MINUTES)
   const [warningUntil, setWarningUntilState] = useState<number | null>(null)
@@ -40,7 +40,7 @@ export function useAutoLock(onLocked: () => void): AutoLockState {
   useEffect(() => {
     if (!isAuthenticated) return
     let cancelled = false
-    fetchTillStatus(apiBaseUrl)
+    fetchTillStatus()
       .then((status) => {
         if (!cancelled) setIdleLockMinutes(status.idleLockMinutes)
       })
@@ -48,7 +48,7 @@ export function useAutoLock(onLocked: () => void): AutoLockState {
     return () => {
       cancelled = true
     }
-  }, [apiBaseUrl, isAuthenticated])
+  }, [isAuthenticated])
 
   const restart = useCallback(() => {
     lastActivityRef.current = Date.now()

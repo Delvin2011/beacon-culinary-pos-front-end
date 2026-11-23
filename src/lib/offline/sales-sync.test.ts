@@ -15,7 +15,7 @@ import {
   type SalesBatch,
 } from "@/lib/offline/sales-sync"
 
-const API = "http://api.test"
+const API = "/api"
 const CLOCK = "2026-11-18T13:05:01.000Z"
 
 function newEntry(seq: number, grantId = "g1", soldAt = `2026-11-18T10:${String(seq % 60).padStart(2, "0")}:00.000Z`, name = "Water"): NewOutboxEntry {
@@ -129,7 +129,7 @@ describe("sendBatch", () => {
 
   it("posts the batch with the till cookie and no bearer token", async () => {
     fetchMock.mockResolvedValue(json({ results: [], serverTimeUtc: CLOCK }))
-    expect(await sendBatch(API, batch)).toEqual({ kind: "ok", results: [], serverTimeUtc: CLOCK })
+    expect(await sendBatch(batch)).toEqual({ kind: "ok", results: [], serverTimeUtc: CLOCK })
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe(`${API}/pos/offline/sales`)
     expect(init).toMatchObject({ method: "POST", credentials: "include" })
@@ -148,12 +148,12 @@ describe("sendBatch", () => {
     [json({ unexpected: true }), { kind: "retry" }],
   ])("answer %# → %o", async (response, outcome) => {
     fetchMock.mockResolvedValue(response as Response)
-    expect(await sendBatch(API, batch)).toEqual(outcome)
+    expect(await sendBatch(batch)).toEqual(outcome)
   })
 
   it("a network failure is a retry", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"))
-    expect(await sendBatch(API, batch)).toEqual({ kind: "retry" })
+    expect(await sendBatch(batch)).toEqual({ kind: "retry" })
   })
 })
 

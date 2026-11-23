@@ -18,14 +18,13 @@ import { useConnection } from "@/contexts/connection-context";
 import { useOfflineUnlock } from "@/hooks/use-offline-unlock";
 import { OfflineUnlockScreen } from "@/components/pos/offline-unlock-screen";
 import { saveUnlockVerifierAfterSignIn } from "@/lib/offline/unlock";
+import { apiUrl } from "@/lib/api-url";
 
 // Shape returned by GET /users/cashiers
 interface CashierSummary {
   id: number;
   name: string;
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080";
 
 const CASHIERS_FAILED_MESSAGE = "Could not load the cashier list. Contact the administrator if this keeps happening.";
 
@@ -112,7 +111,7 @@ export default function PosLoginPage() {
     setTillNotRegistered(false);
     setCashiersUnreachable(false);
 
-    const cashiersUrl = `${API_BASE}/users/cashiers`;
+    const cashiersUrl = apiUrl("/users/cashiers");
     fetchWithTimeout(cashiersUrl, { credentials: "include" }, timeoutFor(cashiersUrl))
       .then(async (res) => {
         if (res.status === 403 && (await errorCode(res)) === DeviceErrorCode.NOT_REGISTERED) {
@@ -144,7 +143,7 @@ export default function PosLoginPage() {
 
   // On load (which covers arriving here after a lock or a sign-out) and after a refused sign-in.
   const loadTillStatus = useCallback(() => {
-    fetchTillStatus(API_BASE)
+    fetchTillStatus()
       .then((status) => {
         setTillStatus(status);
         // The server is reachable: send a lock that didn't get through.

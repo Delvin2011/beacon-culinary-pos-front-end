@@ -14,13 +14,11 @@ import { listOutbox, pendingSummary } from "@/lib/offline/outbox"
 import { recordServerTime, serverNow } from "@/lib/offline/server-time"
 import { fetchTillStatus } from "@/lib/till"
 
-const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080"
-
 async function loadStopped(): Promise<boolean> {
   if ((await getMeta("heartbeatStopped")) !== true) return false
   // Stopped earlier: registered since (another way than this browser's devices page)?
   try {
-    const status = await fetchTillStatus(API_BASE)
+    const status = await fetchTillStatus()
     if (status.registered) {
       await deleteMeta("heartbeatStopped")
       return false
@@ -52,7 +50,7 @@ export function OfflineHeartbeat() {
 
       // O4: the outbox's waiting sales and the last sync.
       const [offlineSince, entries, lastSyncAt] = await Promise.all([getMeta("offlineSince"), listOutbox(), getMeta("lastSyncAt")])
-      const result = await sendStatusReport(API_BASE, buildStatusReport({ offlineSince, pending: pendingSummary(entries), lastSyncAt }))
+      const result = await sendStatusReport(buildStatusReport({ offlineSince, pending: pendingSummary(entries), lastSyncAt }))
       if (result.kind === "not-registered") {
         stoppedRef.current = Promise.resolve(true)
         await setMeta("heartbeatStopped", true)

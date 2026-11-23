@@ -13,8 +13,7 @@ import { format } from "date-fns"
 import { readApiError } from "@/lib/api-error"
 import { formatWait, readLoginBlock } from "@/lib/login-protection"
 import type { CredentialRule, StaffMember, StaffRoleRule } from "@/lib/staff"
-
-const API_BASE = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "http://localhost:8080"
+import { apiUrl } from "@/lib/api-url"
 
 export type InvitePurpose = "FIRST_ADMIN" | "STAFF_SETUP" | "RESET"
 export type SignInWith = "PASSWORD" | "PIN"
@@ -172,7 +171,7 @@ async function publicInviteError(res: Response): Promise<InviteError> {
 async function postPublic<T>(path: string, body: Record<string, unknown>): Promise<T> {
   let res: Response
   try {
-    res = await fetch(`${API_BASE}${path}`, {
+    res = await fetch(apiUrl(path), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
