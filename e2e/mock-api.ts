@@ -43,6 +43,9 @@ export interface LoggedRequest {
 
 export interface MockApi {
   offline: boolean
+  // T1-3: "suspended" answers every path (/health included) 503 CUSTOMER_SUSPENDED, as the backend does for a
+  // customer the vendor suspended.
+  customer: "active" | "suspended"
   calls: string[]
   log: LoggedRequest[]
   // O4: every POST /pos/offline/sales body, and every status report.
@@ -109,6 +112,7 @@ export function createBackend(): MockApi {
   })
   const api: MockApi = {
     offline: false,
+    customer: "active",
     calls: [],
     log: [],
     salesBatches: [],
@@ -367,6 +371,15 @@ export async function mockApi(context: BrowserContext, backend: MockApi = create
     const request = route.request()
     const backendPath = new URL(request.url()).pathname.replace(/^\/api(?=\/)/, "")
     if (api.offline) return route.abort("internetdisconnected")
+    if (api.customer === "suspended") {
+      api.calls.push(`${request.method()} ${backendPath}`)
+      api.log.push({ key: `${request.method()} ${backendPath}`, token: null, status: 503 })
+      return route.fulfill({
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ error: "This site is suspended.", code: "CUSTOMER_SUSPENDED" }),
+      })
+    }
     const key = `${request.method()} ${backendPath}`
     api.calls.push(key)
     const token = /^Bearer (.+)$/.exec(request.headers()["authorization"] ?? "")?.[1] ?? null
