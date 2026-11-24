@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { columnShellClass, DONE_RETENTION_MS, statusPillClass } from "@/components/orders/status-visuals";
-import { apiUrl } from "@/lib/api-url";
+import { apiFetch } from "@/lib/api-fetch";
 
 type BoardStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" | "REFUNDED";
 
@@ -166,7 +166,8 @@ export function PublicDisplayBoard() {
 
   const fetchSnapshot = useCallback(async (): Promise<boolean> => {
     try {
-      const response = await fetch(apiUrl("/public/board/today"), {
+      const response = await apiFetch("/public/board/today", {
+        timeoutMs: null,
         method: "GET",
         headers: {
           Accept: "application/json",
@@ -221,7 +222,8 @@ export function PublicDisplayBoard() {
         streamControllerRef.current = controller;
 
         try {
-          const response = await fetch(apiUrl("/public/board/stream"), {
+          const response = await apiFetch("/public/board/stream", {
+            timeoutMs: null,
             method: "GET",
             headers: {
               Accept: "text/event-stream",

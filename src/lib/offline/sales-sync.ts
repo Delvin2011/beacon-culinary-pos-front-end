@@ -10,10 +10,9 @@
 // - Nothing unsynced is ever deleted (rule I). SYNCED entries go 7 days after their sync.
 
 import { readApiError } from "@/lib/api-error"
-import { fetchWithTimeout } from "@/lib/net"
 import type { OfflineSalePayload } from "@/lib/offline/offline-sale"
 import { isSendable, markRejected, markSynced, type OutboxEntry, type SaleException, type SyncedResult } from "@/lib/offline/outbox"
-import { apiUrl } from "@/lib/api-url"
+import { apiFetch } from "@/lib/api-fetch"
 
 export const SALES_PER_BATCH = 50
 export const GRANTS_PER_BATCH = 10
@@ -115,20 +114,16 @@ export type BatchOutcome =
   | { kind: "retry" }
 
 export async function sendBatch(batch: SalesBatch): Promise<BatchOutcome> {
-  const url = apiUrl("/pos/offline/sales")
   let res: Response
   try {
-    res = await fetchWithTimeout(
-      url,
-      {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(batch.body),
-      },
-      SALES_SYNC_TIMEOUT_MS,
-    )
+    res = await apiFetch("/pos/offline/sales", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(batch.body),
+      timeoutMs: SALES_SYNC_TIMEOUT_MS,
+    })
   } catch {
     return { kind: "retry" }
   }

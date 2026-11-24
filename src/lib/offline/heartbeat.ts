@@ -2,7 +2,6 @@
 // working signed out, locked, unlocked offline, and whatever offlineEnabled says.
 
 import { readApiError } from "@/lib/api-error"
-import { fetchWithTimeout, timeoutFor } from "@/lib/net"
 import {
   APP_VERSION_MAX_LENGTH,
   OfflineErrorCode,
@@ -11,7 +10,7 @@ import {
   type StatusReport,
 } from "@/lib/offline/contract"
 import type { PendingSummary } from "@/lib/offline/outbox"
-import { apiUrl } from "@/lib/api-url"
+import { apiFetch } from "@/lib/api-fetch"
 
 export const HEARTBEAT_INTERVAL_MS = 60_000
 
@@ -59,19 +58,14 @@ export function onStatusReportRequested(listener: () => void): () => void {
 export type StatusResult = { kind: "ok"; reply: StatusReply | null } | { kind: "not-registered" } | { kind: "failed" }
 
 export async function sendStatusReport(report: StatusReport): Promise<StatusResult> {
-  const url = apiUrl("/pos/offline/status")
   try {
-    const res = await fetchWithTimeout(
-      url,
-      {
-        method: "POST",
-        credentials: "include",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(report),
-      },
-      timeoutFor(url, "POST"),
-    )
+    const res = await apiFetch("/pos/offline/status", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(report),
+    })
     if (res.ok) return { kind: "ok", reply: parseStatusReply(await res.json().catch(() => null)) }
     const { code } = await readApiError(res)
     return code === OfflineErrorCode.DEVICE_NOT_REGISTERED ? { kind: "not-registered" } : { kind: "failed" }

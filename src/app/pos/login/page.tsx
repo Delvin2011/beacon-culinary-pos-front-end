@@ -13,12 +13,12 @@ import { reauthLoginPath } from "@/lib/return-to";
 import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
-import { CONNECTION_MESSAGES, classifyError, fetchWithTimeout, isNoAnswer, messageForError, timeoutFor } from "@/lib/net";
+import { CONNECTION_MESSAGES, classifyError, isNoAnswer, messageForError } from "@/lib/net";
 import { useConnection } from "@/contexts/connection-context";
 import { useOfflineUnlock } from "@/hooks/use-offline-unlock";
 import { OfflineUnlockScreen } from "@/components/pos/offline-unlock-screen";
 import { saveUnlockVerifierAfterSignIn } from "@/lib/offline/unlock";
-import { apiUrl } from "@/lib/api-url";
+import { apiFetch } from "@/lib/api-fetch";
 
 // Shape returned by GET /users/cashiers
 interface CashierSummary {
@@ -111,8 +111,7 @@ export default function PosLoginPage() {
     setTillNotRegistered(false);
     setCashiersUnreachable(false);
 
-    const cashiersUrl = apiUrl("/users/cashiers");
-    fetchWithTimeout(cashiersUrl, { credentials: "include" }, timeoutFor(cashiersUrl))
+    apiFetch("/users/cashiers", { credentials: "include" })
       .then(async (res) => {
         if (res.status === 403 && (await errorCode(res)) === DeviceErrorCode.NOT_REGISTERED) {
           setCashiers([]);

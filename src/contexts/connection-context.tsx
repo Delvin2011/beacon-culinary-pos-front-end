@@ -12,9 +12,8 @@ import {
   type ConnectionSignal,
   type OfflineReason,
 } from "@/lib/connection-signals";
-import { HEALTH_TIMEOUT_MS, fetchWithTimeout } from "@/lib/net";
 import { recordServerTime } from "@/lib/offline/server-time";
-import { apiUrl } from "@/lib/api-url";
+import { apiFetch, HEALTH_INIT } from "@/lib/api-fetch";
 
 export const OFFLINE_AFTER = 3; // consecutive failures before going offline
 export const ONLINE_AFTER = 2; // consecutive successes before coming back online
@@ -68,9 +67,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const ping = useCallback(async () => {
-    const url = apiUrl("/health");
     try {
-      const res = await fetchWithTimeout(url, { cache: "no-store", credentials: "omit" }, HEALTH_TIMEOUT_MS);
+      const res = await apiFetch("/health", HEALTH_INIT);
       const signal = signalForHealth(res.status);
       if (signal) apply(signal, false);
       // O3: the server's clock, for "today" and grant expiry. Never decides online or offline.

@@ -1,8 +1,7 @@
 // Tills, per-till shifts and POS sessions (O2). Contract: docs/2026-11-17-o2-tills-shifts-api-contract.md (POS_BE).
 // Branch on error `code` only; the server's `error` text is never used to decide anything.
 
-import { fetchWithTimeout, timeoutFor } from "@/lib/net"
-import { apiUrl } from "@/lib/api-url"
+import { apiFetch } from "@/lib/api-fetch"
 
 export const TillErrorCode = {
   SESSION_ENDED: "SESSION_ENDED",
@@ -99,8 +98,7 @@ const positiveOr = (value: unknown, fallback: number) => (typeof value === "numb
 
 // Public: credentials send the deviceToken cookie. Throws on no answer or a non-2xx.
 export async function fetchTillStatus(): Promise<TillStatus> {
-  const url = apiUrl("/pos/till-status")
-  const res = await fetchWithTimeout(url, { credentials: "include", cache: "no-store" }, timeoutFor(url))
+  const res = await apiFetch("/pos/till-status", { credentials: "include", cache: "no-store" })
   if (!res.ok) throw new Error(`till-status ${res.status}`)
   const body = (await res.json()) as Partial<TillStatus>
   return {

@@ -1,6 +1,7 @@
 // T1-0d: one build serves every customer address, so the app never names a backend address. Every API call goes
-// through apiUrl (src/lib/api-url.ts): "/api" + the backend path, on the page's own address. Comments are ignored;
-// tests and fixtures may use addresses as data. The development-only rewrite lives in next.config.mjs, outside src.
+// through apiUrl (src/lib/api-url.ts): "/api" + the backend path, on the page's own address. T1-3: and through
+// apiFetch (src/lib/api-fetch.ts), the one caller of apiUrl, which reads every response for what it says about the
+// customer (suspended, unavailable, unknown address). Comments are ignored; tests and fixtures may use addresses as data. The development-only rewrite lives in next.config.mjs, outside src.
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { join, relative } from "node:path"
 import { describe, expect, it } from "vitest"
@@ -36,7 +37,7 @@ function offenders(pattern: RegExp, except: string[] = []): string[] {
 describe("no backend address in the app", () => {
   it("scans the app's source, the service worker included", () => {
     expect(files.length).toBeGreaterThan(50)
-    for (const path of ["contexts/auth-context.tsx", "lib/invites.ts", "sw/routes.mjs", "lib/api-url.ts"]) {
+    for (const path of ["contexts/auth-context.tsx", "lib/invites.ts", "sw/routes.mjs", "lib/api-url.ts", "lib/api-fetch.ts"]) {
       expect(files.some((file) => file.path === path)).toBe(true)
     }
   })
@@ -56,6 +57,12 @@ describe("no backend address in the app", () => {
 
   it("never passes a hand-built address to fetch: apiUrl(...) or a variable made from it", () => {
     expect(offenders(/\b(?:fetch|fetchWithTimeout|EventSource)\(\s*["'`]/)).toEqual([])
+  })
+
+  // T1-3: a call that skipped apiFetch would miss CUSTOMER_SUSPENDED and keep calling a suspended customer.
+  it("calls the API only through apiFetch: apiUrl is used in api-fetch.ts alone", () => {
+    expect(offenders(/\bapiUrl\(/, ["lib/api-url.ts", "lib/api-fetch.ts"])).toEqual([])
+    expect(offenders(/\bfetchWithTimeout\(/, ["lib/net.ts", "lib/api-fetch.ts"])).toEqual([])
   })
 
   it("names no http(s) host (XML namespaces aside)", () => {

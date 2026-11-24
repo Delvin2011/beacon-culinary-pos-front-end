@@ -16,9 +16,9 @@ import { TillErrorCode, readSessionEnded, sessionEndedMessage, shiftOpenOnOtherT
 import { notifySessionEnding } from "@/lib/session-events";
 import { clearSnapshotAccounts } from "@/lib/offline/db";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
-import { CONNECTION_MESSAGES, RequestTimeoutError, fetchWithTimeout, parseRetryAfter, timeoutFor } from "@/lib/net";
+import { CONNECTION_MESSAGES, RequestTimeoutError, parseRetryAfter } from "@/lib/net";
 import { reportConnectionSignal, signalForError, signalForResponse } from "@/lib/connection-signals";
-import { apiUrl } from "@/lib/api-url";
+import { apiFetch } from "@/lib/api-fetch";
 
 // timeoutMs overrides the default limit (15 s; 20 s for POST /orders; 5 s for /health).
 export type AuthFetchInit = RequestInit & { timeoutMs?: number };
@@ -107,11 +107,13 @@ const LOCK_TIMEOUT_MS = 5_000;
 
 async function requestServerLogout(token: string | null): Promise<void> {
   try {
-    await fetchWithTimeout(
-      apiUrl("/auth/logout"),
-      { method: "POST", credentials: "include", keepalive: true, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
-      LOGOUT_TIMEOUT_MS,
-    );
+    await apiFetch("/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      keepalive: true,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      timeoutMs: LOGOUT_TIMEOUT_MS,
+    });
   } catch {
     // Signing out never fails because of this call.
   }
@@ -120,11 +122,12 @@ async function requestServerLogout(token: string | null): Promise<void> {
 // True when the server answered the lock (204, or any 4xx: a 401 means the session had already ended).
 async function requestServerLock(token: string): Promise<boolean> {
   try {
-    const res = await fetchWithTimeout(
-      apiUrl("/pos/lock"),
-      { method: "POST", credentials: "include", headers: { Authorization: `Bearer ${token}` } },
-      LOCK_TIMEOUT_MS,
-    );
+    const res = await apiFetch("/pos/lock", {
+      method: "POST",
+      credentials: "include",
+      headers: { Authorization: `Bearer ${token}` },
+      timeoutMs: LOCK_TIMEOUT_MS,
+    });
     return res.status < 500;
   } catch {
     return false;
@@ -350,7 +353,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setError(null);
 
     try {
-      const response = await fetch(apiUrl("/auth/login"), {
+      const response = await apiFetch("/auth/login", {
+        timeoutMs: null,
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -410,17 +414,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new PinLoginError(PIN_FORMAT_MESSAGE);
       }
 
-      const pinUrl = apiUrl("/auth/pin-login");
-      const response = await fetchWithTimeout(
-        pinUrl,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({ cashierId, pin }),
-        },
-        timeoutFor(pinUrl, "POST"),
-      );
+      const response = await apiFetch("/auth/pin-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ cashierId, pin }),
+      });
 
       // Before the body is read: readLoginBlock reads its own copy.
       const block = await readLoginBlock(response);
@@ -569,12 +568,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return { kind: "ended" };
         }
 
-        const refreshUrl = apiUrl("/auth/refresh");
-        const response = await fetchWithTimeout(
-          refreshUrl,
-          { method: "POST", credentials: "include" },
-          timeoutFor(refreshUrl, "POST"),
-        );
+        const response = await apiFetch("/auth/refresh", { method: "POST", credentials: "include" });
 
         // Burst limit or a block: not a logout. Not retried before Retry-After; the caller decides what to show.
         if (response.status === 429) {
@@ -634,10 +628,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const authFetch = useCallback(
     async (path: string, init?: AuthFetchInit) => {
-      // Backend paths only ("/orders"): the address is always /api on this origin (T1-0d).
-      const url = apiUrl(path.startsWith("/") ? path : `/${path}`);
-      const { timeoutMs: requestedTimeout, ...requestInit } = init ?? {};
-      const timeoutMs = requestedTimeout ?? timeoutFor(url, requestInit.method);
+      // Backend paths only ("/orders"): apiFetch adds /api on this origin (T1-0d). No timeoutMs: timeoutFor's.
+      const url = path.startsWith("/") ? path : `/${path}`;
+      const { timeoutMs, ...requestInit } = init ?? {};
 
       const buildHeaders = (token: string | null) => {
         const headers = new Headers(requestInit.headers);
@@ -650,11 +643,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Every outcome is also a connection signal for the till's online/offline indicator.
       const execute = async (token: string | null) => {
         try {
-          const res = await fetchWithTimeout(
-            url,
-            { ...requestInit, headers: buildHeaders(token), credentials: "include" },
-            timeoutMs,
-          );
+          const res = await apiFetch(url, { ...requestInit, headers: buildHeaders(token), credentials: "include", timeoutMs });
           const signal = signalForResponse(res.status);
           if (signal) reportConnectionSignal(signal);
           return res;

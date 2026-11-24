@@ -13,7 +13,7 @@ import { format } from "date-fns"
 import { readApiError } from "@/lib/api-error"
 import { formatWait, readLoginBlock } from "@/lib/login-protection"
 import type { CredentialRule, StaffMember, StaffRoleRule } from "@/lib/staff"
-import { apiUrl } from "@/lib/api-url"
+import { apiFetch } from "@/lib/api-fetch"
 
 export type InvitePurpose = "FIRST_ADMIN" | "STAFF_SETUP" | "RESET"
 export type SignInWith = "PASSWORD" | "PIN"
@@ -171,7 +171,8 @@ async function publicInviteError(res: Response): Promise<InviteError> {
 async function postPublic<T>(path: string, body: Record<string, unknown>): Promise<T> {
   let res: Response
   try {
-    res = await fetch(apiUrl(path), {
+    res = await apiFetch(path, {
+      timeoutMs: null,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
