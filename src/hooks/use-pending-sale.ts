@@ -21,6 +21,8 @@ import {
   type PendingSaleSummary,
   type SaleSendOutcome,
 } from "@/lib/pending-sale";
+import { CustomerSuspendedError } from "@/lib/api-fetch";
+import { customerAnswerOf, isCustomerSuspended, whenNotSuspended } from "@/lib/customer-status";
 
 export type PendingSalePhase =
   | "idle" // nothing pending
@@ -73,6 +75,8 @@ export function usePendingSale(options: UsePendingSaleOptions) {
         if (attempt > 0) {
           await sleep(Math.max(SALE_RETRY_DELAYS_MS[attempt - 1], waitMs));
         }
+        // T1-3: while the customer is suspended the sale waits here, kept as it is, using up no retry.
+        if (isCustomerSuspended()) await whenNotSuspended();
         if (runRef.current !== runId) return;
 
         let outcome: SaleSendOutcome;
@@ -82,8 +86,16 @@ export function usePendingSale(options: UsePendingSaleOptions) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(sale.body),
           });
+          if (customerAnswerOf(res) === "suspended") {
+            attempt -= 1;
+            continue;
+          }
           outcome = await classifySaleResponse(res);
         } catch (err) {
+          if (err instanceof CustomerSuspendedError) {
+            attempt -= 1;
+            continue;
+          }
           outcome = classifySaleError(err);
         }
         if (runRef.current !== runId) return;

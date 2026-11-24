@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { columnShellClass, DONE_RETENTION_MS, statusPillClass } from "@/components/orders/status-visuals";
 import { apiFetch } from "@/lib/api-fetch";
+import { isCustomerSuspended, whenNotSuspended } from "@/lib/customer-status";
 
 type BoardStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" | "REFUNDED";
 
@@ -212,6 +213,9 @@ export function PublicDisplayBoard() {
 
     const run = async () => {
       while (!cancelled) {
+        // T1-3: nothing is loaded while the customer is suspended; it picks up again when that ends.
+        if (isCustomerSuspended()) await whenNotSuspended();
+        if (cancelled) break;
         const synced = await fetchSnapshot();
         if (!synced) {
           await new Promise((resolve) => setTimeout(resolve, RECONNECT_DELAY_MS));

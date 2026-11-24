@@ -61,7 +61,9 @@ export { signedInUserId }
 export function OfflineProvider({ children }: { children: ReactNode }) {
   const { authFetch, user, isAuthenticated, endOfflineSession } = useAuth()
   const { shift } = useShift()
-  const { isOnline } = useConnection()
+  // T1-3: no till status, grant or snapshot calls while the customer is suspended; what is stored is kept.
+  const { isOnline: connected, suspended } = useConnection()
+  const isOnline = connected && !suspended
 
   const [tillStatus, setTillStatus] = useState<TillStatus | null>(null)
   const [storage, setStorage] = useState<StorageStatus>(offlineStorageStatus())
@@ -224,8 +226,8 @@ export function OfflineProvider({ children }: { children: ReactNode }) {
 
   // D13: back online during an offline unlock: the normal server sign-in applies again.
   useEffect(() => {
-    if (isOnline && user?.offline) endOfflineSession()
-  }, [isOnline, user, endOfflineSession])
+    if (connected && user?.offline) endOfflineSession()
+  }, [connected, user, endOfflineSession])
 
   // Sign-in or resume.
   useEffect(() => {

@@ -485,7 +485,8 @@ export function PosOrderBuilder({
   const { authFetch, user, logout } = useAuth();
   const { shift, refetch: refetchShift } = useShift();
   // Selling offline is not part of O1: Confirm waits for the connection; the cart is kept.
-  const { isOnline } = useConnection();
+  // T1-3: a suspended customer never sells offline (the till isn't offline; the full-page message covers it).
+  const { isOnline, suspended } = useConnection();
   const [shiftClosedWhileSelling, setShiftClosedWhileSelling] = useState(false);
 
   const [periods, setPeriods] = useState<MealPeriod[]>([]);
@@ -519,7 +520,7 @@ export function PosOrderBuilder({
   const { entries: outboxEntries } = useOutbox();
   // O4: offline and allowed to sell: the snapshot's tiles, even over a live menu loaded earlier (going offline
   // mid-shift). Back online, the live menu again. O3's rule stands online: a live menu is never replaced.
-  const sellingOffline = !isOnline && todaySnapshot !== null && offlineCheckout.selling.kind === "selling";
+  const sellingOffline = !isOnline && !suspended && todaySnapshot !== null && offlineCheckout.selling.kind === "selling";
   const menuFromSnapshot = (liveMenuFailed && todaySnapshot !== null) || sellingOffline;
   const readOnlyCopy = menuFromSnapshot && !sellingOffline;
   const offlineActive = !isOnline && todaySnapshot !== null;

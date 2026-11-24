@@ -59,7 +59,9 @@ async function stillStopped(): Promise<SyncStopReason | null> {
 }
 
 export function OfflineSync() {
-  const { isOnline } = useConnection()
+  // T1-3: nothing is sent while the customer is suspended; the outbox is kept as it is and sent when it ends.
+  const { isOnline: connected, suspended } = useConnection()
+  const isOnline = connected && !suspended
   const { entries } = useOutbox()
   const [state, setState] = useState<SyncUiState>({ kind: "idle" })
 

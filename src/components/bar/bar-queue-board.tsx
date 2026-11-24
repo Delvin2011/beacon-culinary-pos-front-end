@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Clock3, Coffee, Loader2, RefreshCw, Volume2 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { isCustomerSuspended, whenNotSuspended } from "@/lib/customer-status";
 import { Button } from "@/components/ui/button";
 import { LOCALE_ZA } from "@/lib/locale";
 import { cn } from "@/lib/utils";
@@ -229,6 +230,9 @@ export function BarQueueBoard() {
     const run = async () => {
       let attempt = 0;
       while (!cancelled) {
+        // T1-3: no queue loads or stream while the customer is suspended; it picks up again when that ends.
+        if (isCustomerSuspended()) await whenNotSuspended();
+        if (cancelled) break;
         setConnectionState(attempt === 0 ? "connecting" : "reconnecting");
 
         const synced = await loadSnapshot();

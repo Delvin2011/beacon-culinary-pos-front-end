@@ -30,7 +30,9 @@ async function loadStopped(): Promise<boolean> {
 }
 
 export function OfflineHeartbeat() {
-  const { isOnline } = useConnection()
+  // T1-3: no reports while the customer is suspended. A suspension isn't an outage: offlineSince isn't set either.
+  const { isOnline: connected, suspended } = useConnection()
+  const isOnline = connected && !suspended
   const onlineRef = useRef(isOnline)
   onlineRef.current = isOnline
   const stoppedRef = useRef<Promise<boolean> | null>(null)
@@ -81,6 +83,7 @@ export function OfflineHeartbeat() {
   }), [send])
 
   useEffect(() => {
+    if (suspended) return
     if (!isOnline) {
       void (async () => {
         if (!(await getMeta("offlineSince"))) await setMeta("offlineSince", new Date(serverNow()).toISOString())
@@ -90,7 +93,7 @@ export function OfflineHeartbeat() {
     void send()
     const timer = window.setInterval(() => void send(), HEARTBEAT_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [isOnline, send])
+  }, [isOnline, suspended, send])
 
   return null
 }
