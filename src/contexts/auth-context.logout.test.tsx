@@ -51,7 +51,7 @@ describe("sign-out (POST /auth/logout)", () => {
     const [url, init] = logoutCalls()[0]
     expect(String(url)).toBe("/api/auth/logout")
     expect(init).toMatchObject({ method: "POST", credentials: "include" })
-    // Not keepalive: a keepalive request needing a CORS preflight may be refused.
+    // Not keepalive (yet): see the comment on requestServerLogout; turning it on is a T1-0d follow-up.
     expect(init?.keepalive).toBeUndefined()
     expect(init?.body).toBeUndefined()
     expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer a.b.c")

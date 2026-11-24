@@ -1,7 +1,8 @@
 // O3: today's snapshot (contract 8). Refreshed with If-None-Match; a 304 or any failure keeps the stored one.
-// The ETag is the quoted snapshotVersion. While the API doesn't expose the ETag header to the browser (CORS), it is
-// rebuilt from snapshotVersion; that fallback stays. A stored etag of null means "ask for the full body" (set when
-// the accounts list was cleared), so the stored version is never used in its place.
+// The ETag is the quoted snapshotVersion. Since T1-0d the API is on this origin, so the browser can read the ETag
+// header; the fallback that rebuilds it from snapshotVersion stays, for a gateway that drops or weakens ETags.
+// A stored etag of null means "ask for the full body" (set when the accounts list was cleared), so the stored version
+// is never used in its place.
 
 import { readApiError } from "@/lib/api-error"
 import { parseSnapshot } from "@/lib/offline/contract"

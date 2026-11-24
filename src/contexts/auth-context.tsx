@@ -96,8 +96,10 @@ const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
 // Server sign-out (POST /auth/logout): deletes this browser's refreshToken cookie so the session can't come back
 // through /auth/refresh, and (O2 contract 8.4) ends the session the access token names; an expired token is
 // accepted. Always 204, safe to repeat; it never touches deviceToken (the till stays registered).
-// Awaited for at most 2 s and never retried. Not keepalive: browsers may refuse a keepalive request that needs a
-// CORS preflight, which the Authorization header does. If it fails, the server session ends by itself later.
+// Awaited for at most 2 s and never retried. Not keepalive: written when the API was on another origin, where a
+// keepalive request needing a CORS preflight (the Authorization header) could be refused. Since T1-0d the API is on
+// this origin, so keepalive would now work; turning it on is a follow-up (docs/2026-11-24-relative-api.md). If it
+// fails, the server session ends by itself later.
 const LOGOUT_TIMEOUT_MS = 2_000;
 // POST /pos/lock: at most 5 s, then the till is locked locally anyway.
 const LOCK_TIMEOUT_MS = 5_000;
