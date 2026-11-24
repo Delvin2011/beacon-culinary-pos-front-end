@@ -1,11 +1,25 @@
 "use client";
 
-import { Wifi, WifiOff } from "lucide-react";
+import { Ban, Wifi, WifiOff } from "lucide-react";
 import { useConnection } from "@/contexts/connection-context";
 
-// A small online/offline badge for the POS header.
+// A small online/offline badge for the POS header. T1-3: a suspended customer shows "Service suspended", never
+// "Offline" (the full-page message explains it; src/components/customer/customer-status-gate.tsx).
 export function ConnectionIndicator() {
-  const { isOnline, reason, checkNow } = useConnection();
+  const { isOnline, reason, suspended, checkNow } = useConnection();
+
+  if (suspended) {
+    return (
+      <span
+        role="status"
+        aria-label="Connection: Service suspended"
+        className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-500/15 px-3 py-1 text-xs font-semibold text-amber-200"
+      >
+        <Ban className="h-3.5 w-3.5" />
+        Service suspended
+      </span>
+    );
+  }
 
   if (isOnline) {
     return (

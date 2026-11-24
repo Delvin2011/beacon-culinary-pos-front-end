@@ -3,6 +3,7 @@
 // ConnectionProvider is mounted. Nobody listening (outside the POS) means the reports are dropped.
 
 import { RequestTimeoutError } from "@/lib/net";
+import type { CustomerAnswer } from "@/lib/customer-status";
 
 export type OfflineReason = "no-connection" | "server-down";
 
@@ -24,8 +25,11 @@ export function reportConnectionSignal(signal: ConnectionSignal): void {
 }
 
 // An ordinary API response. 502/503/504 mean the API (or its database) can't serve; a 500 is one endpoint's bug,
-// and every other status proves the server is reachable.
-export function signalForResponse(status: number): ConnectionSignal | null {
+// and every other status proves the server is reachable. T1-3: a suspended customer (503 CUSTOMER_SUSPENDED) says
+// nothing about the connection: the till must never go offline (and so sell offline) because of it. A 503
+// CUSTOMER_UNAVAILABLE is an outage like any other 503.
+export function signalForResponse(status: number, customer: CustomerAnswer | null = null): ConnectionSignal | null {
+  if (customer === "suspended") return null;
   if (status === 502 || status === 503 || status === 504) return { ok: false, reason: "server-down" };
   if (status === 500) return null;
   return { ok: true };
@@ -40,7 +44,8 @@ export function signalForError(err: unknown): ConnectionSignal | null {
 // GET /health (contract section 6): 200 UP is online; 503 DOWN can't record sales; no answer is offline.
 // A 404 means this server has no /health yet (before the O1 backend is deployed): ignored, so the till falls
 // back to the outcomes of ordinary requests.
-export function signalForHealth(status: number): ConnectionSignal | null {
+export function signalForHealth(status: number, customer: CustomerAnswer | null = null): ConnectionSignal | null {
+  if (customer === "suspended") return null;
   if (status === 200) return { ok: true };
   if (status === 503) return { ok: false, reason: "server-down" };
   if (status === 502 || status === 504) return { ok: false, reason: "server-down" };

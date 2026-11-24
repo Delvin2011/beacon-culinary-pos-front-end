@@ -3,6 +3,8 @@
 // Online/offline for the till, with hysteresis: one failed or successful result never flips the state.
 // Signals come from a /health ping (every 25 s, every 10 s while offline) and from every authFetch outcome.
 // Selling offline is not part of O1: while offline, Confirm waits for the connection.
+// T1-3: while the customer is suspended there is no ping (src/lib/customer-recovery.ts checks /health instead), and
+// the state stays as it was: a suspension is never "offline". The ping starts again as soon as it ends.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -14,6 +16,8 @@ import {
 } from "@/lib/connection-signals";
 import { recordServerTime } from "@/lib/offline/server-time";
 import { apiFetch, HEALTH_INIT } from "@/lib/api-fetch";
+import { customerAnswerOf, isCustomerSuspended } from "@/lib/customer-status";
+import { useCustomerStatus } from "@/hooks/use-customer-status";
 
 export const OFFLINE_AFTER = 3; // consecutive failures before going offline
 export const ONLINE_AFTER = 2; // consecutive successes before coming back online
@@ -48,6 +52,8 @@ type ConnectionContextValue = {
   status: ConnectionStatus;
   reason: OfflineReason | null;
   isOnline: boolean;
+  // T1-3: the customer is suspended (503 CUSTOMER_SUSPENDED). Not offline: offline selling and sync stay off.
+  suspended: boolean;
   // Ping now (e.g. a "Check again" button).
   checkNow: () => void;
 };
@@ -67,9 +73,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const ping = useCallback(async () => {
+    if (isCustomerSuspended()) return;
     try {
       const res = await apiFetch("/health", HEALTH_INIT);
-      const signal = signalForHealth(res.status);
+      const signal = signalForHealth(res.status, customerAnswerOf(res));
       if (signal) apply(signal, false);
       // O3: the server's clock, for "today" and grant expiry. Never decides online or offline.
       if (res.status === 200 || res.status === 503) {
@@ -87,11 +94,13 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   // The ping: at once, then on an interval that is shorter while offline.
   const isOnline = state.status === "online";
+  const { suspended } = useCustomerStatus();
   useEffect(() => {
+    if (suspended) return;
     void ping();
     const timer = window.setInterval(() => void ping(), isOnline ? PING_INTERVAL_MS : OFFLINE_PING_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [ping, isOnline]);
+  }, [ping, isOnline, suspended]);
 
   // The browser's own hints: "offline" counts as one failure; "online" triggers a ping rather than trusting it.
   useEffect(() => {
@@ -106,16 +115,18 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [apply, ping]);
 
   const value = useMemo<ConnectionContextValue>(
-    () => ({ status: state.status, reason: state.reason, isOnline, checkNow: () => void ping() }),
-    [state.status, state.reason, isOnline, ping],
+    () => ({ status: state.status, reason: state.reason, isOnline, suspended, checkNow: () => void ping() }),
+    [state.status, state.reason, isOnline, suspended, ping],
   );
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;
 }
 
-const ALWAYS_ONLINE: ConnectionContextValue = { status: "online", reason: null, isOnline: true, checkNow: () => {} };
+const ALWAYS_ONLINE: ConnectionContextValue = { status: "online", reason: null, isOnline: true, suspended: false, checkNow: () => {} };
 
-// Outside a ConnectionProvider (back office, tests) the till is treated as online.
+// Outside a ConnectionProvider (back office, tests) the till is treated as online; a suspension still shows.
 export function useConnection(): ConnectionContextValue {
-  return useContext(ConnectionContext) ?? ALWAYS_ONLINE;
+  const context = useContext(ConnectionContext);
+  const { suspended } = useCustomerStatus();
+  return useMemo(() => (context ? context : { ...ALWAYS_ONLINE, suspended }), [context, suspended]);
 }

@@ -19,6 +19,7 @@ import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { CONNECTION_MESSAGES, RequestTimeoutError, parseRetryAfter } from "@/lib/net";
 import { reportConnectionSignal, signalForError, signalForResponse } from "@/lib/connection-signals";
 import { apiFetch } from "@/lib/api-fetch";
+import { customerAnswerOf } from "@/lib/customer-status";
 
 // timeoutMs overrides the default limit (15 s; 20 s for POST /orders; 5 s for /health).
 export type AuthFetchInit = RequestInit & { timeoutMs?: number };
@@ -644,7 +645,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const execute = async (token: string | null) => {
         try {
           const res = await apiFetch(url, { ...requestInit, headers: buildHeaders(token), credentials: "include", timeoutMs });
-          const signal = signalForResponse(res.status);
+          const signal = signalForResponse(res.status, customerAnswerOf(res));
           if (signal) reportConnectionSignal(signal);
           return res;
         } catch (err) {
