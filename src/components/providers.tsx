@@ -4,6 +4,7 @@ import { type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { AuthProvider } from "@/contexts/auth-context";
 import { Toaster } from "@/components/ui/toaster";
+import { CustomerStatusGate } from "@/components/customer/customer-status-gate";
 
 export function Providers({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -11,14 +12,18 @@ export function Providers({ children }: { children: ReactNode }) {
   // token and no refresh may run where an invite token is handled).
   const isPublicRoute = pathname === "/board" || pathname === "/invite";
 
+  // T1-3: every screen, public ones included, shows a suspended customer, an unknown address and (away from the POS)
+  // an unavailable one.
   if (isPublicRoute) {
-    return <>{children}</>;
+    return <CustomerStatusGate>{children}</CustomerStatusGate>;
   }
 
   return (
-    <AuthProvider>
-      {children}
-      <Toaster />
-    </AuthProvider>
+    <CustomerStatusGate>
+      <AuthProvider>
+        {children}
+        <Toaster />
+      </AuthProvider>
+    </CustomerStatusGate>
   );
 }
