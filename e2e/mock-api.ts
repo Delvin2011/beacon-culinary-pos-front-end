@@ -1,8 +1,9 @@
 // O3 e2e: the backend, mocked per the contracts, for one registered till (T1) with Thandi's open shift and offline on.
-// `offline` makes every API call fail as if the network were down. Answers carry CORS headers for the app's origin.
+// `offline` makes every API call fail as if the network were down. T1-0d: the API is /api on the app's own origin,
+// so there is no CORS; the answers are keyed by the backend path (the /api prefix removed, as Front Door does).
 // O4: offline account sales are on, and POST /pos/offline/sales records every sale it receives.
-import type { BrowserContext, Route } from "@playwright/test"
-import { E2E_API_URL, E2E_APP_URL } from "./urls"
+import type { BrowserContext } from "@playwright/test"
+import { E2E_API_URL } from "./urls"
 
 const jhbDay = (ms: number) =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg", year: "numeric", month: "2-digit", day: "2-digit" }).format(
@@ -32,6 +33,8 @@ export interface MockApi {
   statusReports: Array<Record<string, unknown>>
   // The sales received (once each, by clientOrderId), in the order they arrived.
   receivedSales: () => SentSale[]
+  // T1-0d: API responses the service worker answered. Must stay empty: the worker never handles /api.
+  answeredByWorker: string[]
 }
 
 export async function mockApi(context: BrowserContext): Promise<MockApi> {
@@ -42,6 +45,7 @@ export async function mockApi(context: BrowserContext): Promise<MockApi> {
     salesBatches: [],
     statusReports: [],
     receivedSales: () => Array.from(recorded.values()),
+    answeredByWorker: [],
   }
   const now = () => Date.now()
   const today = jhbDay(now())
@@ -158,25 +162,20 @@ export async function mockApi(context: BrowserContext): Promise<MockApi> {
     "GET /pos/receipt-settings": () => ({ receiptTitle: null, businessName: null, addressLines: [], phone: null, vatNumber: null, footerText: null, showVatLine: false }),
   }
 
-  const cors = (route: Route) => ({
-    "Access-Control-Allow-Origin": E2E_APP_URL,
-    "Access-Control-Allow-Credentials": "true",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": route.request().headers()["access-control-request-headers"] ?? "Authorization, Content-Type, If-None-Match",
-    "Access-Control-Expose-Headers": "ETag",
+  context.on("response", (response) => {
+    if (response.fromServiceWorker() && response.url().startsWith(`${E2E_API_URL}/`)) state.answeredByWorker.push(response.url())
   })
 
   await context.route(`${E2E_API_URL}/**`, async (route) => {
     const request = route.request()
-    const url = new URL(request.url())
+    const backendPath = new URL(request.url()).pathname.replace(/^\/api(?=\/)/, "")
     if (state.offline) return route.abort("internetdisconnected")
-    if (request.method() === "OPTIONS") return route.fulfill({ status: 204, headers: cors(route) })
-    const key = `${request.method()} ${url.pathname}`
+    const key = `${request.method()} ${backendPath}`
     state.calls.push(key)
     const answer = answers[key]
-    const headers = { ...cors(route), "Content-Type": "application/json" }
+    const headers = { "Content-Type": "application/json" }
     if (!answer) return route.fulfill({ status: 200, headers, body: "{}" })
-    const extra: Record<string, string> = url.pathname === "/pos/offline/snapshot" ? { ETag: '"e2e-v1"' } : {}
+    const extra: Record<string, string> = backendPath === "/pos/offline/snapshot" ? { ETag: '"e2e-v1"' } : {}
     const postData = request.postData()
     const requestBody = postData ? (JSON.parse(postData) as unknown) : null
     return route.fulfill({

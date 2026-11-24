@@ -61,4 +61,8 @@ test("a reload while offline opens the POS with the cashier and the snapshot men
   await page.reload()
   await expect(page.getByText("Live curry")).toBeVisible({ timeout: 30_000 })
   await expect(page.getByText(/Offline copy/)).toHaveCount(0)
+
+  // T1-0d: the API was reached at /api on this origin, and the service worker answered none of it.
+  expect(api.calls).toEqual(expect.arrayContaining(["GET /pos/till-status", "GET /pos/offline/snapshot"]))
+  expect(api.answeredByWorker).toEqual([])
 })

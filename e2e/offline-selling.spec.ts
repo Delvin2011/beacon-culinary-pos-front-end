@@ -134,4 +134,7 @@ test("offline mid-shift: sell cash, card and account, reload, lock and unlock, r
   await page.getByRole("button", { name: /Today's Orders/ }).first().click()
   await expect(page.getByText("Collection T1-4").first()).toBeVisible({ timeout: 60_000 })
   await expect(page.getByText("Offline sale").first()).toBeVisible()
+
+  // T1-0d: the service worker answered none of the API calls (sync, status reports, snapshot, sign-in).
+  expect(api.answeredByWorker).toEqual([])
 })

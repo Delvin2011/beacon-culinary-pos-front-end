@@ -7,6 +7,7 @@
     "build": "next build && node scripts/build-sw.mjs",
     "start": "next start",
     "lint": "next lint",
+    "check:build": "node scripts/check-build-no-backend.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"

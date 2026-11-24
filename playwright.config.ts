@@ -1,8 +1,9 @@
-// O3: end-to-end tests against the production build (the service worker only runs there). The API is mocked in the
-// tests (e2e/mock-api.ts) at E2E_API_URL, which the build is pointed at; nothing listens there.
+// O3: end-to-end tests against the production build (the service worker only runs there). T1-0d: the API is /api on
+// the app's own address, as in production, mocked in the browser (e2e/mock-api.ts); the build is the one production
+// gets, with no API address and no rewrite, and npm run check:build confirms that before the tests start.
 // Run: npm run test:e2e (builds first, about 2 minutes). Not part of npm test, and never part of the app build.
 import { defineConfig, devices } from "@playwright/test"
-import { E2E_API_URL, E2E_APP_URL } from "./e2e/urls"
+import { E2E_APP_URL } from "./e2e/urls"
 
 export default defineConfig({
   testDir: "e2e",
@@ -16,8 +17,7 @@ export default defineConfig({
     serviceWorkers: "allow",
   },
   webServer: {
-    command: "npm run build && node scripts/e2e-serve.mjs",
-    env: { NEXT_PUBLIC_AUTH_API_URL: E2E_API_URL },
+    command: "npm run build && npm run check:build && node scripts/e2e-serve.mjs",
     url: `${E2E_APP_URL}/pos/login`,
     timeout: 420_000,
     reuseExistingServer: false,
