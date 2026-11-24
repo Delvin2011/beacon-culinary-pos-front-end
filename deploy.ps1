@@ -11,7 +11,27 @@
 #                                             it tries to listen on the container id, hangs ~30-60s, and
 #                                             the worker-start probe times out.
 
+param(
+    # T1-0d: confirms the App Service is behind Azure Front Door, which sends /api/* to the backend.
+    [switch] $BehindFrontDoor
+)
+
 $ErrorActionPreference = "Stop"
+
+# T1-0d: this app calls /api on its own address, which only Azure Front Door serves; this App Service has no /api
+# route. Production deploys from main only; the integration branch is never deployed (docs/2026-11-24-relative-api.md).
+# (git's own error output must not stop the script before the clear message below: Windows PowerShell 5.1 turns it into
+# a terminating error under "Stop".)
+$branch = & { $ErrorActionPreference = "Continue"; git -C $PSScriptRoot rev-parse --abbrev-ref HEAD 2>$null }
+if ($LASTEXITCODE -ne 0 -or -not $branch) { throw "deploy.ps1: can't tell the current git branch. Only main is deployed." }
+$branch = "$branch".Trim()
+if ($branch -ne "main") {
+    throw "deploy.ps1 deploys to the current Azure App Service, which has no /api route. Only main is deployed. Current branch: $branch."
+}
+# Once T1-0d is merged into main, main calls /api too: deploying it needs Front Door in front, said explicitly.
+if ((Test-Path (Join-Path $PSScriptRoot "src\lib\api-url.ts")) -and -not $BehindFrontDoor) {
+    throw "This build calls /api on its own address, which only Azure Front Door serves. Deploy it only behind Front Door, with -BehindFrontDoor."
+}
 
 $RG  = "road-freight-api-rg"
 $APP = "beacon-culinary-frontend-12345"
