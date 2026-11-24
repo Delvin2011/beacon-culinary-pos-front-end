@@ -183,7 +183,7 @@ What the cashier sees:
   5. offline and reload: the POS with the cashier, the restored shift and the read-only snapshot menu, with no redirect;
   6. back online: the live menu.
 
-  The API is mocked at `http://127.0.0.1:8099`. The e2e build sets `NEXT_PUBLIC_AUTH_API_URL` to that address, overriding `.env.local`, and leaves that build in `.next`. **Run `npm run build` again before deploying.**
+  The API is mocked at `http://127.0.0.1:8099`. The e2e build sets `NEXT_PUBLIC_AUTH_API_URL` to that address, overriding `.env.local`, and leaves that build in `.next`. **Run `npm run build` again before deploying.** (Superseded by T1-0d: the e2e build has no API address; see docs/2026-11-24-relative-api.md.)
 
 ## Risks
 
