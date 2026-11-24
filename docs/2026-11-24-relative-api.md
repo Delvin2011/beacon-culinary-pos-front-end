@@ -87,6 +87,19 @@ service worker answered no API call. The Playwright server command is
 `npm run build && npm run check:build && node scripts/e2e-serve.mjs`: the tests don't start on a build with a backend
 address in it.
 
+**Main paths (`e2e/main-path.spec.ts`, follow-up C3).** Online, against the same mock:
+
+- password sign-in; the refresh cookie arrives scoped to `/api/auth/refresh` (HttpOnly); the access token then
+  expires and a reload stays signed in: the 401 leads to one `POST /api/auth/refresh` carrying that cookie, and the
+  call is retried with the new token. The sign-in picture comes from `/_next/static/media`, never `/_next/image`;
+- PIN sign-in on the registered till and a cash sale: the order request (item, cash, tendered amount), then the
+  receipt and the kitchen ticket printed (`window.print` recorded);
+- the kitchen display, in its own browser context on the same mocked backend, shows the till's order within 5 s
+  through its stream; queue loads are held meanwhile, so only the stream can have brought it.
+
+`e2e/mock-api.ts`: `createBackend()` makes one backend that `mockApi(context, backend)` serves to several contexts;
+the mock logs each call's token and status, and can expire an access token (`expiredTokens`).
+
 ## 6. Guards
 
 | Guard | Fails when |
@@ -109,7 +122,7 @@ The `Dockerfile` no longer takes `NEXT_PUBLIC_AUTH_API_URL`: one image for every
 
 | Workaround | Can it be simplified now? | This slice |
 |---|---|---|
-| Logout without `keepalive` (a keepalive request needing a CORS preflight could be refused) | Yes: on one origin there is no preflight, so `keepalive: true` would let the logout survive the page closing | Comment updated only. **Follow-up:** turn it on, with the logout test changed to expect it |
+| Logout without `keepalive` (a keepalive request needing a CORS preflight could be refused) | Yes: on one origin there is no preflight, so `keepalive: true` lets the logout survive the page closing | Comment updated in T1-0d; **turned on in follow-up C1**, and the logout test expects it |
 | Snapshot ETag rebuilt from `snapshotVersion` when the header isn't readable (CORS didn't expose it) | The header is readable on one origin, but keep the fallback: a gateway (Front Door's compression, a cache) may drop or weaken the ETag | Comment updated only. No change planned |
 
 ## 9. Backend requests
@@ -144,10 +157,10 @@ In the backend repository, with `FRONTEND_REPO` pointing at this repository and 
 
 ## 11. Follow-ups
 
-- `keepalive: true` on the logout request (section 8).
-- `sharp` for image optimisation in the standalone server (`docs/2026-11-24-frontend-container.md`).
 - The backend requests in section 9.
 - Remove `NEXT_PUBLIC_AUTH_API_URL` from your own `.env.local`: nothing reads it (checked: its value is in no build file).
+
+Done on `feature/t1-0d-follow-ups` (section 13): keepalive on logout, `images.unoptimized`, the main-path e2e tests.
 
 ## 12. Files
 
@@ -162,3 +175,12 @@ T1-0d:
 | Tests | `src/sw/sw-routes.test.ts`, `src/lib/till.test.ts`, `src/lib/offline/sales-sync.test.ts`, `src/contexts/auth-context.auth-fetch.test.tsx`, `src/contexts/auth-context.logout.test.tsx`, `src/contexts/auth-context.refresh-resilience.test.tsx`, `src/contexts/auth-context.session-ended.test.tsx`, `src/contexts/offline-context.test.tsx`; the URL stubs (one line each) in `src/app/pos/end-shift-offline-waiting.test.tsx`, `src/app/pos/lock-till.test.tsx`, `src/app/pos/shift-close-offline-pending.test.tsx`, `src/components/devices/receipt-settings-dialog.test.tsx`, `src/components/pos/offline-sync.test.tsx` and eight `src/components/pos/order-builder.*.test.tsx` |
 | Config, e2e, deploy | `next.config.mjs`, `package.json` (`check:build`), `playwright.config.ts`, `e2e/mock-api.ts`, `e2e/urls.ts`, `e2e/offline-reload.spec.ts`, `e2e/offline-selling.spec.ts`, `Dockerfile`, `deploy.ps1` |
 | Docs | `docs/2026-11-24-frontend-container.md`, `docs/2026-11-18-offline-foundation.md` (superseded note) |
+
+## 13. Follow-ups done (`feature/t1-0d-follow-ups`)
+
+| Step | Change | Files |
+|---|---|---|
+| C1 | `keepalive: true` on `POST /api/auth/logout` (same origin: no preflight; no body), so signing out still ends the server session if the page closes straight after; the 2 s timeout stays | `src/contexts/auth-context.tsx`, `src/contexts/auth-context.logout.test.tsx` |
+| C2 | `images: { unoptimized: true }` in every phase (`docs/2026-11-24-frontend-container.md`, section 4) | `next.config.mjs`, `src/lib/dev-api-proxy.test.ts` |
+| C3 | Main-path e2e tests (section 5) | `e2e/main-path.spec.ts` (new), `e2e/mock-api.ts` |
+| C4 | This section and the notes it updates | `docs/2026-11-24-relative-api.md`, `docs/2026-11-24-frontend-container.md` |

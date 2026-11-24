@@ -82,10 +82,16 @@ same build without it, followed by `npm run check:build`, is what `npm run test:
 Not checked here (needs Docker): the image itself (Node 20, Debian, the `node` user's file permissions, the health
 check as Docker runs it), and the image behind Caddy on the stack.
 
-**Known: images are not optimised.** The app has no `sharp`, so in standalone mode Next logs
-"'sharp' is required to be installed in standalone mode" and serves `/_next/image` requests unoptimised (the login
-picture still loads, `200 image/png`). Azure App Service behaves the same today. Follow-up: add `sharp` as a
-dependency, or set `images.unoptimized`.
+**Images: `images.unoptimized` (follow-up C2).** The standalone server's image optimiser needs `sharp`. Without it,
+each `/_next/image` request logged "'sharp' is required to be installed in standalone mode" and returned the full
+file anyway (measured: the 1.9 MB sign-in PNG at widths 640 and 1920). `sharp` wasn't added because `deploy.ps1`
+builds on Windows for Linux App Service, so the traced `sharp` would carry Windows binaries. It would also add a
+native dependency, a writable image cache and server CPU for one static picture. With `unoptimized`, `<Image>`
+points straight at `/_next/static/media/...` (cached as immutable, precached by the service worker), nothing is
+logged, and Azure and the image behave the same. T1's per-customer logos from the branding API also load as they
+are, with no `remotePatterns` list. The sign-in picture is still 1.9 MB; re-encoding it was left out (T1's branding
+replaces it). Checked: in the build and in the e2e test, the picture's `src` is `/_next/static/media/...`, it loads,
+and there's no `/_next/image` request.
 
 ## 5. On the Docker machine
 
