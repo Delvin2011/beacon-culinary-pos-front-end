@@ -96,9 +96,10 @@ const AUTH_LOGOUT_MARKER_KEY = "bar-talk.auth.logged-out";
 // Server sign-out (POST /auth/logout): deletes this browser's refreshToken cookie so the session can't come back
 // through /auth/refresh, and (O2 contract 8.4) ends the session the access token names; an expired token is
 // accepted. Always 204, safe to repeat; it never touches deviceToken (the till stays registered).
-// Awaited for at most 2 s and never retried. Not keepalive: written when the API was on another origin, where a
-// keepalive request needing a CORS preflight (the Authorization header) could be refused. Since T1-0d the API is on
-// this origin, so keepalive would now work; turning it on is a follow-up (docs/2026-11-24-relative-api.md). If it
+// Awaited for at most 2 s and never retried. keepalive: the request outlives the page, so closing the tab or
+// navigating away straight after signing out still ends the server session. Safe since T1-0d: the API is on this
+// origin, so the Authorization header needs no CORS preflight (a keepalive request that needs one could be refused),
+// and there is no body (keepalive allows 64 KB). The 2 s timeout still applies while the page is open. If the call
 // fails, the server session ends by itself later.
 const LOGOUT_TIMEOUT_MS = 2_000;
 // POST /pos/lock: at most 5 s, then the till is locked locally anyway.
@@ -108,7 +109,7 @@ async function requestServerLogout(token: string | null): Promise<void> {
   try {
     await fetchWithTimeout(
       apiUrl("/auth/logout"),
-      { method: "POST", credentials: "include", headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+      { method: "POST", credentials: "include", keepalive: true, headers: token ? { Authorization: `Bearer ${token}` } : undefined },
       LOGOUT_TIMEOUT_MS,
     );
   } catch {
