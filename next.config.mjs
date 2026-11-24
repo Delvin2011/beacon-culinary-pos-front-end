@@ -22,6 +22,12 @@ const nextConfig = {
   output: 'standalone',
   generateBuildId: async () => buildId,
   env: { NEXT_PUBLIC_APP_VERSION: buildId },
+  // next/image serves files as they are (from /_next/static/media), with no /_next/image optimiser. The standalone
+  // server's optimiser needs sharp, and deploy.ps1 builds on Windows for Linux App Service, so a traced sharp would
+  // carry Windows binaries; without it every /_next/image request logged an error and returned the full file anyway.
+  // One image in the app today (the sign-in picture, precached by the service worker); T1's per-customer logos from
+  // the branding API load as they are too, with no remotePatterns list. docs/2026-11-24-frontend-container.md.
+  images: { unoptimized: true },
 };
 
 // T1-0d: the app calls /api on its own address (src/lib/api-url.ts). Front Door (production) and Caddy (the local

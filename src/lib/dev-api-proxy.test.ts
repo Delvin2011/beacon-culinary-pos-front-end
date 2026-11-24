@@ -42,10 +42,12 @@ describe("the development API rewrite", () => {
   })
 
   it("keeps the rest of the config in every phase", () => {
-    for (const phase of [PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD]) {
+    for (const phase of [PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD, PHASE_PRODUCTION_SERVER]) {
       const next = configFor(phase)
       expect(next.output).toBe("standalone")
       expect(next.env?.NEXT_PUBLIC_APP_VERSION).toBe(process.env.POS_APP_BUILD_ID)
+      // No image optimiser: sharp isn't in the standalone server (next.config.mjs).
+      expect(next.images?.unoptimized).toBe(true)
     }
   })
 })
