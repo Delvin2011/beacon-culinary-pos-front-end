@@ -115,7 +115,8 @@ export async function noteCustomerAnswer(res: Response): Promise<CustomerAnswer>
   return answer
 }
 
-// /health answered 404 with an empty body: no customer has this address.
+// /health answered 404 with an empty body: no customer has this address. That also ends a suspension: the screen
+// shows "This address isn't set up." instead of the suspended message.
 export function markUnknownAddress(): void {
-  update({ unknownAddress: true })
+  update({ unknownAddress: true, suspended: false })
 }

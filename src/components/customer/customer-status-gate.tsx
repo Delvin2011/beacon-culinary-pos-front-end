@@ -7,6 +7,10 @@
 //  - unavailable (503 CUSTOMER_UNAVAILABLE) away from the POS: a banner with the usual "Can't reach the server"
 //    wording. The POS has its connection indicator ("Server unavailable") and O1's outage behaviour instead.
 //  - an unknown address (an empty 404, confirmed by /health): a banner, "This address isn't set up.", on any screen.
+//    An empty 404 from /health during a suspension ends it and shows this instead.
+//  - after a suspension ends, on a back-office screen: "Service restored." with a Reload link, as those screens load
+//    once and don't reload by themselves. Not on the POS, kitchen, bar or board (they pick up again on their own),
+//    nor on the invite page (its token is gone from the address bar, so a reload would lose it).
 // Screens keep their own messages as well. None of this signs anyone out or deletes anything.
 
 import { useEffect, useRef, useState, type ReactNode } from "react"
@@ -16,8 +20,15 @@ import { useCustomerStatus } from "@/hooks/use-customer-status"
 import { checkCustomerNow, startRecoveryChecks } from "@/lib/customer-recovery"
 import { SUSPENDED_MESSAGE, UNKNOWN_ADDRESS_MESSAGE } from "@/lib/customer-status"
 import { CONNECTION_MESSAGES } from "@/lib/net"
+import { reloadPage } from "@/lib/reload-page"
 
-const isPosPath = (pathname: string | null) => pathname === "/pos" || (pathname?.startsWith("/pos/") ?? false)
+export const RESTORED_MESSAGE = "Service restored."
+
+const under = (pathname: string | null, root: string) => pathname === root || (pathname?.startsWith(`${root}/`) ?? false)
+const isPosPath = (pathname: string | null) => under(pathname, "/pos")
+// Screens that load again by themselves after a suspension, and the invite page (a reload would lose its token).
+const isRestoredWithoutReload = (pathname: string | null) =>
+  ["/pos", "/kitchen", "/bar", "/board", "/invite"].some((root) => under(pathname, root))
 
 function useCheckNow() {
   const [checking, setChecking] = useState(false)
@@ -40,6 +51,17 @@ export function CustomerStatusGate({ children }: { children: ReactNode }) {
   const appRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => startRecoveryChecks(), [])
+
+  // A suspension that ended while this back-office screen was open: offer a reload (until then, or a navigation).
+  const [restored, setRestored] = useState(false)
+  const wasSuspendedRef = useRef(suspended)
+  useEffect(() => {
+    const ended = wasSuspendedRef.current && !suspended
+    wasSuspendedRef.current = suspended
+    if (suspended) setRestored(false)
+    else if (ended && !isRestoredWithoutReload(pathname)) setRestored(true)
+  }, [suspended, pathname])
+  useEffect(() => setRestored(false), [pathname])
 
   // The screen under the message can't be reached by keyboard or pointer, or read out.
   useEffect(() => {
@@ -64,6 +86,21 @@ export function CustomerStatusGate({ children }: { children: ReactNode }) {
 
   return (
     <>
+      {!banner && !suspended && restored && (
+        <div role="status" className="sticky top-0 z-[60] flex flex-wrap items-center justify-center gap-2 border-b border-emerald-300 bg-emerald-50 px-4 py-2 text-sm text-emerald-900">
+          <span>{RESTORED_MESSAGE}</span>
+          <a
+            href={pathname ?? "/"}
+            onClick={(event) => {
+              event.preventDefault()
+              reloadPage()
+            }}
+            className="font-semibold underline"
+          >
+            Reload
+          </a>
+        </div>
+      )}
       {banner && (
         <div role="alert" className="sticky top-0 z-[60] flex flex-wrap items-center justify-center gap-3 border-b border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
           <span>{banner}</span>

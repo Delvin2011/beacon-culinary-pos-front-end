@@ -2,11 +2,13 @@
 // for an unavailable customer (away from the POS) and an unknown address.
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { CustomerStatusGate } from "@/components/customer/customer-status-gate"
+import { CustomerStatusGate, RESTORED_MESSAGE } from "@/components/customer/customer-status-gate"
 import { markUnknownAddress, noteCustomerAnswer, SUSPENDED_MESSAGE, UNKNOWN_ADDRESS_MESSAGE } from "@/lib/customer-status"
+import { reloadPage } from "@/lib/reload-page"
 
 let pathname = "/dashboard"
 vi.mock("next/navigation", () => ({ usePathname: () => pathname }))
+vi.mock("@/lib/reload-page", () => ({ reloadPage: vi.fn() }))
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 const suspended = () => json(503, { error: "Suspended.", code: "CUSTOMER_SUSPENDED" })
@@ -110,6 +112,64 @@ describe("suspended", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
     await advance(10 * 60_000)
     expect(paths()).toHaveLength(4)
+  })
+})
+
+describe("the end of a suspension", () => {
+  const tryAgain = () => act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }))
+  })
+
+  it("an empty 404 from /health leaves the suspended message and shows This address isn't set up.", async () => {
+    renderGate()
+    await suspend()
+    fetchMock.mockResolvedValue(new Response(null, { status: 404 }))
+    await tryAgain()
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent(UNKNOWN_ADDRESS_MESSAGE)
+    expect(screen.queryByText(RESTORED_MESSAGE)).not.toBeInTheDocument()
+  })
+
+  it("the automatic check does the same", async () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, "random").mockReturnValue(0.5)
+    fetchMock.mockImplementation(async () => new Response(null, { status: 404 }))
+    renderGate()
+    await suspend()
+    await advance(60_000)
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    expect(screen.getByRole("alert")).toHaveTextContent(UNKNOWN_ADDRESS_MESSAGE)
+  })
+
+  it("on a back-office screen: Service restored. with a Reload link that reloads the page", async () => {
+    vi.mocked(reloadPage).mockClear()
+    renderGate()
+    await suspend()
+    fetchMock.mockResolvedValue(json(200, { status: "UP" }))
+    await tryAgain()
+    const restored = screen.getByRole("status")
+    expect(restored).toHaveTextContent(RESTORED_MESSAGE)
+    expect(restored).toContainElement(screen.getByRole("link", { name: "Reload" }))
+    fireEvent.click(screen.getByRole("link", { name: "Reload" }))
+    expect(reloadPage).toHaveBeenCalledTimes(1)
+  })
+
+  it("not on the POS, kitchen, bar or board (they pick up again by themselves), nor the invite page", async () => {
+    for (const path of ["/pos", "/pos/login", "/kitchen", "/bar", "/board", "/invite"]) {
+      pathname = path
+      const { unmount } = renderGate()
+      await suspend()
+      fetchMock.mockResolvedValue(json(200, { status: "UP" }))
+      await tryAgain()
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+      expect(screen.queryByText(RESTORED_MESSAGE)).not.toBeInTheDocument()
+      unmount()
+    }
+  })
+
+  it("not before any suspension", () => {
+    renderGate()
+    expect(screen.queryByText(RESTORED_MESSAGE)).not.toBeInTheDocument()
   })
 })
 
