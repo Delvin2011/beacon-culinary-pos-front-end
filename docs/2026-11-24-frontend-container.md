@@ -10,19 +10,20 @@ From the local stack doc, section 3, and how `devstack/compose.yaml` uses the im
 | Requirement | How the image meets it |
 |---|---|
 | A `Dockerfile` at the repository root | `Dockerfile`; compose builds with this repository as the context (`FRONTEND_REPO`) |
-| Takes the build argument `NEXT_PUBLIC_AUTH_API_URL` | Required: the build stops if it is empty. Inlined into the client code at build time (until T1-0d) |
+| ~~Takes the build argument `NEXT_PUBLIC_AUTH_API_URL`~~ | Gone with T1-0d (section 6): no API address is built in |
 | Serves on port 3000, all interfaces | `PORT=3000`, `HOSTNAME=0.0.0.0` in the image (compose sets the same) |
 | Next's `output: 'standalone'` server | `node server.js` from `.next/standalone` |
 
-Until T1-0d the API address is baked in, so the stack builds one image per customer
-(`beacon-devstack/frontend:<customer>`) with `NEXT_PUBLIC_AUTH_API_URL=https://<customer>.pos.localhost/api`.
+Since T1-0d the app calls `/api` on the page's own address, so one image serves every customer address. Until the
+backend's `compose.yaml` drops its `args` (section 6), compose still passes `NEXT_PUBLIC_AUTH_API_URL`: Docker only
+warns that the argument wasn't used.
 
 ## 2. The stages
 
 | Stage | Does | Why |
 |---|---|---|
 | `deps` | `npm ci` from `package.json` and `package-lock.json` only | This layer is reused until the dependencies change |
-| `build` | Copies the context, then `npm run build` (`next build` and `scripts/build-sw.mjs`, which writes `public/sw.js`) | One build per image |
+| `build` | Copies the context, then `npm run build` (`next build` and `scripts/build-sw.mjs`, which writes `public/sw.js`), then `npm run check:build` | One build per image; the image build stops if a backend address or a rewrite is in the output |
 | `runner` | Copies only `.next/standalone`, `.next/static` and `public/`, as `deploy.ps1` packages them | No sources, dev dependencies or build cache in the running image |
 
 All three use `node:20.19.6-bookworm-slim` (Node 20, as the stack doc names; an exact tag so a rebuild gets the same
@@ -31,11 +32,10 @@ base). The runner runs as the image's `node` user, not root, with `NODE_ENV=prod
 **Health check.** Every 30 seconds the image fetches `http://127.0.0.1:3000/pos/login` with Node's own `fetch` (the
 slim image has no curl); 3 failures mark it unhealthy. Compose and Container Apps can use it.
 
-**Build arguments.**
+**Build argument.**
 
 | Argument | Required | Effect |
 |---|---|---|
-| `NEXT_PUBLIC_AUTH_API_URL` | Yes (until T1-0d) | The API address in the client code. Empty: the build stops with a message (the app's own fallback, `http://localhost:8080`, means nothing inside a container) |
 | `POS_APP_BUILD_ID` | No | The build id: the heartbeat's `appVersion` and the service worker's cache version. Empty or absent: `next.config.mjs` makes one, `<version>-nogit-<time>` (`.git` isn't in the context, so there is no commit hash). Each build still gets a new id, so tills drop the old cached POS |
 
 To put the commit in the id, pass it: `--build-arg POS_APP_BUILD_ID=0.1.0-$(git rev-parse --short HEAD)-$(Get-Date -UFormat %s)`.
@@ -76,6 +76,9 @@ On 2026-11-23, with Node 24 (the image uses Node 20):
    exited 0; the API address was inlined in 8 client chunks and `localhost:8080` in none; no `.env` in the runner.
 5. **Repository checks:** lint clean, `tsc` clean, Vitest 142 files and 1,175 tests passed.
 
+Steps 2 to 4 were run for T1-L0-FE, when the image still took `NEXT_PUBLIC_AUTH_API_URL`. T1-0d removed it; the
+same build without it, followed by `npm run check:build`, is what `npm run test:e2e` runs (2026-11-24: passed).
+
 Not checked here (needs Docker): the image itself (Node 20, Debian, the `node` user's file permissions, the health
 check as Docker runs it), and the image behind Caddy on the stack.
 
@@ -91,7 +94,7 @@ From the frontend repository, in PowerShell.
 **1. Build and run on its own.**
 
 ```powershell
-docker build -t beacon-frontend:check --build-arg NEXT_PUBLIC_AUTH_API_URL=https://beaconculinary.pos.localhost/api .
+docker build -t beacon-frontend:check .        # the log ends with "check:build: no backend address in the build"
 docker run -d --name fe-check -p 127.0.0.1:3000:3000 beacon-frontend:check
 ```
 
@@ -107,10 +110,10 @@ docker logs fe-check                                                        # "R
 docker rm -f fe-check
 ```
 
-**3. The build argument is required.** This must fail with "NEXT_PUBLIC_AUTH_API_URL is required":
+**3. No address in the image.** The client code calls `/api` and names no backend:
 
 ```powershell
-docker build -t beacon-frontend:noarg .
+docker run --rm beacon-frontend:check sh -c "grep -rl 'localhost:8080' /app/.next /app/public | wc -l"   # 0
 ```
 
 **4. On the stack.** In the backend repository (`FRONTEND_REPO` pointing at this repository, `FRONTEND_MODE`
@@ -125,8 +128,13 @@ Then open `https://beaconculinary.pos.localhost/`: the sign-in page with its pic
 network tab shows API calls to `https://beaconculinary.pos.localhost/api/...`. `docker compose -p beacon-devstack
 logs frontend` shows the server ready and no errors.
 
-## 6. What changes with T1-0d
+## 6. T1-0d (done)
 
-T1-0d makes every API call go to `/api` on the page's own address, so one image serves every customer. In the
-`Dockerfile`: remove `ARG NEXT_PUBLIC_AUTH_API_URL` and its check in the `RUN` line (`POS_APP_BUILD_ID` stays). In
-the backend's `compose.yaml` (a backend change): drop the frontend's `args` and the per-customer image tag.
+T1-0d makes every API call go to `/api` on the page's own address, so one image serves every customer
+(`docs/2026-11-24-relative-api.md`). Done in the `Dockerfile`: `ARG NEXT_PUBLIC_AUTH_API_URL` and its check are gone
+(`POS_APP_BUILD_ID` stays), and the build runs `npm run check:build`.
+
+**Backend request (`devstack/compose.yaml`):** drop the frontend service's `args` and the per-customer image tag
+(`beacon-devstack/frontend:${ACTIVE_CUSTOMER}` → `beacon-devstack/frontend`), so switching customer reuses the image
+instead of rebuilding it; and update the local stack doc's section 3 ("takes the build argument") and host mode (no
+`NEXT_PUBLIC_AUTH_API_URL` in `.env.local`).

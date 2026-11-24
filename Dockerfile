@@ -1,14 +1,15 @@
 # T1-L0-FE: the frontend container, as the local stack builds it (backend repository, docs/2026-11-23-local-stack.md,
 # section 3) and as Container Apps will run it later. Next's standalone server on port 3000, all interfaces.
 #
-#   docker build -t beacon-frontend --build-arg NEXT_PUBLIC_AUTH_API_URL=https://beaconculinary.pos.localhost/api .
+#   docker build -t beacon-frontend .
 #   docker run --rm -p 3000:3000 beacon-frontend
 #
-# Build arguments:
-#   NEXT_PUBLIC_AUTH_API_URL  required until T1-0d: the API address, inlined into the client code at build time.
-#   POS_APP_BUILD_ID          optional: the build id (heartbeat appVersion, service-worker cache version). When empty,
-#                             next.config.mjs makes one ("<version>-nogit-<time>": .git isn't in the build context).
-# See docs/2026-11-23-frontend-container.md.
+# One image for every customer address (T1-0d): the app calls /api on the page's own address, so no address is built
+# in. npm run check:build stops the build if one ever is.
+# Build argument:
+#   POS_APP_BUILD_ID  optional: the build id (heartbeat appVersion, service-worker cache version). When empty,
+#                     next.config.mjs makes one ("<version>-nogit-<time>": .git isn't in the build context).
+# See docs/2026-11-24-frontend-container.md and docs/2026-11-24-relative-api.md.
 
 ARG NODE_IMAGE=node:20.19.6-bookworm-slim
 
@@ -24,17 +25,10 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ARG NEXT_PUBLIC_AUTH_API_URL
 ARG POS_APP_BUILD_ID
-# An empty argument would still be set (as ""), so both are checked here: the API address must be given (the app's
-# fallback, localhost:8080, means nothing inside a container), and an empty build id is removed so that
-# next.config.mjs makes one.
-RUN if [ -z "$NEXT_PUBLIC_AUTH_API_URL" ]; then \
-      echo "NEXT_PUBLIC_AUTH_API_URL is required, e.g. --build-arg NEXT_PUBLIC_AUTH_API_URL=https://beaconculinary.pos.localhost/api" >&2; \
-      exit 1; \
-    fi; \
-    if [ -z "$POS_APP_BUILD_ID" ]; then unset POS_APP_BUILD_ID; fi; \
-    npm run build
+# An empty argument would still be set (as ""), and next.config.mjs keeps an empty id: removed so that it makes one.
+RUN if [ -z "$POS_APP_BUILD_ID" ]; then unset POS_APP_BUILD_ID; fi; \
+    npm run build && npm run check:build
 
 # 3. The running image: only the standalone server, its static files and public/ (as deploy.ps1 packages them).
 FROM ${NODE_IMAGE} AS runner
