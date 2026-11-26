@@ -16,7 +16,8 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: BRAND.name,
+  // Neutral: the browser then shows the customer's name (Providers, T1-8).
+  title: BRAND.productName,
   description: BRAND.description,
 };
 

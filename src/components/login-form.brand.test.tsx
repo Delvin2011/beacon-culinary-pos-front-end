@@ -1,19 +1,14 @@
-// T0-8 part 3: /login takes its heading and image from src/lib/brand.ts; the image's alt text names the brand.
+// T1-8: /login names the customer at this address (GET /public/branding), shows its logo only when it has one, and
+// has no built-in picture.
 import { render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { AuthProvider } from "@/contexts/auth-context"
 import { LoginForm } from "@/components/login-form"
-import { BRAND } from "@/lib/brand"
+import { BRANDING_STORAGE_KEY } from "@/lib/customer-branding"
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn(), replace: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
-}))
-// Next imports the PNG as image data; the test runner as a plain path.
-const srcOf = (src: string | { src: string }) => (typeof src === "string" ? src : src.src)
-vi.mock("next/image", () => ({
-  // eslint-disable-next-line @next/next/no-img-element
-  default: ({ alt, src }: { alt: string; src: string | { src: string } }) => <img alt={alt} src={typeof src === "string" ? src : src.src} />,
 }))
 
 beforeEach(() => {
@@ -22,17 +17,30 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn())
 })
 
+function renderLogin() {
+  return render(
+    <AuthProvider>
+      <LoginForm />
+    </AuthProvider>,
+  )
+}
+
 describe("login brand", () => {
-  it("shows the brand's heading and image", () => {
-    render(
-      <AuthProvider>
-        <LoginForm />
-      </AuthProvider>,
-    )
-    expect(screen.getByText(BRAND.loginHeading)).toBeInTheDocument()
-    expect(screen.getByText("Login to your Beacon Culinary Account")).toBeInTheDocument()
-    const image = screen.getByRole("img", { name: BRAND.loginImageAlt })
-    expect(image).toHaveAttribute("alt", "Beacon Culinary")
-    expect(image.getAttribute("src")).toBe(srcOf(BRAND.loginImage as unknown as string | { src: string }))
+  it("names the customer, with no logo and no picture when it has no logo", () => {
+    localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify({ name: "Riverside Canteen", logoUrl: null }))
+    const { container } = renderLogin()
+    expect(screen.getByText("Login to your Riverside Canteen Account")).toBeInTheDocument()
+    expect(container.querySelector("img")).toBeNull()
+  })
+
+  it("shows the customer's logo when it has one", () => {
+    localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify({ name: "Riverside Canteen", logoUrl: "https://cdn.example/logo.png" }))
+    renderLogin()
+    expect(screen.getByRole("img", { name: "Riverside Canteen logo" })).toHaveAttribute("src", "https://cdn.example/logo.png")
+  })
+
+  it("a fresh address: the neutral name", () => {
+    renderLogin()
+    expect(screen.getByText("Login to your Canteen POS Account")).toBeInTheDocument()
   })
 })

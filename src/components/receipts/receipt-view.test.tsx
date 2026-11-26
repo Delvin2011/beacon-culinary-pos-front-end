@@ -1,7 +1,8 @@
 // O2b: the customer receipt, from a sample OrderDto and the receipt settings (handoff 3 and 4).
 import { render, screen, within } from "@testing-library/react"
-import { describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import { ReceiptView } from "@/components/receipts/receipt-view"
+import { BRANDING_STORAGE_KEY } from "@/lib/customer-branding"
 import { formatReceiptAmount, formatReceiptDateTime, formatVatRate, receiptCopy, vatLine, type ReceiptOrder } from "@/lib/receipt"
 import type { ReceiptSettings } from "@/lib/receipt-settings"
 
@@ -201,6 +202,37 @@ describe("ReceiptView", () => {
     expect(root.className).toContain("m-0")
     expect(root.className).toContain("p-0")
     expect(container.innerHTML).toMatchSnapshot()
+  })
+
+  // T1-8: the receipt names the business: the receipt settings' business name, otherwise the customer's name, which
+  // is remembered on the device (offline the settings can't load).
+  describe("the business name", () => {
+    beforeEach(() => localStorage.clear())
+    const header = () => receipt().querySelector("header") as HTMLElement
+
+    it("the receipt settings' business name wins", () => {
+      localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify({ name: "Riverside Canteen", logoUrl: null }))
+      render(<ReceiptView order={sale} settings={settings} />)
+      expect(within(header()).getByText("Canteen at Riverside Park")).toBeInTheDocument()
+      expect(screen.queryByText("Riverside Canteen")).not.toBeInTheDocument()
+    })
+
+    it("no business name in the settings: the customer's name", () => {
+      localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify({ name: "Riverside Canteen", logoUrl: null }))
+      render(<ReceiptView order={sale} settings={emptySettings} />)
+      expect(within(header()).getByText("Riverside Canteen")).toBeInTheDocument()
+    })
+
+    it("offline (no settings): the remembered name", () => {
+      localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify({ name: "Riverside Canteen", logoUrl: null }))
+      render(<ReceiptView order={{ ...sale, recordedOffline: true }} settings={null} />)
+      expect(header()).toHaveTextContent("Riverside Canteen")
+    })
+
+    it("offline with nothing remembered on this address: the neutral name", () => {
+      render(<ReceiptView order={{ ...sale, recordedOffline: true }} settings={null} />)
+      expect(header()).toHaveTextContent(/^Canteen POS$/)
+    })
   })
 })
 

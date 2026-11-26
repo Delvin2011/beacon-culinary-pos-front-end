@@ -5,6 +5,7 @@
 // Module state, as src/lib/customer-status.ts; read with useCustomerBranding().
 
 import { apiFetch } from "@/lib/api-fetch"
+import { BRAND } from "@/lib/brand"
 
 export interface CustomerBranding {
   name: string
@@ -12,7 +13,7 @@ export interface CustomerBranding {
 }
 
 // The product name until one is chosen, and the name while nothing is known about this address.
-export const NEUTRAL_NAME = "Canteen POS"
+export const NEUTRAL_NAME = BRAND.productName
 export const NEUTRAL_BRANDING: CustomerBranding = { name: NEUTRAL_NAME, logoUrl: null }
 export const BRANDING_STORAGE_KEY = "pos.customer-branding"
 

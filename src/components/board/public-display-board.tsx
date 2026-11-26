@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { columnShellClass, DONE_RETENTION_MS, statusPillClass } from "@/components/orders/status-visuals";
 import { apiFetch } from "@/lib/api-fetch";
+import { CustomerName } from "@/components/customer/customer-name";
 import { isCustomerSuspended, whenNotSuspended } from "@/lib/customer-status";
 
 type BoardStatus = "PENDING" | "IN_PROGRESS" | "DONE" | "COLLECTED" | "VOIDED" | "REFUNDED";
@@ -334,6 +335,7 @@ export function PublicDisplayBoard() {
     <main className="min-h-screen bg-slate-950 p-5 lg:p-8">
       <div className="mb-5 flex items-end justify-between">
         <div>
+          <CustomerName className="text-lg font-semibold text-slate-300" />
           <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Live Order Board</p>
           <h1 className="mt-1 text-4xl font-black text-white lg:text-5xl">Now Serving</h1>
         </div>

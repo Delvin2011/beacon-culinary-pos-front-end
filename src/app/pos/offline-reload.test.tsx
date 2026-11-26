@@ -1,7 +1,7 @@
 // O3: a reload while offline lands on the POS with the cashier and the shift saved online (no redirect, no "Can't
 // reach the server" screen), when this till may sell offline. Reading and End shift say "Not available offline".
 import "fake-indexeddb/auto"
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import { deleteDB } from "idb"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { AuthProvider } from "@/contexts/auth-context"
@@ -10,6 +10,7 @@ import PosMainPage from "@/app/pos/page"
 import { OFFLINE_DB_NAME, putGrant, resetOfflineDbForTests, setMeta } from "@/lib/offline/db"
 import { grantBody } from "@/lib/offline/test-fixtures"
 import type { TillStatus } from "@/lib/till"
+import { BRANDING_STORAGE_KEY, loadCustomerBranding } from "@/lib/customer-branding"
 
 const replace = vi.fn()
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), replace }) }))
@@ -98,6 +99,46 @@ describe("reload while offline", () => {
     expect(screen.getByRole("button", { name: /End shift/ })).toBeDisabled()
     expect(screen.getByRole("button", { name: /End shift/ })).toHaveAttribute("title", "Not available offline")
     expect(screen.getByRole("button", { name: /Lock till/ })).toBeEnabled()
+  })
+
+  // T1-8: the till's header names the customer: the remembered name while offline, the neutral one if none.
+  it("the header shows the remembered customer name while offline", async () => {
+    localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify({ name: "Riverside Canteen", logoUrl: null }))
+    await setMeta("tillStatus", tillStatus)
+    await putGrant(grantBody)
+    await setMeta("lastShift", shift)
+    await loadCustomerBranding() // offline: the call fails
+    renderPos()
+
+    expect(await screen.findByText("Shift Open")).toBeInTheDocument()
+    expect(screen.getByTestId("customer-name")).toHaveTextContent("Riverside Canteen")
+  })
+
+  it("the header shows the neutral name when nothing is remembered on this address", async () => {
+    await setMeta("tillStatus", tillStatus)
+    await putGrant(grantBody)
+    await setMeta("lastShift", shift)
+    await loadCustomerBranding()
+    renderPos()
+
+    expect(await screen.findByText("Shift Open")).toBeInTheDocument()
+    expect(screen.getByTestId("customer-name")).toHaveTextContent("Canteen POS")
+  })
+
+  it("the header shows the name from the endpoint once it answers", async () => {
+    fetchMock.mockImplementation(async (input) =>
+      String(input) === "/api/public/branding"
+        ? new Response(JSON.stringify({ name: "Hilltop Canteen", logoUrl: null }), { status: 200 })
+        : Promise.reject(new TypeError("Failed to fetch")),
+    )
+    await setMeta("tillStatus", tillStatus)
+    await putGrant(grantBody)
+    await setMeta("lastShift", shift)
+    renderPos()
+    expect(await screen.findByText("Shift Open")).toBeInTheDocument()
+
+    await act(() => loadCustomerBranding())
+    expect(screen.getByTestId("customer-name")).toHaveTextContent("Hilltop Canteen")
   })
 
   it("without a valid grant: as before O3 (Can't reach the server, no redirect)", async () => {
