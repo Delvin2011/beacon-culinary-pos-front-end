@@ -7,13 +7,22 @@ import { Toaster } from "@/components/ui/toaster";
 import { CustomerStatusGate } from "@/components/customer/customer-status-gate";
 import { useCustomerBranding } from "@/hooks/use-customer-branding";
 import { loadCustomerBranding } from "@/lib/customer-branding";
+import { subscribeCustomerStatus } from "@/lib/customer-status";
 
 export function Providers({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { name } = useCustomerBranding();
-  // T1-8: the customer's name, fetched once per page load; the tab shows it on every route.
+  // T1-8: the customer's name, fetched until one call succeeds: on load, then again when the browser is back online
+  // or the customer's status changes (a suspension or an outage ends). The tab shows it on every route.
   useEffect(() => {
-    void loadCustomerBranding();
+    const load = () => void loadCustomerBranding();
+    load();
+    window.addEventListener("online", load);
+    const unsubscribe = subscribeCustomerStatus(load);
+    return () => {
+      window.removeEventListener("online", load);
+      unsubscribe();
+    };
   }, []);
   useEffect(() => {
     document.title = name;

@@ -19,6 +19,7 @@ export const BRANDING_STORAGE_KEY = "pos.customer-branding"
 
 let current: CustomerBranding | null = null
 let loading: Promise<void> | null = null
+let loaded = false
 const listeners = new Set<() => void>()
 
 function parse(value: unknown): CustomerBranding | null {
@@ -50,9 +51,11 @@ export function subscribeCustomerBranding(listener: () => void): () => void {
   }
 }
 
-// Once per page load. Any failure (offline, suspended, unavailable, unknown address, a bad body) keeps the remembered
-// name, or the neutral one.
+// Until one call succeeds per page load; after that, nothing. Any failure (offline, suspended, unavailable, unknown
+// address, a bad body) keeps the remembered name, or the neutral one, and the next call tries again (Providers calls
+// it again when the browser is back online and when the customer's status changes, e.g. a suspension ends).
 export function loadCustomerBranding(): Promise<void> {
+  if (loaded) return Promise.resolve()
   if (!loading) {
     loading = (async () => {
       try {
@@ -60,6 +63,7 @@ export function loadCustomerBranding(): Promise<void> {
         if (!res.ok) return
         const branding = parse(await res.json())
         if (!branding) return
+        loaded = true
         const before = getCustomerBranding()
         try {
           localStorage.setItem(BRANDING_STORAGE_KEY, JSON.stringify(branding))
@@ -71,6 +75,8 @@ export function loadCustomerBranding(): Promise<void> {
         listeners.forEach((listener) => listener())
       } catch {
         // Kept as it is.
+      } finally {
+        loading = null
       }
     })()
   }
@@ -81,4 +87,5 @@ export function loadCustomerBranding(): Promise<void> {
 export function resetCustomerBranding(): void {
   current = null
   loading = null
+  loaded = false
 }

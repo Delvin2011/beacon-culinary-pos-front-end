@@ -1,7 +1,7 @@
 // T1-8: the name from GET /api/public/branding on every screen that names the business, and in the tab title,
 // rendered inside the app's Providers as in the app (which fetch it once). The POS header and the receipt are tested
 // with the till (src/app/pos/offline-reload.test.tsx, src/components/receipts/receipt-view.test.tsx).
-import { render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import type { ReactElement } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import BarPage from "@/app/bar/page"
@@ -16,6 +16,7 @@ import { LoginForm } from "@/components/login-form"
 import { Providers } from "@/components/providers"
 import { apiFetch } from "@/lib/api-fetch"
 import { BRANDING_STORAGE_KEY } from "@/lib/customer-branding"
+import { getCustomerStatus, noteCustomerAnswer } from "@/lib/customer-status"
 import { TOKEN } from "@/lib/invites.test-fixtures"
 
 let pathname = "/"
@@ -68,6 +69,56 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+describe("when the first call fails", () => {
+  const brandingCalls = () => fetchMock.mock.calls.filter(([url]) => String(url) === "/api/public/branding").length
+  const failBrandingFirst = (first: () => Promise<Response>) => {
+    let calls = 0
+    fetchMock.mockImplementation(async (input) => {
+      const path = new URL(String(input), "http://x").pathname
+      if (path === "/api/public/branding") {
+        calls += 1
+        return calls === 1 ? first() : json(200, { name: "Riverside Canteen", logoUrl: null })
+      }
+      if (path === "/api/health") return json(200, { status: "UP" })
+      return json(200, [])
+    })
+  }
+
+  it("offline at load: fetched again when the browser is back online, then not again", async () => {
+    failBrandingFirst(() => Promise.reject(new TypeError("Failed to fetch")))
+    pathname = "/board"
+    render(<Providers>{<PublicDisplayBoard />}</Providers>)
+    await waitFor(() => expect(brandingCalls()).toBe(1))
+    expect(screen.getByTestId("customer-name")).toHaveTextContent("Canteen POS")
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"))
+    })
+    await waitFor(() => expect(screen.getByTestId("customer-name")).toHaveTextContent("Riverside Canteen"))
+    expect(document.title).toBe("Riverside Canteen")
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"))
+    })
+    expect(brandingCalls()).toBe(2)
+  })
+
+  it("suspended at load: nothing sent while suspended, fetched again when the suspension ends", async () => {
+    failBrandingFirst(async () => json(503, { error: "Suspended.", code: "CUSTOMER_SUSPENDED" }))
+    pathname = "/board"
+    render(<Providers>{<PublicDisplayBoard />}</Providers>)
+    await waitFor(() => expect(getCustomerStatus().suspended).toBe(true))
+    expect(brandingCalls()).toBe(1)
+
+    // The recovery check sees the customer active again.
+    await act(async () => {
+      await noteCustomerAnswer(json(200, { status: "UP" }))
+    })
+    await waitFor(() => expect(screen.getAllByText("Riverside Canteen").length).toBeGreaterThan(0))
+    expect(brandingCalls()).toBe(2)
+  })
 })
 
 describe.each(SCREENS)("$name", ({ path, element }) => {

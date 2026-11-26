@@ -79,6 +79,20 @@ describe("customer branding", () => {
     expect(getCustomerBranding().name).toBe("Riverside Canteen")
   })
 
+  it("after a failure the next call tries again; after a success nothing more is called", async () => {
+    fetchMock.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    await loadCustomerBranding()
+    expect(getCustomerBranding().name).toBe(NEUTRAL_NAME)
+
+    fetchMock.mockResolvedValue(json(200, { name: "Riverside Canteen", logoUrl: null }))
+    await loadCustomerBranding()
+    expect(getCustomerBranding().name).toBe("Riverside Canteen")
+
+    await loadCustomerBranding()
+    await loadCustomerBranding()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it("a remembered value that isn't valid is ignored", () => {
     localStorage.setItem(BRANDING_STORAGE_KEY, "{not json")
     expect(getCustomerBranding().name).toBe(NEUTRAL_NAME)

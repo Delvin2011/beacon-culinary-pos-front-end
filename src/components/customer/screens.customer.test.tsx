@@ -111,8 +111,11 @@ describe.each(SCREENS)("$name", ({ path, element, firstCall, reloads }) => {
     expect(paths().slice(before, before + 2)).toEqual(["/api/health", "/api/health"])
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
     await advance(3_000)
-    if (reloads) expect(paths().slice(before + 2)).toContain(firstCall)
-    else expect(paths().slice(before + 2)).toEqual([])
+    // T1-8: the customer's name, refused while suspended, is fetched once more when the suspension ends.
+    const after = paths().slice(before + 2)
+    expect(after.filter((path) => path === "/api/public/branding")).toHaveLength(1)
+    if (reloads) expect(after).toContain(firstCall)
+    else expect(after.filter((path) => path !== "/api/public/branding")).toEqual([])
   })
 
   it("CUSTOMER_UNAVAILABLE: the shared banner, no full-page message", async () => {
