@@ -1,13 +1,32 @@
 "use client";
 
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import { AuthProvider } from "@/contexts/auth-context";
 import { Toaster } from "@/components/ui/toaster";
 import { CustomerStatusGate } from "@/components/customer/customer-status-gate";
+import { useCustomerBranding } from "@/hooks/use-customer-branding";
+import { loadCustomerBranding } from "@/lib/customer-branding";
+import { subscribeCustomerStatus } from "@/lib/customer-status";
 
 export function Providers({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const { name } = useCustomerBranding();
+  // T1-8: the customer's name, fetched until one call succeeds: on load, then again when the browser is back online
+  // or the customer's status changes (a suspension or an outage ends). The tab shows it on every route.
+  useEffect(() => {
+    const load = () => void loadCustomerBranding();
+    load();
+    window.addEventListener("online", load);
+    const unsubscribe = subscribeCustomerStatus(load);
+    return () => {
+      window.removeEventListener("online", load);
+      unsubscribe();
+    };
+  }, []);
+  useEffect(() => {
+    document.title = name;
+  }, [name, pathname]);
   // Public pages outside the app's auth: the order board, and the invite page (T0-6b: no auth client, no bearer
   // token and no refresh may run where an invite token is handled).
   const isPublicRoute = pathname === "/board" || pathname === "/invite";

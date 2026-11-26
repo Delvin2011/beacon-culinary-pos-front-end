@@ -5,8 +5,10 @@
 // Main path (T1-0d follow-up): password sign-in with the refresh cookie, refresh, online sales (POST /orders) and the
 // kitchen's queue and stream. One backend can serve several browser contexts (the till and the kitchen each keep
 // their own sign-in): createBackend() once, then mockApi(context, backend) for each.
+// T1-8: GET /public/branding answers the customer's name (`branding`; null: an empty 404). mockApi can serve another
+// address (appUrl), so two customers can run side by side, each on its own origin.
 import type { BrowserContext, Request, Route } from "@playwright/test"
-import { E2E_API_URL } from "./urls"
+import { E2E_APP_URL } from "./urls"
 
 const jhbDay = (ms: number) =>
   new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Johannesburg", year: "numeric", month: "2-digit", day: "2-digit" }).format(
@@ -46,6 +48,8 @@ export interface MockApi {
   // T1-3: "suspended" answers every path (/health included) 503 CUSTOMER_SUSPENDED, as the backend does for a
   // customer the vendor suspended.
   customer: "active" | "suspended"
+  // T1-8: GET /public/branding's answer; null answers an empty 404.
+  branding: { name: string; logoUrl: string | null } | null
   calls: string[]
   log: LoggedRequest[]
   // O4: every POST /pos/offline/sales body, and every status report.
@@ -113,6 +117,7 @@ export function createBackend(): MockApi {
   const api: MockApi = {
     offline: false,
     customer: "active",
+    branding: { name: "Mock Canteen", logoUrl: null },
     calls: [],
     log: [],
     salesBatches: [],
@@ -359,15 +364,16 @@ export function createBackend(): MockApi {
   return api
 }
 
-// Serves `backend` (a new one if none is given) to this browser context.
-export async function mockApi(context: BrowserContext, backend: MockApi = createBackend()): Promise<MockApi> {
+// Serves `backend` (a new one if none is given) to this browser context, at /api on appUrl.
+export async function mockApi(context: BrowserContext, backend: MockApi = createBackend(), appUrl: string = E2E_APP_URL): Promise<MockApi> {
   const { api, answers, orderById, streamKitchen, kitchenSnapshot } = backends.get(backend)!
+  const apiUrl = `${appUrl}/api`
 
   context.on("response", (response) => {
-    if (response.fromServiceWorker() && response.url().startsWith(`${E2E_API_URL}/`)) api.answeredByWorker.push(response.url())
+    if (response.fromServiceWorker() && response.url().startsWith(`${apiUrl}/`)) api.answeredByWorker.push(response.url())
   })
 
-  await context.route(`${E2E_API_URL}/**`, async (route) => {
+  await context.route(`${apiUrl}/**`, async (route) => {
     const request = route.request()
     const backendPath = new URL(request.url()).pathname.replace(/^\/api(?=\/)/, "")
     if (api.offline) return route.abort("internetdisconnected")
@@ -395,6 +401,13 @@ export async function mockApi(context: BrowserContext, backend: MockApi = create
     // An expired access token: 401 with an empty body, which is what makes the app refresh.
     if (token && api.expiredTokens.has(token) && !backendPath.startsWith("/auth/")) return answerWith(401, null)
 
+    if (key === "GET /public/branding") {
+      if (!api.branding) {
+        api.log.push({ key, token, status: 404 })
+        return route.fulfill({ status: 404, body: "" })
+      }
+      return answerWith(200, api.branding, { "Cache-Control": "public, max-age=300" })
+    }
     if (key === "GET /kitchen/orders/stream") {
       api.log.push({ key, token, status: 200 })
       return streamKitchen(route)

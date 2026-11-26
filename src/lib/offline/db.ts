@@ -10,6 +10,8 @@ import { onServerTimeChange, serverTimeOffsetMs, setServerTimeOffset } from "@/l
 import type { TillStatus } from "@/lib/till"
 import type { Shift } from "@/contexts/shift-context"
 
+// Kept as it is (T1-8): renaming would leave every till's grant, snapshot and unsynced outbox behind in the old
+// database. Never shown to anyone; the only allowed exception in src/lib/no-hard-coded-brand.test.ts.
 export const OFFLINE_DB_NAME = "beacon-pos-offline"
 export const OFFLINE_DB_VERSION = 1
 export const OPEN_TIMEOUT_MS = 3_000

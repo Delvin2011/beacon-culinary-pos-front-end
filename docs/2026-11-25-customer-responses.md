@@ -76,3 +76,58 @@ sign-out (only a 401 starts a refresh) and not offline (a 404 proves the server 
   `CUSTOMER_UNAVAILABLE` too, and an empty-body 404 at an unknown address.
 - A suspended customer's `/health` is called at most about once a minute per open screen (one check every
   60 s ± 15 s), plus Try again presses.
+
+## 7. The customer's name and TENANT_MISMATCH (T1-8)
+
+Nothing customer-specific is built into the frontend. A guard (`src/lib/no-hard-coded-brand.test.ts`) fails on
+"beacon" in any case in `src` or `public`. Tests, fixtures and mocks are excluded, and so is the generated
+`public/sw.js`. One line is allowed: the offline database's name `beacon-pos-offline`. Renaming it would leave every
+till's grant, snapshot and unsynced outbox behind.
+
+**Where the name comes from.** `GET /api/public/branding` (no sign-in, `{ name, logoUrl }`), called through
+`apiFetch` with `credentials: "omit"` (`src/lib/customer-branding.ts`, started in `Providers`, read with
+`useCustomerBranding()`). It is called on page load, then again only while no call has succeeded: when the browser
+comes back online, and when the customer's status changes (for example, a suspension or an outage ends). While
+suspended, `apiFetch` sends nothing. Every screen shows it:
+
+- `/login`: the heading;
+- the back office: the sidebar's team name and group label;
+- the POS: the header, the sign-in and the offline unlock;
+- the kitchen and bar displays and their sign-ins;
+- the board and the invite page;
+- the browser tab title.
+
+The logo shows on `/login` and in the sidebar only when `logoUrl` isn't null. The receipt prints the receipt
+settings' business name when it is set, otherwise the customer's name. The static title is the neutral
+"Canteen POS". There is no PWA manifest.
+
+**Offline and fallback.** A valid answer is remembered on the device (`localStorage`, key `pos.customer-branding`).
+Storage belongs to the origin, so each customer address keeps its own. Until the answer arrives, or when it fails
+(offline, suspended, unavailable, unknown address, a bad body), the screens use the remembered name. With nothing
+remembered they use **"Canteen POS"**, never another customer's name. The till and its offline receipts use the
+remembered name.
+
+**401 `TENANT_MISMATCH`** (a credential that belongs to another customer) is read as `SESSION_ENDED` with no reason
+(`readSessionEnded`, `src/lib/till.ts`):
+
+- back to sign-in with "Your session has expired. Please sign in again.";
+- no refresh and no retry, and no error page;
+- only the tokens are cleared: the cart, the outbox, the grant, the unlock value and the snapshot are kept.
+
+The offline sync and the heartbeat (device cookie, no token) treat it as any other refused answer: they try again
+later and the outbox is kept.
+
+| Tests | Where |
+|---|---|
+| Fetch once, remember, fallback, a fresh address, failures | `src/lib/customer-branding.test.ts` |
+| Each screen and the tab title | `src/components/customer/customer-name.screens.test.tsx`, `src/lib/brand.test.tsx`, `src/components/login-form.brand.test.tsx` |
+| The till offline (remembered / neutral / from the endpoint); the receipt | `src/app/pos/offline-reload.test.tsx`, `src/components/receipts/receipt-view.test.tsx` |
+| `TENANT_MISMATCH` (a call, refresh, the kitchen back to its sign-in; offline data and outbox kept) | `src/contexts/auth-context.tenant-mismatch.test.tsx` |
+| The guard | `src/lib/no-hard-coded-brand.test.ts` |
+| e2e: two customers on two addresses, each with its own name (sign-in, title, till, receipt); a fresh address neutral; a known one offline | `e2e/customer-name.spec.ts` (`e2e/mock-api.ts`: `branding`, `appUrl`) |
+
+**For the backend:**
+
+- `/public/branding` follows the three customer responses above (suspended, unavailable, unknown address).
+- `TENANT_MISMATCH` comes as a 401 with a JSON `code`.
+- A long `name` is shown in full (truncated in the sidebar).

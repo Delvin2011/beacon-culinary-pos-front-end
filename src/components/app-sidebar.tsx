@@ -14,6 +14,8 @@ import { NavUser } from "@/components/nav-user"
 import { TeamSwitcher } from "@/components/team-switcher"
 import { useAuth } from "@/hooks/use-auth"
 import { BRAND } from "@/lib/brand"
+import { CustomerLogo } from "@/components/customer/customer-name"
+import { useCustomerBranding } from "@/hooks/use-customer-branding"
 import { fetchOpenExceptionCount } from "@/lib/sale-exceptions"
 import { canManageInventory, canManageMenu, canManageStockTakes, canViewDashboard, canViewReports, isAdminRole, isBaristaRole } from "@/lib/roles"
 import {
@@ -24,14 +26,12 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
+// T1-8: the customer's logo in the team icon's place, when it has one.
+function SidebarLogo({ className }: { className?: string }) {
+  return <CustomerLogo className={`${className ?? ""} object-contain`} />
+}
+
 const data = {
-  teams: [
-    {
-      name: BRAND.name,
-      logo: Fuel,
-      plan: BRAND.planLabel,
-    },
-  ],
   navMain: [
     {
       title: "Overview",
@@ -149,6 +149,7 @@ const data = {
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const { user, authFetch } = useAuth()
+  const branding = useCustomerBranding()
   const role = user?.role
   // O4: open REVIEW sale exceptions (GET /admin/sale-exceptions?size=1, totalItems), for admins, every minute.
   const [openExceptions, setOpenExceptions] = React.useState<number | null>(null)
@@ -192,7 +193,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar collapsible="icon" {...props}>
       <SidebarHeader>
-        <TeamSwitcher teams={data.teams} />
+        {/* T1-8: the customer's name. Remounted when it arrives: the switcher keeps its first team in state. */}
+        <TeamSwitcher
+          key={`${branding.name}|${branding.logoUrl ?? ""}`}
+          teams={[{ name: branding.name, logo: branding.logoUrl ? SidebarLogo : Fuel, plan: BRAND.planLabel }]}
+        />
       </SidebarHeader>
       <SidebarContent>
         <NavMain items={navMain} />

@@ -11,6 +11,7 @@ import { useLoginBlocks } from "@/hooks/use-login-blocks";
 import { LoginBlockBadge } from "@/components/pos/login-block-badge";
 import { PIN_FORMAT_MESSAGE, PIN_LENGTH, PIN_PATTERN } from "@/lib/pin";
 import { apiFetch } from "@/lib/api-fetch";
+import { CustomerName } from "@/components/customer/customer-name";
 
 // Shape returned by GET /users/login-tiles?screen=BAR: active Baristas and Admins with a PIN set.
 interface LoginTile {
@@ -150,6 +151,7 @@ export default function BarLoginPage() {
           <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-500/15 text-blue-300 ring-1 ring-blue-500/35">
             <ShieldCheck className="h-7 w-7" />
           </div>
+          <CustomerName className="mb-1 text-sm font-semibold text-slate-300" />
           <h1 className="text-2xl font-bold text-white">Bar Station</h1>
           <p className="mt-1 text-sm text-slate-400">
             {selected ? `Hi ${selected.name}. Enter your PIN to open the bar queue.` : "Tap your name to sign in."}

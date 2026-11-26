@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react"
 import { CloudOff } from "lucide-react"
 import { NumericKeypad } from "@/components/pos/numeric-keypad"
+import { CustomerName } from "@/components/customer/customer-name"
 import type { OfflineUnlockOwner, UnlockResult } from "@/hooks/use-offline-unlock"
 import { MAX_UNLOCK_FAILURES } from "@/lib/offline/unlock"
 import { PIN_LENGTH } from "@/lib/pin"
@@ -51,6 +52,8 @@ export function OfflineUnlockScreen({ owner, disabled, triesLeft, notice, unlock
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-8 bg-slate-950 p-8">
+      {/* T1-8: the remembered name (offline). */}
+      <CustomerName className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400" />
       <div className="flex max-w-md items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-100">
         <CloudOff className="h-4 w-4 shrink-0" />
         Offline: only {owner.name} can unlock this till.

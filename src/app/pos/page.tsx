@@ -27,6 +27,7 @@ import { waitingForShift } from "@/lib/offline/outbox";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { useLockBlocker, useLockBusy } from "@/lib/lock-guard";
 import { UNREGISTERED_TILL, tillLabel } from "@/lib/till";
+import { CustomerName } from "@/components/customer/customer-name";
 import { moneyOrDash } from "@/lib/money";
 
 type VarianceReasonCode = "CASH_COUNTING_ERROR" | "THEFT_SUSPECTED" | "UNRECORDED_TRANSACTION" | "OTHER";
@@ -687,6 +688,7 @@ function PosMainContent() {
     <div className="flex min-h-screen flex-col bg-slate-950">
       <header className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-6 py-3">
         <div className="flex items-center gap-3">
+          <CustomerName className="text-sm font-semibold text-slate-300" />
           <span className="text-sm font-semibold text-white">
             {shift?.tillCode ?? UNREGISTERED_TILL}
             {user?.name ? ` · ${user.name}` : ""}

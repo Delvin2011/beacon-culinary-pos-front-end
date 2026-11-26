@@ -14,6 +14,7 @@ import {
   type ReceiptOrder,
 } from "@/lib/receipt"
 import type { ReceiptSettings } from "@/lib/receipt-settings"
+import { useCustomerBranding } from "@/hooks/use-customer-branding"
 
 function Row({ label, amount, className }: { label: string; amount: string; className?: string }) {
   return (
@@ -34,7 +35,7 @@ function CopyMark({ copy }: { copy: NonNullable<ReceiptCopy> }) {
 
 export interface ReceiptViewProps {
   order: ReceiptOrder
-  // null when GET /pos/receipt-settings failed: no header, no footer, no VAT line.
+  // null when GET /pos/receipt-settings failed: no footer and no VAT line; the header has only the customer's name.
   settings: ReceiptSettings | null
   copy?: ReceiptCopy
   // Names for payments[].accountId, from GET /accounts.
@@ -51,22 +52,24 @@ export function ReceiptView({ order, settings, copy = null, accountNames = {} }:
   const till = receiptTillLabel(order)
   const vat = vatLine(order, settings?.showVatLine ?? false)
   const discount = order.saleDiscount ?? 0
+  const { name: customerName } = useCustomerBranding()
 
   return (
     <article data-testid="receipt" className="m-0 w-[72mm] space-y-1.5 p-0 font-mono text-[11px] leading-snug text-black">
       {copy && <CopyMark copy={copy} />}
 
-      {settings && (
-        <header className="text-center">
-          {settings.receiptTitle && <p className="text-sm font-bold">{settings.receiptTitle}</p>}
-          {settings.businessName && <p className="font-bold">{settings.businessName}</p>}
-          {settings.addressLines.map((line, index) => (
-            <p key={index}>{line}</p>
-          ))}
-          {settings.phone && <p>Tel {settings.phone}</p>}
-          {settings.vatNumber && <p>VAT No. {settings.vatNumber}</p>}
-        </header>
-      )}
+      <header className="text-center">
+        {settings?.receiptTitle && <p className="text-sm font-bold">{settings.receiptTitle}</p>}
+        {/* T1-8: the receipt settings' business name; otherwise the customer's (remembered offline). */}
+        <p className="font-bold">
+          {settings?.businessName || customerName}
+        </p>
+        {settings?.addressLines.map((line, index) => (
+          <p key={index}>{line}</p>
+        ))}
+        {settings?.phone && <p>Tel {settings.phone}</p>}
+        {settings?.vatNumber && <p>VAT No. {settings.vatNumber}</p>}
+      </header>
 
       <div>
         {order.receiptNumber && <p>Receipt {order.receiptNumber}</p>}

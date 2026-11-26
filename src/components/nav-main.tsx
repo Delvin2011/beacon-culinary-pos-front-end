@@ -17,7 +17,7 @@ import {
   SidebarMenuSubButton,
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
-import { BRAND } from "@/lib/brand"
+import { useCustomerBranding } from "@/hooks/use-customer-branding"
 
 export function NavMain({
   items,
@@ -35,9 +35,10 @@ export function NavMain({
     }[]
   }[]
 }) {
+  const { name } = useCustomerBranding()
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>{BRAND.name}</SidebarGroupLabel>
+      <SidebarGroupLabel>{name}</SidebarGroupLabel>
       <SidebarMenu>
         {items.map((item) => (
           <Collapsible

@@ -7,6 +7,7 @@ import { NumericKeypad } from "@/components/pos/numeric-keypad";
 import { ChevronLeft, User } from "lucide-react";
 import { DeviceNotRegisteredError, LoginBlockedError, PIN_LOGIN_FAILED_MESSAGE, PinLoginError } from "@/contexts/auth-context";
 import { fetchTillStatus, formatLocalTime, tillLabel, type TillStatus } from "@/lib/till";
+import { CustomerName } from "@/components/customer/customer-name";
 import { errorCode } from "@/lib/api-error";
 import { DeviceErrorCode, TILL_NOT_REGISTERED_MESSAGE } from "@/lib/devices";
 import { reauthLoginPath } from "@/lib/return-to";
@@ -284,6 +285,7 @@ export default function PosLoginPage() {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-10 bg-slate-950 p-8">
         <div className="text-center">
+          <CustomerName className="mb-2 text-sm font-semibold uppercase tracking-[0.2em] text-slate-400" />
           <h1 className="text-3xl font-bold text-white">Who&apos;s working?</h1>
           <p className="mt-1 text-slate-400">Tap your name to continue</p>
           {tillStatus?.registered && (

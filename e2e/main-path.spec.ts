@@ -54,10 +54,9 @@ test("password sign-in, then still signed in after the access token expires (ref
   })
 
   await page.goto("/login")
-  // C2: the sign-in picture is served as it is, not through the /_next/image optimiser.
-  const picture = page.locator("img").first()
-  await expect(picture).toHaveAttribute("src", /^\/_next\/static\/media\//)
-  await expect.poll(() => picture.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true)
+  // T1-8: no built-in picture (it showed one customer's brand), and no logo when the customer has none.
+  await expect(page.getByText("Login to your Mock Canteen Account")).toBeVisible()
+  await expect(page.locator("img")).toHaveCount(0)
 
   await page.getByLabel("Email").fill(ADMIN.email)
   await page.getByLabel("Password").fill(ADMIN.password)

@@ -43,10 +43,16 @@ export function sessionEndedMessage(reason: string | null | undefined): string {
   return (reason && SESSION_ENDED_MESSAGES[reason as SessionEndReason]) || SESSION_ENDED_MESSAGES.EXPIRED
 }
 
-// A 401 SESSION_ENDED, read from a copy of the response: its reason, or null when it is any other response.
+// T1-8: a credential refused because it belongs to another customer (another address). Ends the session as
+// SESSION_ENDED does, with no reason ("Your session has expired…").
+export const TENANT_MISMATCH = "TENANT_MISMATCH"
+
+// A 401 SESSION_ENDED (or TENANT_MISMATCH), read from a copy of the response: its reason, or null when it is any
+// other response.
 export async function readSessionEnded(res: Response): Promise<{ reason: string | null } | null> {
   if (res.status !== 401) return null
   const body = (await res.clone().json().catch(() => null)) as { code?: unknown; details?: { reason?: unknown } } | null
+  if (body?.code === TENANT_MISMATCH) return { reason: null }
   if (body?.code !== TillErrorCode.SESSION_ENDED) return null
   return { reason: typeof body.details?.reason === "string" ? body.details.reason : null }
 }

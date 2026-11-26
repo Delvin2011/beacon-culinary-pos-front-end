@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { CustomerName } from "@/components/customer/customer-name"
 import { InviteSetupForm, type InviteCredentialsInput } from "@/components/invite/invite-setup-form"
 import {
   INVALID_LINK_MESSAGE,
@@ -196,6 +197,7 @@ export default function InvitePage() {
     <main className="flex min-h-svh flex-col items-center justify-center bg-muted p-6 md:p-10">
       <Card className="w-full max-w-md">
         <CardHeader>
+          <CustomerName className="text-sm font-semibold text-muted-foreground" />
           <CardTitle className="text-xl">{title}</CardTitle>
           {description && <CardDescription>{description}</CardDescription>}
         </CardHeader>

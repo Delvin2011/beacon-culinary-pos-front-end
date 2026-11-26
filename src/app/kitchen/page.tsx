@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
 import { KitchenQueueBoard } from "@/components/kitchen/kitchen-queue-board";
 import { useAuth } from "@/hooks/use-auth";
+import { CustomerName } from "@/components/customer/customer-name";
 import { isKitchenAccessRole } from "@/lib/roles";
 
 export default function KitchenPage() {
@@ -39,6 +40,7 @@ export default function KitchenPage() {
     <div className="min-h-screen bg-slate-950">
       <header className="sticky top-0 z-40 flex items-center justify-between border-b border-slate-800 bg-slate-900/95 px-4 py-3 backdrop-blur md:px-6">
         <div>
+          <CustomerName className="text-xs font-semibold text-slate-300" />
           <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Kitchen Display</p>
           <p className="text-sm font-semibold text-white">{user?.name ?? "Kitchen Station"}</p>
         </div>
