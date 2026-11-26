@@ -84,9 +84,11 @@ Nothing customer-specific is built into the frontend. A guard (`src/lib/no-hard-
 `public/sw.js`. One line is allowed: the offline database's name `beacon-pos-offline`. Renaming it would leave every
 till's grant, snapshot and unsynced outbox behind.
 
-**Where the name comes from.** `GET /api/public/branding` (no sign-in, `{ name, logoUrl }`), called once per page
-load through `apiFetch` with `credentials: "omit"` (`src/lib/customer-branding.ts`, started in `Providers`, read with
-`useCustomerBranding()`). Every screen shows it:
+**Where the name comes from.** `GET /api/public/branding` (no sign-in, `{ name, logoUrl }`), called through
+`apiFetch` with `credentials: "omit"` (`src/lib/customer-branding.ts`, started in `Providers`, read with
+`useCustomerBranding()`). It is called on page load, then again only while no call has succeeded: when the browser
+comes back online, and when the customer's status changes (for example, a suspension or an outage ends). While
+suspended, `apiFetch` sends nothing. Every screen shows it:
 
 - `/login`: the heading;
 - the back office: the sidebar's team name and group label;

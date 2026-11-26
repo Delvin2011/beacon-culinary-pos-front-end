@@ -66,6 +66,11 @@ Side effect: leaflet's images left the service worker's precache list.
 
 ## Part 3: The brand module
 
+> **Superseded by T1-8** (`docs/2026-11-25-customer-responses.md`, section 7). The customer's name now comes from
+> `GET /public/branding`. `brand.ts` keeps only neutral words (`productName` "Canteen POS", `description`,
+> `planLabel`). The login picture is gone, and the guard now fails on "beacon" in any case in `src` and `public`. What
+> follows is the state at T0-8.
+
 `src/lib/brand.ts` holds today's values:
 
 | Value | Used by |
