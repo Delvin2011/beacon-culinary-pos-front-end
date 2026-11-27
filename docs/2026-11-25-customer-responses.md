@@ -131,3 +131,60 @@ later and the outbox is kept.
 - `/public/branding` follows the three customer responses above (suspended, unavailable, unknown address).
 - `TENANT_MISMATCH` comes as a 401 with a JSON `code`.
 - A long `name` is shown in full (truncated in the sidebar).
+
+## 8. Two customers in a real browser (T1-10)
+
+`e2e/stack-cross-customer.spec.ts` runs against the real local stack in multi mode, not the mock API. It proves that
+two customers at two addresses never share anything on the device or on screen. The backend's own cross-customer
+tests (its `docs/2026-11-27-cross-customer-tests.md`) prove the same at the API level.
+
+**What it proves** (A = beaconculinary, B = testcustomer):
+
+| What | How |
+|---|---|
+| The name | Each address's own name on sign-in, the tab title, the till and the printed receipt. A's receipt carries A's receipt-settings business name if set, otherwise A's name, and never B's; the same the other way round |
+| The kitchen | Both kitchen displays are open. A sale at A reaches A's within 15 s, and B's gets nothing new within 10 s; then the same in reverse |
+| Device storage | One browser at both addresses. At B, before B is used: no session, no cart, an empty offline outbox, grant, snapshot and unlock check value, caches holding only B's own files with no API answers, and none of A's token, name, email or cookie values anywhere in B's storage. No request to B carries A's cookies. After B signs in, its session is its own, and A's is untouched |
+| Sessions | Signing in at A, then at B, then back at A: each address keeps its own user and its own refresh cookie, scoped to its own host. Signing out at B leaves A signed in |
+| Offline | An offline sale at A syncs into A only: it is in A's `/orders/today` and nothing from that till is in B's, and A's outbox ids appear nowhere in B's storage. **Skipped until the stack turns offline selling on** (backend request 1 below) |
+
+**Safety.**
+- The spec runs only when `STACK_E2E=1`, and refuses any address that isn't `https://<name>.pos.localhost`.
+- Everything it creates is named `e2e-`: staff e2e-cashier and e2e-kitchen at each customer (reused on the next
+  run), and one till per test, `e2e-till-<run>-<purpose>`.
+- After each test it closes the open shifts of `e2e-` people (as "uncounted") and revokes `e2e-` tills. Nobody
+  else's shifts or tills are touched. Its sales stay until `reset.ps1`, as the smoke check's do.
+- PINs are random for each run. Passwords come only from the environment. Neither is ever printed.
+
+**Before it runs.** The stack is up in multi mode and `smoke.ps1` has passed (the spec sells the always-on
+"Smoke check item" that smoke adds).
+
+**Settings** (environment only; never in a file or on a command line):
+
+| Setting | Value |
+|---|---|
+| `STACK_E2E` | `1` |
+| `STACK_E2E_A_URL`, `STACK_E2E_B_URL` | `https://beaconculinary.pos.localhost`, `https://testcustomer.pos.localhost` (plus `:<HTTPS_PORT>` when not 443) |
+| `STACK_E2E_A_EMAIL` | `SMOKE_EMAIL` from `stack.env` |
+| `STACK_E2E_B_EMAIL` | `smoke@testcustomer.test` |
+| `STACK_E2E_PASSWORD` | `SMOKE_PASSWORD` from `stack.env` |
+
+With those set: `npm run test:e2e:stack` (no build: it tests whatever frontend the stack serves). Without
+`STACK_E2E=1`, `npm run test:e2e` runs as before and lists this spec as skipped, saying why.
+
+**check-all (backend repository)**, two requests for the backend agent:
+
+1. **Offline selling on in the stack.** In `devstack/compose.yaml`, set `POS_OFFLINE_ENABLED: "true"` and
+   `POS_OFFLINE_GRANTSIGNINGKEY` from a new `OFFLINE_GRANT_SIGNING_KEY` setting in `stack.env` (required, never
+   printed). `smoke.ps1` then checks `offlineEnabled: true` at both customers.
+2. **The stack serves the commit under test, then step 11 "frontend stack e2e".**
+   - `up.ps1` builds the frontend image with
+     `POS_APP_BUILD_ID=<version>-<git -C FRONTEND_REPO rev-parse --short HEAD>[-dirty]-<time>`.
+   - After smoke, check-all reads `SW_VERSION` from `/sw.js` and compares its hash with `FRONTEND_REPO`'s HEAD. If
+     they differ, it fails with "rebuild the stack: …".
+   - Then it runs `npm run test:e2e:stack` with the settings above in that step's environment only. A skip counts
+     as a failure there.
+
+**Found while writing it** (not a leak, left for the backlog): on `/devices/register`, "Sign out and return to the
+POS" lands on the managers' sign-in rather than the till's. The page's admin guard redirects after the button's own
+navigation. The spec opens `/pos/login` itself.

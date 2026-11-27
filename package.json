@@ -10,7 +10,8 @@
     "check:build": "node scripts/check-build-no-backend.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:stack": "playwright test e2e/stack-cross-customer.spec.ts"
   },
   "dependencies": {
     "@radix-ui/react-avatar": "^1.1.2",
